@@ -234,6 +234,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // ==================== 工作区 ====================
   workspace: {
+    getDefaults: () => ipcRenderer.invoke('workspace-get-defaults'),
     load: (data) => ipcRenderer.invoke('workspace-load', data),
     save: (data) => ipcRenderer.invoke('workspace-save', data),
     pickFolder: () => ipcRenderer.invoke('workspace-pick-folder'),

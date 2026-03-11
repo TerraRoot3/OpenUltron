@@ -166,6 +166,7 @@ export function installBrowserPolyfill(baseUrl = DEFAULT_API_BASE) {
     },
 
     workspace: {
+      getDefaults: () => invoke('workspace-get-defaults', []),
       load: (data) => invoke('workspace-load', [data]),
       save: (data) => invoke('workspace-save', [data]),
       pickFolder: () => invoke('workspace-pick-folder', []),

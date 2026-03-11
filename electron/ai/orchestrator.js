@@ -10,7 +10,7 @@ const { shouldCompress, compressMessages, flushMemoryBeforeCompaction } = requir
 const { getTopMemoriesForProject, saveMemory, readGlobalMemoryMd, readSoulMd, readIdentityMd, readAgentDisplayName, readUserMd, readBootMd, readAgentsMd, readToolsMd, readLessonsLearned, appendToDiary } = require('./memory-store')
 const { loadPrompt } = require('./system-prompts')
 const { sanitizeAssistantIdentityWording } = require('./identity-wording')
-const { getAppRootPath } = require('../app-root')
+const { getAppRootPath, getWorkspaceRoot } = require('../app-root')
 const responseCache = require('./response-cache')
 const sessionRegistry = require('./session-registry')
 
@@ -127,6 +127,8 @@ class Orchestrator {
         '[当前应用]\n' +
         '你正在运行并直接操作的应用是 **OpenUltron**（本应用）。\n' +
         '当用户要求修改或配置**本机其他项目**、某仓库或用户提到的任意名称时：自行决定用 execute_command 执行哪些命令定位，用 file_operation 读改配置；不得未执行就称找不到或向用户索要路径。可先调用 query_command_log 查看当前项目下已执行命令的成功/失败与已查看路径，再决定本次命令，实现自我进化。具体项目名称、常见路径与配置文件名由你自行检索或根据用户表述判断，提示词中不预设。\n' +
+        `默认工作空间：${getWorkspaceRoot()}。\n` +
+        `当无真实项目路径时：脚本优先写入 ${path.join(getWorkspaceRoot(), 'scripts')}，新建项目优先放入 ${path.join(getWorkspaceRoot(), 'projects')}，避免散落在其他目录。\n` +
         '**回复风格**：不要写「我来帮你…」「让我执行…」等固定话术；不要输出「可能的原因和建议」「请提供以下任一信息」等模板式列表。直接执行、根据结果继续或简短说明已尝试与下一步。未明确要求修改外部项目时，默认在 OpenUltron 内完成。'
       )
 
@@ -1291,11 +1293,12 @@ class Orchestrator {
     const session = this.activeSessions.get(sessionId)
     const projectPath = String(session?.projectPath || '').trim()
     const hasRealProjectPath = !!projectPath && !projectPath.startsWith('__') && path.isAbsolute(projectPath)
+    const defaultWorkspaceCwd = getWorkspaceRoot()
     if (name === 'execute_command') {
       const rawCwd = args && typeof args.cwd === 'string' ? String(args.cwd).trim() : ''
       const invalidCwd = !rawCwd || rawCwd.startsWith('__') || !path.isAbsolute(rawCwd)
       if (invalidCwd) {
-        args = { ...args, cwd: hasRealProjectPath ? projectPath : getAppRootPath() }
+        args = { ...args, cwd: hasRealProjectPath ? projectPath : defaultWorkspaceCwd }
       }
     }
     if (hasRealProjectPath) {
@@ -1308,6 +1311,9 @@ class Orchestrator {
       if (name === 'analyze_project' && !args.projectPath && !args.project_path) {
         args = { ...args, projectPath }
       }
+    } else if (name === 'file_operation' && args.path && !args.path.startsWith('/')) {
+      // 无真实项目路径时，默认将相对路径落到统一 workspace 根目录
+      args = { ...args, path: path.join(defaultWorkspaceCwd, args.path) }
     }
     // 飞书会话下调用 feishu_send_message 时，未传 chat_id 则使用当前会话的 chat_id（用户在本会话发消息，回复应回同一会话）
     if (name === 'feishu_send_message' && session?.feishuChatId && !(args && args.chat_id && String(args.chat_id).trim())) {

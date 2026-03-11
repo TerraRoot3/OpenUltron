@@ -12,7 +12,7 @@ const pty = require('node-pty')
 const invokeRegistry = require('./api/invokeRegistry')
 const { registerConfigHandlers } = require('./api/registerConfigHandlers')
 const { createApiServer, DEFAULT_PORT: API_DEFAULT_PORT } = require('./api/server')
-const { getAppRoot, getAppRootPath } = require('./app-root')
+const { getAppRoot, getAppRootPath, getWorkspaceRoot, getWorkspacePath, ensureWorkspaceDirs } = require('./app-root')
 const { getLogPath, readTail, getForAi, logger: appLogger, patchConsole } = require('./app-logger')
 const { filterSessionsList, isRunSessionId } = require('./ai/sessions-list-filter')
 
@@ -2831,6 +2831,8 @@ function getAIConfigLegacy() {
 aiConfigFile.ensureAIConfigFile(app, store)
 // 确保 <appRoot>/prompts/ 存在且缺失的提示词文件写入默认（可被 AI 通过 file_operation 修改）
 ensurePromptsDirAndDefaults()
+// 统一 AI 工作空间：~/.openultron/workspace/{scripts,projects}
+ensureWorkspaceDirs()
 
 function writeAIConfigFromTool(data) {
   aiConfigFile.writeAIConfig(app, data)
@@ -5695,6 +5697,20 @@ registerChannel('coze-logout', async () => {
 })
 
 // ==================== Workspace ====================
+registerChannel('workspace-get-defaults', async () => {
+  try {
+    ensureWorkspaceDirs()
+    return {
+      success: true,
+      root: getWorkspaceRoot(),
+      scriptsPath: getWorkspacePath('scripts'),
+      projectsPath: getWorkspacePath('projects')
+    }
+  } catch (e) {
+    return { success: false, message: e.message }
+  }
+})
+
 registerChannel('workspace-load', async (event, { primaryPath }) => {
   try {
     const key = `workspace_${primaryPath}`
