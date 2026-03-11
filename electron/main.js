@@ -13,6 +13,7 @@ const invokeRegistry = require('./api/invokeRegistry')
 const { registerConfigHandlers } = require('./api/registerConfigHandlers')
 const { createApiServer, DEFAULT_PORT: API_DEFAULT_PORT } = require('./api/server')
 const { getAppRoot, getAppRootPath, getWorkspaceRoot, getWorkspacePath, ensureWorkspaceDirs } = require('./app-root')
+const { ingestRoundAttachments } = require('./ai/attachment-ingest')
 const { getLogPath, readTail, getForAi, logger: appLogger, patchConsole } = require('./app-logger')
 const { filterSessionsList, isRunSessionId } = require('./ai/sessions-list-filter')
 
@@ -3992,6 +3993,23 @@ registerChannel('ai-get-tools', async () => {
   return { success: true, tools: getToolsForChat() }
 })
 
+// 上传并摄取附件（主会话输入框 / 其他渠道复用）
+registerChannel('ai-upload-attachments', async (event, { sessionId, source, attachments }) => {
+  try {
+    if (!sessionId || String(sessionId).trim() === '') {
+      return { success: false, message: 'missing sessionId' }
+    }
+    const result = await ingestRoundAttachments({
+      sessionId: String(sessionId).trim(),
+      source: source || 'main',
+      attachments: Array.isArray(attachments) ? attachments : []
+    })
+    return result
+  } catch (e) {
+    return { success: false, message: e.message || 'attachment ingest failed' }
+  }
+})
+
 // 启动 AI 对话（HTTP/浏览器 无 sender 时等待完整响应后返回，应用内则立即返回、流式走 sender）
 registerChannel('ai-chat-start', async (event, { sessionId, messages, model, tools, projectPath, panelId }) => {
   try {
@@ -4655,7 +4673,8 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
   const nowIso = new Date().toISOString()
   conversationFile.updateConversationMeta(projectKey, mainSessionId, { updatedAt: nowIso })
   if (binding.channel === 'feishu' && mainWindow && mainWindow.webContents) {
-    mainWindow.webContents.send('feishu-session-user-message', { sessionId: mainSessionId, text: message.text })
+    const displayText = message?.metadata?.displayText || message.text
+    mainWindow.webContents.send('feishu-session-user-message', { sessionId: mainSessionId, text: displayText })
   }
   const legacy = getAIConfigLegacy()
   const resolvedKey = legacy && legacy.providerKeys && legacy.config && legacy.providerKeys[legacy.config.apiBaseUrl]

@@ -11,6 +11,7 @@ const feishuSessionState = require('../../ai/feishu-session-state')
 const conversationFile = require('../../ai/conversation-file')
 const feishuNotify = require('../../ai/feishu-notify')
 const memoryStore = require('../../ai/memory-store')
+const { ingestRoundAttachments } = require('../../ai/attachment-ingest')
 const { createInboundMessage, createSessionBinding } = require('../../core/message-model')
 
 const FEISHU_PROJECT = '__feishu__'
@@ -97,7 +98,11 @@ function isAllowed(allowFrom, remoteId) {
  * @returns {{ id: string; configKey: string; start: Function; stop: Function; isRunning: Function; send: Function }}
  */
 function createFeishuAdapter(eventBus, getChannelConfig) {
-  async function handleIncomingMessage(chatId, text, messageId) {
+  async function handleIncomingMessage(inbound) {
+    const chatId = inbound && inbound.chatId
+    const text = (inbound && inbound.text) || ''
+    const messageId = inbound && inbound.messageId
+    const inboundAttachments = Array.isArray(inbound && inbound.attachments) ? inbound.attachments : []
     if (messageId) {
       const sizeBefore = feishuRepliedMessageIds.size
       feishuRepliedMessageIds.add(messageId)
@@ -184,7 +189,57 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
         messageCount: 0
       })
     }
-    const message = createInboundMessage('feishu', chatId, text, messageId)
+    let attachmentContextText = ''
+    let normalizedAttachments = []
+    if (inboundAttachments.length > 0) {
+      const rawAttachments = []
+      for (const a of inboundAttachments) {
+        try {
+          if (a.type === 'image' && a.image_key) {
+            const dl = await feishuNotify.downloadImageByKey(a.image_key)
+            rawAttachments.push({
+              name: dl.fileName || `image-${Date.now()}.png`,
+              mime: dl.contentType || 'image/png',
+              size: dl.buffer.length,
+              buffer: dl.buffer
+            })
+          } else if (a.type === 'file' && a.file_key) {
+            const dl = await feishuNotify.downloadFileByKey(a.file_key)
+            rawAttachments.push({
+              name: a.file_name || dl.fileName || `file-${Date.now()}.bin`,
+              mime: dl.contentType || 'application/octet-stream',
+              size: dl.buffer.length,
+              buffer: dl.buffer
+            })
+          }
+        } catch (e) {
+          appLogger?.warn?.('[Feishu] 下载入站附件失败', {
+            type: a.type,
+            image_key: a.image_key,
+            file_key: a.file_key,
+            error: e.message
+          })
+        }
+      }
+      if (rawAttachments.length > 0) {
+        const ingestRes = await ingestRoundAttachments({
+          sessionId,
+          source: 'feishu',
+          attachments: rawAttachments
+        })
+        normalizedAttachments = (ingestRes.accepted || []).map(item => ({
+          type: item.kind === 'image' ? 'image' : 'file',
+          path: item.localPath
+        }))
+        attachmentContextText = ingestRes.contextText || ''
+      }
+    }
+
+    const inboundText = [text, attachmentContextText].filter(Boolean).join('\n\n').trim()
+    const message = createInboundMessage('feishu', chatId, inboundText, messageId, normalizedAttachments)
+    message.metadata = {
+      displayText: text || (normalizedAttachments.length > 0 ? '[附件]' : '')
+    }
     const binding = createSessionBinding(sessionId, FEISHU_PROJECT, 'feishu', chatId, chatId)
     eventBus.emit('chat.message.received', { message, binding })
   }

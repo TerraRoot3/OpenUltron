@@ -267,6 +267,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getTools: () => ipcRenderer.invoke('ai-get-tools'),
     chatStart: (data) => ipcRenderer.invoke('ai-chat-start', data),
     chatStop: (data) => ipcRenderer.invoke('ai-chat-stop', data),
+    uploadAttachments: (data) => ipcRenderer.invoke('ai-upload-attachments', data),
     generateCommitMessage: (data) => ipcRenderer.invoke('ai-generate-commit-message', data),
     readAgentMd: (data) => ipcRenderer.invoke('ai-read-agent-md', data),
     // 流式事件监听

@@ -260,6 +260,10 @@ const messages = {
       aiReplying: 'AI 回复中...',
       stop: '停止',
       send: '发送',
+      attach: '选择文件或图片',
+      attachRejected: '部分附件超限或无法读取，已跳过',
+      attachUploadFailed: '附件上传失败',
+      attachNothingToSend: '没有可发送的文本或有效附件',
     },
     chatMessage: {
       me: '你',
@@ -547,6 +551,10 @@ const messages = {
       aiReplying: 'AI is replying...',
       stop: 'Stop',
       send: 'Send',
+      attach: 'Select files or images',
+      attachRejected: 'Some attachments are invalid or exceed limits and were skipped',
+      attachUploadFailed: 'Attachment upload failed',
+      attachNothingToSend: 'No text or valid attachments to send',
     },
     chatMessage: {
       me: 'You',

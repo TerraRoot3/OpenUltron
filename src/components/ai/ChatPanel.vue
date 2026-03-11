@@ -88,7 +88,7 @@
           @close="clearMention"
         />
         <!-- 已选中的 @ 文件标签 + 输入行（指令标签 + textarea） -->
-        <div class="textarea-wrap">
+        <div class="textarea-wrap" @dragover="onInputDragOver" @drop="onInputDrop">
           <div v-if="mentionedFiles.length > 0" class="mention-tags">
             <span
               v-for="f in mentionedFiles"
@@ -100,6 +100,22 @@
               <FileCode v-else :size="10" />
               <span>{{ f.type === 'snippet' ? `${f.name}:${f.lineStart}-${f.lineEnd}` : f.name }}</span>
               <button class="mention-tag-remove" @click="removeMentionedFile(f)">×</button>
+            </span>
+          </div>
+          <div v-if="pendingAttachments.length > 0" class="attachment-tags">
+            <span
+              v-for="a in pendingAttachments"
+              :key="a.id"
+              class="attachment-tag"
+              :class="{
+                'attachment-tag-rejected': a.status === 'rejected',
+                'attachment-tag-degraded': a.status === 'degraded'
+              }"
+            >
+              <Paperclip :size="10" />
+              <span>{{ a.name }}</span>
+              <em>{{ formatAttachmentSize(a.size) }}</em>
+              <button class="attachment-tag-remove" @click="removePendingAttachment(a.id)">×</button>
             </span>
           </div>
           <!-- 输入行：左侧技能标签 + 右侧输入框 -->
@@ -123,6 +139,7 @@
                 :disabled="isStreaming"
                 @keydown="onKeyDown"
                 @input="onInput"
+                @paste="onInputPaste"
                 @compositionstart="isComposing = true"
                 @compositionend="isComposing = false"
                 rows="1"
@@ -133,6 +150,21 @@
             </div>
           </div>
         </div>
+        <input
+          ref="fileInputRef"
+          type="file"
+          multiple
+          class="file-input-hidden"
+          @change="onFileInputChange"
+        />
+        <button
+          v-if="!isStreaming"
+          class="attach-btn"
+          :title="t('chat.attach')"
+          @click="openFilePicker"
+        >
+          <Paperclip :size="14" />
+        </button>
         <button
           v-if="isStreaming"
           class="send-btn stop"
@@ -144,7 +176,7 @@
         <button
           v-else
           class="send-btn"
-          :disabled="!inputText.trim() && !hasActiveSlash"
+          :disabled="!inputText.trim() && !hasActiveSlash && pendingAttachments.length === 0"
           @click="handleSend"
           :title="t('chat.send')"
         >
@@ -165,7 +197,7 @@
 
 <script setup>
 import { ref, computed, watch, nextTick, onMounted, onActivated, onUnmounted } from 'vue'
-import { Loader, AlertCircle, AlertTriangle, Info, Send, Square, Zap, FileCode, Code } from 'lucide-vue-next'
+import { Loader, AlertCircle, AlertTriangle, Info, Send, Square, Zap, FileCode, Code, Paperclip } from 'lucide-vue-next'
 import ChatMessage from './ChatMessage.vue'
 import SlashPalette from './SlashPalette.vue'
 import MentionPalette from './MentionPalette.vue'
@@ -726,9 +758,93 @@ const detectMention = () => {
 // ---- 输入 ----
 const inputText = ref('')
 const inputRef = ref(null)
+const fileInputRef = ref(null)
 const messagesRef = ref(null)
 const panelRef = ref(null)
 const isComposing = ref(false)  // 中文输入法合成中
+const pendingAttachments = ref([])
+let pendingAttachmentSeed = 0
+
+const formatAttachmentSize = (n) => {
+  const size = Number(n || 0)
+  if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(2)}MB`
+  if (size >= 1024) return `${(size / 1024).toFixed(1)}KB`
+  return `${size}B`
+}
+
+const removePendingAttachment = (id) => {
+  pendingAttachments.value = pendingAttachments.value.filter(a => a.id !== id)
+}
+
+const addPendingFiles = (files) => {
+  const list = Array.from(files || [])
+  for (const f of list) {
+    const id = `att-${Date.now()}-${++pendingAttachmentSeed}`
+    pendingAttachments.value.push({
+      id,
+      file: f,
+      name: f.name || `file-${pendingAttachmentSeed}`,
+      size: Number(f.size || 0),
+      mime: f.type || 'application/octet-stream',
+      status: 'pending',
+      error: ''
+    })
+  }
+}
+
+const openFilePicker = () => {
+  if (isStreaming.value) return
+  fileInputRef.value?.click()
+}
+
+const onFileInputChange = (e) => {
+  const files = e?.target?.files
+  if (files && files.length > 0) addPendingFiles(files)
+  if (e?.target) e.target.value = ''
+}
+
+const readFileAsBase64 = (file) => new Promise((resolve, reject) => {
+  const reader = new FileReader()
+  reader.onerror = () => reject(new Error('read file failed'))
+  reader.onload = () => {
+    const raw = String(reader.result || '')
+    const i = raw.indexOf(',')
+    resolve(i >= 0 ? raw.slice(i + 1) : raw)
+  }
+  reader.readAsDataURL(file)
+})
+
+const extractImageFilesFromClipboard = (e) => {
+  const items = e?.clipboardData?.items || []
+  const files = []
+  for (const item of items) {
+    if (!item || item.kind !== 'file') continue
+    const f = item.getAsFile ? item.getAsFile() : null
+    if (!f) continue
+    if ((f.type || '').startsWith('image/')) files.push(f)
+  }
+  return files
+}
+
+const onInputPaste = (e) => {
+  if (isStreaming.value) return
+  const imageFiles = extractImageFilesFromClipboard(e)
+  if (imageFiles.length > 0) {
+    addPendingFiles(imageFiles)
+  }
+}
+
+const onInputDragOver = (e) => {
+  if (isStreaming.value) return
+  e.preventDefault()
+}
+
+const onInputDrop = (e) => {
+  if (isStreaming.value) return
+  e.preventDefault()
+  const files = e?.dataTransfer?.files
+  if (files && files.length > 0) addPendingFiles(files)
+}
 
 // ---- 图片预览 ----
 const showImageViewer = ref(false)
@@ -1091,7 +1207,7 @@ const buildSlashSystemPrompt = async (item) => {
 
 const handleSend = async () => {
   const text = inputText.value.trim()
-  if (!text && !hasActiveSlash.value) return
+  if (!text && !hasActiveSlash.value && pendingAttachments.value.length === 0) return
   if (isStreaming.value) return
 
   if (HISTORY_CMD_RE.test(text)) {
@@ -1156,10 +1272,60 @@ const handleSend = async () => {
     }
     clearSlash()
   }
+  let displayText = finalText  // 展示给用户看的消息（不含文件内容）
+
+  // 上传本轮附件并注入上下文（与飞书入站共用同一主进程 ingest 管道）
+  if (pendingAttachments.value.length > 0) {
+    const filesForUpload = [...pendingAttachments.value]
+    for (const a of filesForUpload) {
+      a.status = 'pending'
+      a.error = ''
+    }
+    try {
+      const sessionForAttachments = currentSessionId.value || `pending-${Date.now()}`
+      const payload = []
+      for (const a of filesForUpload) {
+        const dataBase64 = await readFileAsBase64(a.file)
+        payload.push({
+          name: a.name,
+          mime: a.mime,
+          size: a.size,
+          dataBase64
+        })
+      }
+      const res = await window.electronAPI.ai.uploadAttachments({
+        sessionId: sessionForAttachments,
+        source: 'main',
+        attachments: payload
+      })
+      if (res?.success) {
+        const rejectedNames = new Set((res.rejected || []).map(r => r.name))
+        for (const a of filesForUpload) {
+          a.status = rejectedNames.has(a.name) ? 'rejected' : 'ok'
+        }
+        const acceptedNames = (res.accepted || []).map(a => `@${a.name}`)
+        if (res.contextText) {
+          finalText = finalText ? `${finalText}\n\n${res.contextText}` : res.contextText
+          if (acceptedNames.length > 0) {
+            displayText = (displayText ? `${displayText}\n` : '') + acceptedNames.join(' ')
+          }
+        }
+        const remaining = filesForUpload.filter(a => a.status !== 'ok')
+        pendingAttachments.value = remaining
+        if ((res.rejected || []).length > 0) {
+          const firstErr = res.rejected[0]?.error || t('chat.attachRejected')
+          error.value = firstErr
+        }
+      } else {
+        error.value = res?.message || t('chat.attachUploadFailed')
+      }
+    } catch (e) {
+      error.value = e?.message || t('chat.attachUploadFailed')
+    }
+  }
 
   // 如果有 @ 的文件，读取内容拼到消息末尾
   // 小文件（< 200 行）直接内联；大文件只传路径，让 AI 用 file_operation 工具自己读
-  let displayText = finalText  // 展示给用户看的消息（不含文件内容）
   if (mentionedFiles.value.length > 0) {
     const snippetParts = []
     const newMentionedFiles = []
@@ -1199,6 +1365,11 @@ const handleSend = async () => {
       displayText = (displayText ? displayText + '\n' : '') + fileNames.join(' ')
     }
     mentionedFiles.value = []
+  }
+
+  if (!String(finalText || '').trim()) {
+    error.value = error.value || t('chat.attachNothingToSend')
+    return
   }
 
   if (isFirstMessage) emit('first-message', { text, sessionId: currentSessionId.value })
@@ -1741,6 +1912,76 @@ defineExpose({ clearMessages, loadMessages, messages, handleExternalSend, isStre
   flex-shrink: 0;
 }
 .mention-tag-remove:hover { opacity: 1; }
+
+.attachment-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 10px 4px;
+  background: var(--ou-bg-main);
+  border-bottom: 1px solid var(--ou-border);
+}
+.attachment-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px 2px 6px;
+  background: color-mix(in srgb, var(--ou-success) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ou-success) 30%, transparent);
+  border-radius: 10px;
+  font-size: 11px;
+  color: var(--ou-text);
+  max-width: 230px;
+}
+.attachment-tag span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attachment-tag em {
+  font-style: normal;
+  opacity: 0.7;
+}
+.attachment-tag-rejected {
+  background: color-mix(in srgb, var(--ou-error) 14%, transparent);
+  border-color: color-mix(in srgb, var(--ou-error) 30%, transparent);
+}
+.attachment-tag-degraded {
+  background: color-mix(in srgb, var(--ou-warning) 14%, transparent);
+  border-color: color-mix(in srgb, var(--ou-warning) 30%, transparent);
+}
+.attachment-tag-remove {
+  background: none;
+  border: none;
+  color: inherit;
+  opacity: 0.55;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
+  flex-shrink: 0;
+}
+.attachment-tag-remove:hover { opacity: 1; }
+
+.file-input-hidden { display: none; }
+.attach-btn {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  border: 1px solid var(--ou-border);
+  background: var(--ou-bg-main);
+  color: var(--ou-text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.attach-btn:hover {
+  border-color: var(--ou-primary);
+  color: var(--ou-primary);
+}
 
 .send-btn {
   flex-shrink: 0;

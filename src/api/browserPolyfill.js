@@ -216,6 +216,7 @@ export function installBrowserPolyfill(baseUrl = DEFAULT_API_BASE) {
       // 浏览器模式下 chatStart 由 useAIChat 走 Gateway WebSocket，此处仅作兜底（会阻塞到完整响应）
       chatStart: (data) => invoke('ai-chat-start', [data]),
       chatStop: (data) => invoke('ai-chat-stop', [data]),
+      uploadAttachments: (data) => invoke('ai-upload-attachments', [data]),
       generateCommitMessage: (data) => invoke('ai-generate-commit-message', [data]),
       readAgentMd: (data) => invoke('ai-read-agent-md', [data]),
       confirmResponse: (data) => invoke('ai-chat-confirm-response', [data]),

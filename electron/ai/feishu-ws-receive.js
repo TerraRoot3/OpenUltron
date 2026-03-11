@@ -13,7 +13,7 @@ let wsClient = null
 let lastError = null
 
 /**
- * 解析飞书 im.message.receive_v1 事件，提取 chat_id、文本、message_id
+ * 解析飞书 im.message.receive_v1 事件，提取 chat_id、文本、message_id、附件键
  * 事件结构参考：data 可能为 { message: { message_id, chat_id, content, message_type } }
  */
 function parseMessageEvent(data) {
@@ -21,26 +21,38 @@ function parseMessageEvent(data) {
   if (!msg) return null
   const chatId = msg.chat_id || (msg.chat && msg.chat.chat_id) || msg.open_chat_id
   const messageId = msg.message_id || msg.open_message_id
+  const messageType = String(msg.message_type || '').trim()
   let text = ''
+  let parsedContent = null
   const content = msg.content
   if (typeof content === 'string') {
     try {
-      const parsed = JSON.parse(content)
-      text = (parsed && parsed.text) || content
+      parsedContent = JSON.parse(content)
+      text = (parsedContent && parsedContent.text) || ''
     } catch {
       text = content
     }
   } else if (content && typeof content === 'object') {
+    parsedContent = content
     text = content.text || content.content || ''
   }
   text = (text || '').trim()
+  const attachments = []
+  if (messageType === 'image') {
+    const imageKey = parsedContent && parsedContent.image_key
+    if (imageKey) attachments.push({ type: 'image', image_key: imageKey })
+  } else if (messageType === 'file') {
+    const fileKey = parsedContent && parsedContent.file_key
+    const fileName = (parsedContent && parsedContent.file_name) || ''
+    if (fileKey) attachments.push({ type: 'file', file_key: fileKey, file_name: fileName })
+  }
   if (!chatId) return null
-  return { chatId, messageId, text }
+  return { chatId, messageId, text, messageType, attachments }
 }
 
 /**
- * 启动 WebSocket 接收；onMessage(chatId, text, messageId) 由 main 注册，负责调用 AI 并回发
- * @param { (chatId: string, text: string, messageId: string) => Promise<void> } onMessage
+ * 启动 WebSocket 接收；onMessage(payload) 由 main 注册，负责调用 AI 并回发
+ * @param { (payload: { chatId: string, text: string, messageId?: string, messageType?: string, attachments?: any[] }) => Promise<void> } onMessage
  */
 async function start(onMessage) {
   if (wsClient) return
@@ -69,12 +81,12 @@ async function start(onMessage) {
       }
       return
     }
-    if (!parsed.text) {
-      console.warn('[Feishu WS] 跳过：无文本内容（可能为非文本消息）')
+    if (!parsed.text && (!parsed.attachments || parsed.attachments.length === 0)) {
+      console.warn('[Feishu WS] 跳过：无文本内容且无可处理附件')
       return
     }
     try {
-      await onMessage(parsed.chatId, parsed.text, parsed.messageId)
+      await onMessage(parsed)
       console.log('[Feishu WS] 已处理并回复')
     } catch (e) {
       console.error('[Feishu WS] onMessage error:', e)

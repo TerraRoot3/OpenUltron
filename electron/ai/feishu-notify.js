@@ -98,6 +98,49 @@ function httpsPost(host, pathName, body, token) {
   })
 }
 
+function httpsGetBuffer(host, pathName, token) {
+  return new Promise((resolve, reject) => {
+    const opts = {
+      host,
+      path: pathName,
+      method: 'GET',
+      headers: {}
+    }
+    if (token) opts.headers.Authorization = `Bearer ${token}`
+    const req = https.request(opts, (res) => {
+      const chunks = []
+      res.on('data', (ch) => chunks.push(ch))
+      res.on('end', () => {
+        const body = Buffer.concat(chunks)
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          resolve({ buffer: body, headers: res.headers || {} })
+          return
+        }
+        const text = body.toString('utf8')
+        try {
+          const json = JSON.parse(text)
+          reject(new Error(json.msg || json.error_description || text || `HTTP ${res.statusCode}`))
+        } catch {
+          reject(new Error(text || `HTTP ${res.statusCode}`))
+        }
+      })
+    })
+    req.on('error', reject)
+    req.end()
+  })
+}
+
+function parseFilenameFromDisposition(disposition, fallback = 'download.bin') {
+  const text = String(disposition || '')
+  const m1 = text.match(/filename\*=UTF-8''([^;]+)/i)
+  if (m1 && m1[1]) {
+    try { return decodeURIComponent(m1[1]) } catch { return m1[1] }
+  }
+  const m2 = text.match(/filename=\"?([^\";]+)\"?/i)
+  if (m2 && m2[1]) return m2[1]
+  return fallback
+}
+
 /** DELETE 请求（用于撤回消息等） */
 function httpsDelete(host, pathName, token) {
   return new Promise((resolve, reject) => {
@@ -334,6 +377,28 @@ async function sendPost(receiveId, postPayload, receiveIdType = 'chat_id') {
   return res
 }
 
+async function downloadImageByKey(imageKey) {
+  if (!imageKey || !String(imageKey).trim()) throw new Error('downloadImageByKey: missing imageKey')
+  const token = await getTenantAccessToken()
+  const key = String(imageKey).trim()
+  const pathWithQuery = `/open-apis/im/v1/images/${encodeURIComponent(key)}?image_type=message`
+  const { buffer, headers } = await httpsGetBuffer(AUTH_URL, pathWithQuery, token)
+  const contentType = String(headers['content-type'] || 'image/png').split(';')[0]
+  const fileName = parseFilenameFromDisposition(headers['content-disposition'], `image-${Date.now()}.png`)
+  return { buffer, contentType, fileName }
+}
+
+async function downloadFileByKey(fileKey) {
+  if (!fileKey || !String(fileKey).trim()) throw new Error('downloadFileByKey: missing fileKey')
+  const token = await getTenantAccessToken()
+  const key = String(fileKey).trim()
+  const pathWithQuery = `/open-apis/im/v1/files/${encodeURIComponent(key)}`
+  const { buffer, headers } = await httpsGetBuffer(AUTH_URL, pathWithQuery, token)
+  const contentType = String(headers['content-type'] || 'application/octet-stream').split(';')[0]
+  const fileName = parseFilenameFromDisposition(headers['content-disposition'], `file-${Date.now()}.bin`)
+  return { buffer, contentType, fileName }
+}
+
 /**
  * 统一发送：支持 text / image / file / post。使用 default_chat_id 若未传 chat_id。
  * 文件：可传 file_key + file_name；或 file_path（本地路径）由本方法先上传再发送。
@@ -460,6 +525,8 @@ module.exports = {
   sendPost,
   uploadImage,
   uploadFile,
+  downloadImageByKey,
+  downloadFileByKey,
   sendFile,
   sendMessage,
   deleteMessage,
