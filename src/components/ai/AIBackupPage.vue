@@ -8,15 +8,7 @@
     <!-- 备份区 -->
     <section class="abp-section">
       <h3 class="abp-section-title">导出备份</h3>
-      <p class="abp-desc">将 AI 数据打包为 ZIP 文件，保存到本地。</p>
-
-      <div class="abp-options">
-        <label v-for="opt in exportOptions" :key="opt.key" class="abp-option">
-          <input type="checkbox" v-model="opt.checked" />
-          <span class="abp-opt-name">{{ opt.label }}</span>
-          <span class="abp-opt-desc">{{ opt.desc }}</span>
-        </label>
-      </div>
+      <p class="abp-desc">将 <code>~/.openultron/</code> 整个目录打包为 ZIP 文件。</p>
 
       <div class="abp-actions">
         <button class="abp-btn primary" :disabled="exporting" @click="doExport">
@@ -37,7 +29,7 @@
     <!-- 恢复区 -->
     <section class="abp-section">
       <h3 class="abp-section-title">从备份恢复</h3>
-      <p class="abp-desc">选择 ZIP 备份文件，按选项恢复数据。</p>
+      <p class="abp-desc">恢复时会先清空 <code>~/.openultron/</code>，再用 ZIP 内容完整覆盖。</p>
 
       <div class="abp-actions">
         <button class="abp-btn" :disabled="previewing" @click="doPreview">
@@ -57,36 +49,35 @@
           <code class="abp-meta-path">{{ previewFilePath }}</code>
         </div>
         <div class="abp-meta-stats">
-          <span v-if="previewMeta.stats.hasAiConfig">AI配置</span>
-          <span v-if="previewMeta.stats.hasMcpConfig">MCP配置</span>
-          <span v-if="previewMeta.stats.skillsCount">{{ previewMeta.stats.skillsCount }} 个技能</span>
-          <span v-if="previewMeta.stats.conversationsCount">{{ previewMeta.stats.conversationsCount }} 个对话</span>
-          <span v-if="previewMeta.stats.memoriesCount">{{ previewMeta.stats.memoriesCount }} 条记忆</span>
-        </div>
-
-        <div class="abp-options mt8">
-          <label v-for="opt in restoreOptions" :key="opt.key" class="abp-option">
-            <input type="checkbox" v-model="opt.checked" />
-            <span class="abp-opt-name">{{ opt.label }}</span>
-          </label>
+          <span v-if="previewMeta.mode === 'full_app_root'">整目录备份</span>
+          <span v-if="previewMeta.stats.fileCount">{{ previewMeta.stats.fileCount }} 个文件</span>
+          <span v-if="previewMeta.stats.dirCount">{{ previewMeta.stats.dirCount }} 个目录</span>
+          <span v-if="previewMeta.stats.totalBytes">{{ formatSize(previewMeta.stats.totalBytes) }}</span>
+          <span v-if="previewMeta.mode !== 'full_app_root'">旧版分项备份</span>
         </div>
 
         <div class="abp-actions mt8">
           <button class="abp-btn danger" :disabled="restoring" @click="doRestore">
             <Loader v-if="restoring" :size="13" class="spin" />
             <RotateCcw v-else :size="13" />
-            {{ restoring ? '恢复中…' : '开始恢复' }}
+            {{ restoring ? '恢复中…' : '清空并恢复' }}
           </button>
         </div>
       </div>
 
       <div v-if="restoreResult" class="abp-result" :class="restoreResult.ok ? 'ok' : 'err'">
         <template v-if="restoreResult.ok">
-          恢复完成：技能 {{ restoreResult.summary.skillsRestored }} 个，
-          对话 {{ restoreResult.summary.conversationsRestored }} 个
-          {{ restoreResult.summary.memoriesRestored ? '，记忆已恢复' : '' }}
-          {{ restoreResult.summary.aiConfigRestored ? '，AI配置已恢复' : '' }}
-          {{ restoreResult.summary.mcpRestored ? '，MCP已恢复' : '' }}
+          <template v-if="restoreResult.summary.mode === 'full_app_root'">
+            恢复完成：已写入 {{ restoreResult.summary.restoredFiles || 0 }} 个文件
+            <span v-if="restoreResult.summary.rollbackPath">，恢复前快照：<code>{{ restoreResult.summary.rollbackPath }}</code></span>
+          </template>
+          <template v-else>
+            恢复完成：技能 {{ restoreResult.summary.skillsRestored }} 个，
+            对话 {{ restoreResult.summary.conversationsRestored }} 个
+            {{ restoreResult.summary.memoriesRestored ? '，记忆已恢复' : '' }}
+            {{ restoreResult.summary.aiConfigRestored ? '，AI配置已恢复' : '' }}
+            {{ restoreResult.summary.mcpRestored ? '，MCP已恢复' : '' }}
+          </template>
         </template>
         <template v-else>恢复失败：{{ restoreResult.message }}</template>
       </div>
@@ -95,24 +86,8 @@
 </template>
 
 <script setup>
-import { ref, reactive } from 'vue'
+import { ref } from 'vue'
 import { Archive, Download, FolderOpen, RotateCcw, Loader } from 'lucide-vue-next'
-
-const exportOptions = reactive([
-  { key: 'aiConfig',       label: 'API 配置',    desc: 'API Key、模型设置',         checked: true },
-  { key: 'mcpConfig',      label: 'MCP 配置',   desc: 'MCP 服务器列表',             checked: true },
-  { key: 'skills',         label: '技能库',      desc: '~/.openultron/skills/',      checked: true },
-  { key: 'conversations',  label: '对话历史',    desc: '~/.openultron/conversations/', checked: true },
-  { key: 'memory',         label: 'AI 记忆',    desc: 'memories.json + MEMORY.md',  checked: true },
-])
-
-const restoreOptions = reactive([
-  { key: 'aiConfig',      label: 'API 配置',   checked: true },
-  { key: 'mcpConfig',     label: 'MCP 配置',  checked: true },
-  { key: 'skills',        label: '技能库',     checked: true },
-  { key: 'conversations', label: '对话历史',   checked: true },
-  { key: 'memory',        label: 'AI 记忆',   checked: true },
-])
 
 const exporting = ref(false)
 const exportResult = ref(null)
@@ -122,13 +97,11 @@ const previewFilePath = ref('')
 const restoring = ref(false)
 const restoreResult = ref(null)
 
-const getOptions = (list) => Object.fromEntries(list.map(o => [o.key, o.checked]))
-
 async function doExport() {
   exporting.value = true
   exportResult.value = null
   try {
-    const res = await window.electronAPI.ai.backupExport(getOptions(exportOptions))
+    const res = await window.electronAPI.ai.backupExport({ mode: 'full_app_root' })
     if (res.success) {
       exportResult.value = { ok: true, savePath: res.savePath, fileSize: res.fileSize }
     } else if (res.message !== 'canceled') {
@@ -159,8 +132,7 @@ async function doRestore() {
   restoreResult.value = null
   try {
     const res = await window.electronAPI.ai.backupRestore({
-      filePath: previewFilePath.value,
-      options: getOptions(restoreOptions)
+      filePath: previewFilePath.value
     })
     if (res.success) {
       restoreResult.value = { ok: true, summary: res.summary }

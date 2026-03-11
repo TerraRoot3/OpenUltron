@@ -5127,102 +5127,43 @@ registerChannel('ai-export-backup', async () => {
 })
 
 // ── AI ZIP 备份导出 ──────────────────────────────────────────
-registerChannel('ai-backup-export', async (event, { options }) => {
+registerChannel('ai-backup-export', async (event, { options } = {}) => {
   try {
     const AdmZip = require('adm-zip')
     const { dialog } = require('electron')
     const os = require('os')
-    const homeDir = os.homedir()
-    const gitManagerDir = getAppRoot()
+    const appRootDir = getAppRoot()
 
     const zip = new AdmZip()
-    const stats = { skillsCount: 0, conversationsCount: 0, memoriesCount: 0, hasMcpConfig: false, hasAiConfig: false }
+    const stats = { fileCount: 0, dirCount: 0, totalBytes: 0, root: appRootDir }
+    const zipRoot = 'app_root'
 
-    // 1. 统一配置 openultron.json（含 AI + 飞书）
-    if (options.aiConfig !== false) {
-      try {
-        const openultronConfig = require('./openultron-config')
-        const full = openultronConfig.readAll()
-        if (full) {
-          zip.addFile('openultron.json', Buffer.from(JSON.stringify(full, null, 2), 'utf-8'))
-          stats.hasAiConfig = true
+    const addDirToZip = (dirPath) => {
+      if (!fs.existsSync(dirPath)) return
+      for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
+        const fullPath = path.join(dirPath, entry.name)
+        const rel = path.relative(appRootDir, fullPath).split(path.sep).join('/')
+        const zPath = rel ? `${zipRoot}/${rel}` : zipRoot
+        if (entry.isDirectory()) {
+          stats.dirCount += 1
+          addDirToZip(fullPath)
+          continue
         }
-      } catch (e) { /* ignore */ }
-    }
-
-    // 2. MCP 配置
-    if (options.mcpConfig !== false) {
-      try {
-        const mcpCfg = mcpConfigFile.readMcpConfig(store)
-        if (mcpCfg) {
-          zip.addFile('mcp-config.json', Buffer.from(mcpCfg, 'utf-8'))
-          stats.hasMcpConfig = true
-        }
-      } catch (e) { /* ignore */ }
-    }
-
-    // 3. Skills
-    if (options.skills !== false && fs.existsSync(_skillsDir)) {
-      for (const entry of fs.readdirSync(_skillsDir, { withFileTypes: true })) {
-        if (!entry.isDirectory()) continue
-        const filePath = path.join(_skillsDir, entry.name, 'SKILL.md')
-        if (fs.existsSync(filePath)) {
-          zip.addFile(`skills/${entry.name}/SKILL.md`, fs.readFileSync(filePath))
-          stats.skillsCount++
-        }
+        if (!entry.isFile()) continue
+        const buf = fs.readFileSync(fullPath)
+        zip.addFile(zPath, buf)
+        stats.fileCount += 1
+        stats.totalBytes += buf.length
       }
     }
-
-    // 4. 对话历史
-    if (options.conversations !== false) {
-      const convsDir = path.join(gitManagerDir, 'conversations')
-      if (fs.existsSync(convsDir)) {
-        const addDirToZip = (dirPath, zipPath) => {
-          for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
-            const fullPath = path.join(dirPath, entry.name)
-            const zPath = `${zipPath}/${entry.name}`
-            if (entry.isDirectory()) {
-              addDirToZip(fullPath, zPath)
-            } else {
-              zip.addFile(zPath, fs.readFileSync(fullPath))
-              if (entry.name.endsWith('.json') && entry.name !== 'index.json') stats.conversationsCount++
-            }
-          }
-        }
-        addDirToZip(convsDir, 'conversations')
-      }
-    }
-
-    // 5. 记忆
-    if (options.memory !== false) {
-      const memDir = path.join(gitManagerDir, 'memory')
-      if (fs.existsSync(memDir)) {
-        const addDirToZip = (dirPath, zipPath) => {
-          for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
-            const fullPath = path.join(dirPath, entry.name)
-            const zPath = `${zipPath}/${entry.name}`
-            if (entry.isDirectory()) {
-              addDirToZip(fullPath, zPath)
-            } else {
-              zip.addFile(zPath, fs.readFileSync(fullPath))
-              if (entry.name === 'memories.json') {
-                try { stats.memoriesCount = JSON.parse(fs.readFileSync(fullPath, 'utf-8')).length } catch (e) { /* ignore */ }
-              }
-            }
-          }
-        }
-        addDirToZip(memDir, 'memory')
-      }
-      // MEMORY.md
-      const memoryMdPath = path.join(gitManagerDir, 'MEMORY.md')
-      if (fs.existsSync(memoryMdPath)) {
-        zip.addFile('MEMORY.md', fs.readFileSync(memoryMdPath))
-      }
-    }
+    fs.mkdirSync(appRootDir, { recursive: true })
+    addDirToZip(appRootDir)
 
     // meta.json
     zip.addFile('meta.json', Buffer.from(JSON.stringify({
-      version: 1,
+      version: 2,
+      mode: 'full_app_root',
+      appRootDirname: path.basename(appRootDir),
       exportedAt: new Date().toISOString(),
       stats
     }, null, 2), 'utf-8'))
@@ -5261,6 +5202,28 @@ registerChannel('ai-backup-preview', async () => {
     const metaEntry = zip.getEntry('meta.json')
     if (!metaEntry) return { success: false, message: '无效的备份文件（缺少 meta.json）' }
     const meta = JSON.parse(metaEntry.getData().toString('utf-8'))
+    const hasFullRoot = zip.getEntries().some((e) => e.entryName.startsWith('app_root/'))
+    meta.mode = meta.mode || (hasFullRoot ? 'full_app_root' : 'legacy_partial')
+    if (!meta.stats) meta.stats = {}
+    if (meta.mode === 'full_app_root') {
+      if (typeof meta.stats.fileCount !== 'number' || typeof meta.stats.dirCount !== 'number') {
+        let fileCount = 0
+        let dirCount = 0
+        let totalBytes = 0
+        for (const entry of zip.getEntries()) {
+          if (!entry.entryName.startsWith('app_root/')) continue
+          if (entry.isDirectory) {
+            dirCount += 1
+          } else {
+            fileCount += 1
+            totalBytes += entry.header.size || 0
+          }
+        }
+        meta.stats.fileCount = fileCount
+        meta.stats.dirCount = dirCount
+        meta.stats.totalBytes = totalBytes
+      }
+    }
     return { success: true, filePath, meta }
   } catch (error) {
     return { success: false, message: error.message }
@@ -5268,12 +5231,14 @@ registerChannel('ai-backup-preview', async () => {
 })
 
 // ── AI ZIP 备份恢复 ──────────────────────────────────────────
-registerChannel('ai-backup-restore', async (event, { filePath, options }) => {
+registerChannel('ai-backup-restore', async (event, { filePath, options = {} }) => {
   try {
     const AdmZip = require('adm-zip')
     const os = require('os')
-    const gitManagerDir = getAppRoot()
-    const zip = new AdmZip(filePath)
+    const appRootDir = getAppRoot()
+    const tmpZipPath = path.join(os.tmpdir(), `openultron-restore-${Date.now()}-${Math.random().toString(36).slice(2)}.zip`)
+    fs.copyFileSync(filePath, tmpZipPath)
+    const zip = new AdmZip(tmpZipPath)
     const summary = { skillsRestored: 0, conversationsRestored: 0, memoriesRestored: false, mcpRestored: false, aiConfigRestored: false }
 
     const extractDir = (zipPrefix, targetDir) => {
@@ -5286,6 +5251,62 @@ registerChannel('ai-backup-restore', async (event, { filePath, options }) => {
         if (!path.resolve(destPath).startsWith(base + path.sep)) continue
         fs.mkdirSync(path.dirname(destPath), { recursive: true })
         fs.writeFileSync(destPath, entry.getData())
+      }
+    }
+
+    const hasFullRoot = zip.getEntries().some((e) => e.entryName.startsWith('app_root/'))
+    if (hasFullRoot) {
+      const restoreBackupPath = `${appRootDir}.pre-restore-${Date.now()}`
+      let movedOldRoot = false
+      try {
+        if (fs.existsSync(appRootDir)) {
+          fs.renameSync(appRootDir, restoreBackupPath)
+          movedOldRoot = true
+        }
+        fs.mkdirSync(appRootDir, { recursive: true })
+        const base = path.resolve(appRootDir)
+        let restoredFiles = 0
+        for (const entry of zip.getEntries()) {
+          if (!entry.entryName.startsWith('app_root/') || entry.isDirectory) continue
+          const relPath = entry.entryName.slice('app_root/'.length)
+          if (!relPath) continue
+          const destPath = path.join(appRootDir, relPath)
+          const resolved = path.resolve(destPath)
+          if (!resolved.startsWith(base + path.sep) && resolved !== base) continue
+          fs.mkdirSync(path.dirname(destPath), { recursive: true })
+          fs.writeFileSync(destPath, entry.getData())
+          restoredFiles += 1
+        }
+
+        // 恢复完成后刷新内存态
+        try {
+          ensureSkillsDir()
+          _skillsCache = readAllSkills()
+        } catch (e) { /* ignore */ }
+        try {
+          const mcpCfg = mcpConfigFile.readMcpConfig(store)
+          aiMcpManager.stopAll()
+          const disabledServers = store.get('aiMcpDisabledServers', [])
+          const servers = parseMcpJsonConfig(mcpCfg, disabledServers)
+          if (servers.length > 0) await aiMcpManager.startAll(servers)
+        } catch (e) { /* ignore */ }
+        try {
+          BrowserWindow.getAllWindows().forEach((win) => {
+            if (win && !win.isDestroyed()) win.webContents.send('ai-config-updated')
+          })
+        } catch (e) { /* ignore */ }
+
+        summary.mode = 'full_app_root'
+        summary.restoredFiles = restoredFiles
+        summary.rollbackPath = movedOldRoot ? restoreBackupPath : null
+        try { fs.unlinkSync(tmpZipPath) } catch (_) {}
+        return { success: true, summary }
+      } catch (error) {
+        try { if (fs.existsSync(appRootDir)) fs.rmSync(appRootDir, { recursive: true, force: true }) } catch (_) {}
+        if (movedOldRoot) {
+          try { fs.renameSync(restoreBackupPath, appRootDir) } catch (_) {}
+        }
+        throw error
       }
     }
 
@@ -5351,7 +5372,7 @@ registerChannel('ai-backup-restore', async (event, { filePath, options }) => {
 
     // 4. 对话历史
     if (options.conversations !== false) {
-      const convsDir = path.join(gitManagerDir, 'conversations')
+      const convsDir = path.join(appRootDir, 'conversations')
       extractDir('conversations', convsDir)
       for (const entry of zip.getEntries()) {
         if (entry.entryName.startsWith('conversations/') && entry.entryName.endsWith('.json') && !entry.entryName.endsWith('index.json')) {
@@ -5362,13 +5383,14 @@ registerChannel('ai-backup-restore', async (event, { filePath, options }) => {
 
     // 5. 记忆
     if (options.memory !== false) {
-      const memDir = path.join(gitManagerDir, 'memory')
+      const memDir = path.join(appRootDir, 'memory')
       extractDir('memory', memDir)
       const memMd = zip.getEntry('MEMORY.md')
-      if (memMd) fs.writeFileSync(path.join(gitManagerDir, 'MEMORY.md'), memMd.getData())
+      if (memMd) fs.writeFileSync(path.join(appRootDir, 'MEMORY.md'), memMd.getData())
       summary.memoriesRestored = true
     }
 
+    try { fs.unlinkSync(tmpZipPath) } catch (_) {}
     return { success: true, summary }
   } catch (error) {
     return { success: false, message: error.message }
