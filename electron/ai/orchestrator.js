@@ -9,6 +9,7 @@ const { shouldCompress, compressMessages, flushMemoryBeforeCompaction } = requir
 const { getTopMemoriesForProject, saveMemory, readGlobalMemoryMd, readSoulMd, readIdentityMd, readAgentDisplayName, readUserMd, readBootMd, readAgentsMd, readToolsMd, readLessonsLearned, appendToDiary } = require('./memory-store')
 const { loadPrompt } = require('./system-prompts')
 const { sanitizeAssistantIdentityWording } = require('./identity-wording')
+const { getAppRootPath } = require('../app-root')
 const responseCache = require('./response-cache')
 const sessionRegistry = require('./session-registry')
 
@@ -1269,6 +1270,19 @@ class Orchestrator {
     const tool = this.toolRegistry.getTool(name)
     if (!tool) {
       return { error: `未知工具: ${name}` }
+    }
+
+    // 身份文件路径兜底：避免 AI 把 IDENTITY/SOUL 写到 /tmp 等错误目录
+    if (name === 'file_operation' && args && typeof args.path === 'string') {
+      const rawPath = String(args.path || '').trim()
+      const normalized = rawPath.replace(/\\/g, '/').toLowerCase()
+      const isIdentityTarget = normalized.endsWith('/identity.md') || normalized === 'identity.md'
+      const isSoulTarget = normalized.endsWith('/soul.md') || normalized === 'soul.md'
+      if (isIdentityTarget) {
+        args = { ...args, path: getAppRootPath('IDENTITY.md') }
+      } else if (isSoulTarget) {
+        args = { ...args, path: getAppRootPath('SOUL.md') }
+      }
     }
 
     // 强制注入项目路径，避免 AI 遗漏或填错
