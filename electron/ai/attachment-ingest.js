@@ -2,6 +2,7 @@ const fs = require('fs')
 const path = require('path')
 const crypto = require('crypto')
 const { getWorkspacePath } = require('../app-root')
+const { runImageOcr } = require('./image-ocr')
 
 const MAX_SINGLE_FILE_BYTES = 20 * 1024 * 1024
 const MAX_ROUND_TOTAL_BYTES = 100 * 1024 * 1024
@@ -57,6 +58,13 @@ function extractText(buffer) {
     text = text.slice(0, MAX_TEXT_CHARS_PER_FILE) + '\n...(truncated)'
   }
   return text
+}
+
+function trimOcrText(s) {
+  const text = String(s || '').trim()
+  if (!text) return ''
+  if (text.length <= MAX_TEXT_CHARS_PER_FILE) return text
+  return text.slice(0, MAX_TEXT_CHARS_PER_FILE) + '\n...(truncated)'
 }
 
 function buildRoundDir(sessionId) {
@@ -167,8 +175,14 @@ async function ingestRoundAttachments({
     if (kind === 'text') {
       item.extractedText = extractText(buffer)
     } else if (kind === 'image') {
-      item.status = 'degraded'
-      item.visionText = ''
+      const ocr = await runImageOcr(dataPath)
+      if (ocr.ok && ocr.text) {
+        item.visionText = trimOcrText(ocr.text)
+        item.status = 'ok'
+      } else {
+        item.status = 'degraded'
+        item.visionText = ''
+      }
     }
 
     saveMeta(fileDir, {
@@ -201,4 +215,3 @@ module.exports = {
   ingestRoundAttachments,
   buildAttachmentContext
 }
-

@@ -503,6 +503,7 @@ const buildSystemPrompt = () => {
     '## 当前应用\n' +
     '你正在运行的应用是 **OpenUltron**（本应用）。' +
     '当用户要求修改或配置本机其他项目、某仓库或用户提到的任意名称时，你应当直接操作：用 execute_command 查找路径，用 file_operation 读取与修改配置文件；不要推脱或仅请用户提供路径。具体是什么项目、配置文件名与目录结构由你通过检索或用户表述自行判断。\n' +
+    '当执行中遇到「命令不存在」「依赖缺失」（如 tesseract、ffmpeg、python 包等）时：不要只给安装建议。应先用 user_confirmation 简短征求用户同意（说明将安装什么），同意后立即用 execute_command 执行安装并继续原任务；若用户拒绝，再给降级方案。\n' +
     '**名字与身份**：当用户说「改名字」「改身份」「修改角色」等且未指明外部项目时，指本应用（OpenUltron）的 IDENTITY.md、SOUL.md。两文件在**应用根目录**（与 prompts 同级），如 ~/.openultron/IDENTITY.md、~/.openultron/SOUL.md；文件名为**大写** IDENTITY.md、SOUL.md，勿写入 prompts/ 或 identity.md（小写）。可引导用户点「编辑我的名字与角色」打开，或用 file_operation 写上述路径；勿误解为改 OpenClaw 等。'
   )
   const todayStr = currentDateLabel()

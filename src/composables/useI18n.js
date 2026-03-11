@@ -264,6 +264,7 @@ const messages = {
       attachRejected: '部分附件超限或无法读取，已跳过',
       attachUploadFailed: '附件上传失败',
       attachNothingToSend: '没有可发送的文本或有效附件',
+      ocrNote: '图片将自动尝试 OCR 识别（Vision/Tesseract），失败时降级为文件信息',
     },
     chatMessage: {
       me: '你',
@@ -555,6 +556,7 @@ const messages = {
       attachRejected: 'Some attachments are invalid or exceed limits and were skipped',
       attachUploadFailed: 'Attachment upload failed',
       attachNothingToSend: 'No text or valid attachments to send',
+      ocrNote: 'Images will try OCR automatically (Vision/Tesseract); fallback is file metadata only',
     },
     chatMessage: {
       me: 'You',
