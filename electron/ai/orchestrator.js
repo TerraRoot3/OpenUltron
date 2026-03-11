@@ -128,7 +128,7 @@ class Orchestrator {
         '[当前应用]\n' +
         '你正在运行并直接操作的应用是 **OpenUltron**（本应用）。\n' +
         '当用户要求修改或配置**本机其他项目**、某仓库或用户提到的任意名称时：自行决定用 execute_command 执行哪些命令定位，用 file_operation 读改配置；不得未执行就称找不到或向用户索要路径。可先调用 query_command_log 查看当前项目下已执行命令的成功/失败与已查看路径，再决定本次命令，实现自我进化。具体项目名称、常见路径与配置文件名由你自行检索或根据用户表述判断，提示词中不预设。\n' +
-        '当执行中遇到「命令不存在」「依赖缺失」（如 tesseract、ffmpeg、python 包等）时：不要只给安装建议。应先用 user_confirmation 简短征求用户同意（说明将安装什么），同意后立即用 execute_command 执行安装并继续原任务；若用户拒绝，再给降级方案。\n' +
+        '当执行中遇到「命令不存在」「依赖缺失」（如 tesseract、ffmpeg、python 包等）时：不要只给安装建议。应直接执行最小化安装步骤并继续任务；安装命令超时或失败时，自动换一种安装方式重试一次（无需向用户弹确认），仍失败再给降级方案。\n' +
         `默认工作空间：${getWorkspaceRoot()}。\n` +
         `当无真实项目路径时：脚本优先写入 ${path.join(getWorkspaceRoot(), 'scripts')}，新建项目优先放入 ${path.join(getWorkspaceRoot(), 'projects')}，避免散落在其他目录。\n` +
         '**回复风格**：不要写「我来帮你…」「让我执行…」等固定话术；不要输出「可能的原因和建议」「请提供以下任一信息」等模板式列表。直接执行、根据结果继续或简短说明已尝试与下一步。未明确要求修改外部项目时，默认在 OpenUltron 内完成。'
@@ -1398,7 +1398,15 @@ class Orchestrator {
       args = { ...args, chat_id: session.feishuChatId }
     }
 
-    return await tool.execute(args, { sender, sessionId, projectPath, toolCallId })
+    return await tool.execute(args, {
+      sender,
+      sessionId,
+      projectPath,
+      toolCallId,
+      channel: session?.feishuChatId ? 'feishu' : 'main',
+      remoteId: session?.feishuChatId || '',
+      feishuChatId: session?.feishuChatId || ''
+    })
   }
 }
 

@@ -10,6 +10,7 @@ const feishuWsReceive = require('../../ai/feishu-ws-receive')
 const feishuSessionState = require('../../ai/feishu-session-state')
 const conversationFile = require('../../ai/conversation-file')
 const feishuNotify = require('../../ai/feishu-notify')
+const confirmationManager = require('../../ai/confirmation-manager')
 const memoryStore = require('../../ai/memory-store')
 const { ingestRoundAttachments } = require('../../ai/attachment-ingest')
 const { createInboundMessage, createSessionBinding } = require('../../core/message-model')
@@ -27,6 +28,16 @@ function compactError(err) {
   if (!err) return 'unknown'
   if (err instanceof Error) return compactText(err.message || String(err))
   return compactText(String(err))
+}
+
+function parseConfirmDecision(text) {
+  const t = compactText(text).toLowerCase()
+  if (!t) return null
+  const yes = ['确认', '同意', '继续', 'ok', 'yes', 'y']
+  const no = ['取消', '拒绝', '不同意', 'no', 'n', 'stop']
+  if (yes.some(k => t === k || t.includes(k))) return true
+  if (no.some(k => t === k || t.includes(k))) return false
+  return null
 }
 
 function buildInboundDisplayText(text, attachments = []) {
@@ -154,6 +165,24 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
         const arr = [...feishuRepliedMessageIds]
         arr.slice(0, FEISHU_DEDUP_MAX / 2).forEach(id => feishuRepliedMessageIds.delete(id))
       }
+    }
+
+    // 若当前会话在等待 user_confirmation，则优先消费这条消息作为确认回复
+    const pendingConfirm = confirmationManager.findPendingByChannelRemote('feishu', chatId)
+    if (pendingConfirm) {
+      const decision = parseConfirmDecision(text)
+      if (decision === null) {
+        await feishuNotify.sendMessage({ chat_id: chatId, text: '当前有待确认操作，请回复「确认」或「取消」。' }).catch(() => {})
+        return
+      }
+      confirmationManager.resolveById(pendingConfirm.confirmId, {
+        confirmed: decision,
+        user_input: text || '',
+        push_after_commit: false,
+        message: decision ? '飞书用户已确认' : '飞书用户已拒绝'
+      })
+      await feishuNotify.sendMessage({ chat_id: chatId, text: decision ? '已确认，继续执行。' : '已取消，本次操作已停止。' }).catch(() => {})
+      return
     }
 
     if (getChannelConfig) {

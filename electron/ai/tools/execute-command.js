@@ -21,6 +21,7 @@ const MIN_TIMEOUT_MS = 1000
 const MAX_TIMEOUT_MS = 1800000
 const MAX_STREAM_PREVIEW_LEN = 4000
 const STREAM_PUSH_INTERVAL_MS = 700
+const INSTALL_TIMEOUT_MS = 1800000
 
 function clampTimeout(timeout) {
   const n = Number(timeout)
@@ -34,12 +35,56 @@ function clipText(text, maxLen = MAX_STREAM_PREVIEW_LEN) {
   return v.slice(v.length - maxLen)
 }
 
+function isInstallLikeCommand(command = '') {
+  const c = String(command || '').trim().toLowerCase()
+  return (
+    /^brew\s+install\b/.test(c) ||
+    /^apt(-get)?\s+install\b/.test(c) ||
+    /^yum\s+install\b/.test(c) ||
+    /^dnf\s+install\b/.test(c) ||
+    /^pip(3)?\s+install\b/.test(c) ||
+    /^npm\s+install\b/.test(c) ||
+    /^pnpm\s+(add|install)\b/.test(c) ||
+    /^yarn\s+add\b/.test(c)
+  )
+}
+
+function isRetryableInstallFailure(result = {}) {
+  if (!result || result.success) return false
+  if (result.timedOut) return true
+  const text = `${result.stderr || ''}\n${result.stdout || ''}`.toLowerCase()
+  return (
+    text.includes('timed out') ||
+    text.includes('timeout') ||
+    text.includes('temporary failure') ||
+    text.includes('could not resolve') ||
+    text.includes('connection reset') ||
+    text.includes('network') ||
+    text.includes('bottle missing') ||
+    text.includes('failed to fetch')
+  )
+}
+
+function buildInstallRetryCommand(command = '') {
+  const c = String(command || '').trim()
+  const low = c.toLowerCase()
+  if (/^brew\s+install\b/.test(low)) {
+    // Homebrew 网络慢场景：关闭自动更新 + 关闭 API 拉取，直接用 formula 传统路径重试
+    if (low.includes('homebrew_no_auto_update') || low.includes('homebrew_no_install_from_api')) return c
+    return `HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_FROM_API=1 ${c}`
+  }
+  return c
+}
+
 async function execute(args, context = {}) {
   const { command, cwd, timeout = DEFAULT_TIMEOUT_MS, runtime = 'shell' } = args
   const projectPath = context.projectPath || ''
   const sessionId = context.sessionId || ''
   const toolCallId = context.toolCallId || ''
-  const effectiveTimeout = clampTimeout(timeout)
+  const hasExplicitTimeout = Object.prototype.hasOwnProperty.call(args || {}, 'timeout')
+  const effectiveTimeout = hasExplicitTimeout
+    ? clampTimeout(timeout)
+    : (isInstallLikeCommand(command) ? INSTALL_TIMEOUT_MS : DEFAULT_TIMEOUT_MS)
 
   if (!command || !cwd) {
     return { success: false, error: '缺少 command 或 cwd 参数' }
@@ -96,10 +141,10 @@ async function execute(args, context = {}) {
     } catch (_) { /* ignore */ }
   }
 
-  const result = await executor.execute({
-    script: command,
+  const runOnce = async (script, timeoutMs) => executor.execute({
+    script,
     cwd,
-    timeout: effectiveTimeout,
+    timeout: timeoutMs,
     onStdout: (chunk) => {
       stdoutStream += String(chunk || '')
       emitProgress(false)
@@ -109,6 +154,24 @@ async function execute(args, context = {}) {
       emitProgress(false)
     }
   }, context)
+
+  let result = await runOnce(command, effectiveTimeout)
+  let retried = false
+  let retriedCommand = ''
+  if (runtime === 'shell' && isInstallLikeCommand(command) && isRetryableInstallFailure(result)) {
+    retriedCommand = buildInstallRetryCommand(command)
+    if (retriedCommand && retriedCommand !== command) {
+      retried = true
+      stderrStream += `\n[auto-retry] 检测到安装命令失败，改用兜底参数重试一次...\n`
+      emitProgress(true)
+      const second = await runOnce(retriedCommand, INSTALL_TIMEOUT_MS)
+      result = {
+        ...second,
+        stdout: `${result.stdout || ''}\n\n[auto-retry command]\n${retriedCommand}\n\n${second.stdout || ''}`.trim(),
+        stderr: `${result.stderr || ''}\n\n[auto-retry command]\n${retriedCommand}\n\n${second.stderr || ''}`.trim()
+      }
+    }
+  }
   finalSent = true
   try {
     commandExecutionLog.append(projectPath, sessionId, {
@@ -125,7 +188,9 @@ async function execute(args, context = {}) {
     ...result,
     command,
     cwd,
-    timeout: effectiveTimeout
+    timeout: effectiveTimeout,
+    retried,
+    retriedCommand
   }
 }
 

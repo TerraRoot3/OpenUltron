@@ -1,6 +1,7 @@
 const fs = require('fs')
 const path = require('path')
 const crypto = require('crypto')
+const { execFileSync } = require('child_process')
 const { getWorkspacePath } = require('../app-root')
 const { runImageOcr } = require('./image-ocr')
 
@@ -67,6 +68,30 @@ function trimOcrText(s) {
   return text.slice(0, MAX_TEXT_CHARS_PER_FILE) + '\n...(truncated)'
 }
 
+function extractPdfTextBestEffort(filePath) {
+  try {
+    // macOS / Linux 通常自带 strings；无需额外安装依赖
+    const out = execFileSync('strings', ['-n', '4', filePath], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 8000,
+      maxBuffer: 4 * 1024 * 1024
+    }) || ''
+    const lines = String(out)
+      .split('\n')
+      .map(s => s.trim())
+      .filter(Boolean)
+      .filter(s => /[\u4e00-\u9fa5A-Za-z0-9]/.test(s))
+      .slice(0, 220)
+    if (!lines.length) return ''
+    let text = lines.join('\n')
+    if (text.length > MAX_TEXT_CHARS_PER_FILE) text = text.slice(0, MAX_TEXT_CHARS_PER_FILE) + '\n...(truncated)'
+    return text
+  } catch {
+    return ''
+  }
+}
+
 function buildRoundDir(sessionId) {
   const root = getWorkspacePath('attachments')
   const sid = sanitizeSessionId(sessionId)
@@ -96,7 +121,7 @@ function buildAttachmentContext(accepted = []) {
     const prefix = `${idx}. [${item.kind}] ${item.name} (${item.mime || 'application/octet-stream'}, ${formatBytes(item.size)})`
     out.push(prefix)
     out.push(`   local_path: ${item.localPath}`)
-    if (item.kind === 'text' && item.extractedText) {
+    if (item.extractedText) {
       out.push('   content:')
       out.push('```text')
       out.push(item.extractedText)
@@ -191,6 +216,14 @@ async function ingestRoundAttachments({
           item.status = 'degraded'
           item.visionText = ''
         }
+      }
+    } else if (path.extname(name).toLowerCase() === '.pdf') {
+      const pdfText = extractPdfTextBestEffort(dataPath)
+      if (pdfText) {
+        item.extractedText = pdfText
+        item.status = 'ok'
+      } else {
+        item.status = 'degraded'
       }
     }
 
