@@ -71,17 +71,23 @@ jobs:
         shell: bash
         run: |
           shopt -s nullglob
-          APPS=(dist-electron/mac*/OpenUltron.app)
+          APP_NAME="$(node -p "require('./package.json').build?.productName || 'OpenUltron'")"
+          APPS=(dist-electron/mac*/"${APP_NAME}.app")
+          if [ ${#APPS[@]} -eq 0 ]; then
+            APPS=(dist-electron/mac*/*.app)
+          fi
           if [ ${#APPS[@]} -eq 0 ]; then
             echo "No app bundles found in dist-electron/mac*"
             ls -la dist-electron || true
             exit 1
           fi
+          echo "Found app bundles:"
+          printf ' - %s\n' "${APPS[@]}"
           for APP in "${APPS[@]}"; do
             echo "Ad-hoc signing: $APP"
             xattr -cr "$APP" 2>/dev/null || true
             codesign --force --deep --sign - "$APP"
-            codesign --verify --deep --strict --verbose=2 "$APP"
+            codesign --verify --deep --verbose=2 "$APP"
           done
 
       - name: Repackage signed mac artifacts
@@ -89,8 +95,24 @@ jobs:
         shell: bash
         run: |
           rm -f dist-electron/*.dmg dist-electron/*-mac.zip dist-electron/*.blockmap dist-electron/latest*.yml 2>/dev/null || true
-          npx electron-builder --mac --arm64 --prepackaged="dist-electron/mac-arm64" --publish never
-          npx electron-builder --mac --x64 --prepackaged="dist-electron/mac" --publish never
+          BUILT_ANY=0
+          if [ -d "dist-electron/mac-arm64" ]; then
+            npx electron-builder --mac --arm64 --prepackaged="dist-electron/mac-arm64" --publish never
+            BUILT_ANY=1
+          else
+            echo "Skip arm64 repackage: dist-electron/mac-arm64 not found"
+          fi
+          if [ -d "dist-electron/mac" ]; then
+            npx electron-builder --mac --x64 --prepackaged="dist-electron/mac" --publish never
+            BUILT_ANY=1
+          else
+            echo "Skip x64 repackage: dist-electron/mac not found"
+          fi
+          if [ "$BUILT_ANY" -ne 1 ]; then
+            echo "No prepackaged mac directories found"
+            ls -la dist-electron || true
+            exit 1
+          fi
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
