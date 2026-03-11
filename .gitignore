@@ -1,0 +1,47 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+dist-electron/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# IDE / editor
+.vscode/
+.idea/
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# Test / coverage
+coverage/
+.nyc_output/
+
+# Cache
+.cache/
+.tmp/
+temp/
+
+# Generated declarations
+auto-imports.d.ts
+components.d.ts
+
+# Runtime artifacts
+*.pid
+*.pid.lock
+*.seed
+
+# Local app/runtime folders (if created in repo root)
+.openultron/

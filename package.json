@@ -1,0 +1,122 @@
+{
+  "name": "openultron",
+  "private": true,
+  "version": "1.0.0",
+  "description": "OpenUltron - AI-first desktop app, enhanced OpenClaw with memory import",
+  "author": "OpenUltron",
+  "main": "electron/main.js",
+  "homepage": "./",
+  "scripts": {
+    "dev": "vite",
+    "predev": "bash scripts/kill-dev-ports.sh",
+    "build": "vite build",
+    "preview": "vite preview",
+    "electron": "bash scripts/start-electron.sh",
+    "electron:dev": "/bin/bash scripts/start-dev.sh",
+    "electron:build": "npm run build && electron-builder",
+    "electron:build:mac": "npm run build && electron-builder --mac",
+    "electron:build:win": "npm run build && electron-builder --win",
+    "electron:build:linux": "npm run build && electron-builder --linux",
+    "dist": "npm run build && electron-builder --publish=never",
+    "release": "bash scripts/build-release.sh",
+    "release:x64": "bash scripts/build-release-x64.sh",
+    "release:all": "bash scripts/build-release-all.sh",
+    "electron:clean-cache": "bash scripts/clear-electron-cache.sh",
+    "generate-icon": "node scripts/generate-icon.js",
+    "convert-icon": "bash scripts/convert-icon.sh",
+    "convert-logo": "node scripts/convert-logo-node.js"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.59.0",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-web-links": "^0.11.0",
+    "@xterm/addon-webgl": "^0.19.0",
+    "@xterm/xterm": "^5.5.0",
+    "adm-zip": "^0.5.16",
+    "axios": "^1.6.0",
+    "electron-store": "^11.0.0",
+    "express": "^4.18.2",
+    "lucide-vue-next": "^0.294.0",
+    "monaco-editor": "^0.55.1",
+    "node-fetch": "^3.3.2",
+    "node-pty": "^1.1.0-beta42",
+    "vue": "^3.4.0",
+    "vue-router": "^4.2.5",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@electron/get": "^4.0.2",
+    "@electron/rebuild": "^4.0.2",
+    "@vitejs/plugin-vue": "^4.5.0",
+    "concurrently": "^9.2.1",
+    "electron": "^38.7.2",
+    "electron-builder": "^26.0.12",
+    "lodash": "^4.17.21",
+    "unplugin-auto-import": "^0.16.7",
+    "unplugin-vue-components": "^0.25.2",
+    "vite": "^5.0.0",
+    "vite-plugin-monaco-editor": "^1.1.0",
+    "wait-on": "^9.0.1"
+  },
+  "build": {
+    "appId": "com.openultron.app",
+    "productName": "OpenUltron",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/node-pty/**/*"
+    ],
+    "npmRebuild": true,
+    "nodeGypRebuild": false,
+    "buildDependenciesFromSource": false,
+    "mac": {
+      "icon": "icons/icon-1024x1024.png",
+      "category": "public.app-category.developer-tools",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "dmg": {
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "win": {
+      "target": [
+        "zip",
+        "nsis"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

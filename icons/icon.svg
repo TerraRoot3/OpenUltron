@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- 主背景渐变 -->
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1a2e"/>
+      <stop offset="50%" style="stop-color:#16213e"/>
+      <stop offset="100%" style="stop-color:#0f3460"/>
+    </linearGradient>
+    
+    <!-- 主节点渐变 (青色) -->
+    <linearGradient id="nodeGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00d9ff"/>
+      <stop offset="100%" style="stop-color:#00ff88"/>
+    </linearGradient>
+    
+    <!-- 分支节点渐变 (橙色) -->
+    <linearGradient id="branchGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#ff6b6b"/>
+      <stop offset="100%" style="stop-color:#ffa502"/>
+    </linearGradient>
+    
+    <!-- 合并节点渐变 (紫色) -->
+    <linearGradient id="mergeGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#a55eea"/>
+      <stop offset="100%" style="stop-color:#5f27cd"/>
+    </linearGradient>
+    
+    <!-- 发光效果 -->
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="8" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- macOS 图标需要 10% 边距 -->
+  <!-- 圆角背景 -->
+  <rect x="102.4" y="102.4" width="819.2" height="819.2" rx="180" ry="180" fill="url(#bgGradient)"/>
+  
+  <!-- Git 分支图 -->
+  <g>
+    <!-- 先画线（在节点下面） -->
+    
+    <!-- 主干线：整条垂直线 -->
+    <rect x="500" y="280" width="24" height="460" rx="12" fill="#00d9ff" filter="url(#glow)"/>
+    
+    <!-- 分支线：水平向右 -->
+    <rect x="512" y="408" width="168" height="24" rx="12" fill="#ff6b6b" filter="url(#glow)"/>
+    
+    <!-- 合并线：水平向左 -->
+    <rect x="344" y="588" width="168" height="24" rx="12" fill="#a55eea" filter="url(#glow)"/>
+    
+    <!-- 再画节点（覆盖在线上面） -->
+    
+    <!-- 顶部节点 -->
+    <circle cx="512" cy="280" r="48" fill="url(#nodeGradient)" filter="url(#glow)"/>
+    <circle cx="512" cy="280" r="24" fill="white"/>
+    
+    <!-- 分支点节点 -->
+    <circle cx="512" cy="420" r="42" fill="url(#nodeGradient)" filter="url(#glow)"/>
+    <circle cx="512" cy="420" r="20" fill="white"/>
+    
+    <!-- 右侧分支节点 -->
+    <circle cx="680" cy="420" r="44" fill="url(#branchGradient)" filter="url(#glow)"/>
+    <circle cx="680" cy="420" r="22" fill="white"/>
+    
+    <!-- 合并点节点 -->
+    <circle cx="512" cy="600" r="42" fill="url(#nodeGradient)" filter="url(#glow)"/>
+    <circle cx="512" cy="600" r="20" fill="white"/>
+    
+    <!-- 左侧合并节点 -->
+    <circle cx="344" cy="600" r="44" fill="url(#mergeGradient)" filter="url(#glow)"/>
+    <circle cx="344" cy="600" r="22" fill="white"/>
+    
+    <!-- 底部节点 -->
+    <circle cx="512" cy="740" r="48" fill="url(#nodeGradient)" filter="url(#glow)"/>
+    <circle cx="512" cy="740" r="24" fill="white"/>
+  </g>
+  
+</svg>
