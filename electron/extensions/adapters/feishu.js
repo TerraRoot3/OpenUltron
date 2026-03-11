@@ -150,10 +150,16 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
     const chatId = inbound && inbound.chatId
     const text = (inbound && inbound.text) || ''
     const messageId = inbound && inbound.messageId
+    const chatType = String((inbound && inbound.chatType) || '').toLowerCase()
+    const requireMention = !!(inbound && inbound.requireMention)
+    const mentioned = !!(inbound && inbound.mentioned)
     const inboundAttachments = Array.isArray(inbound && inbound.attachments) ? inbound.attachments : []
     appLogger?.info?.('[Feishu] 入站消息', {
       chatId: chatId || '',
       messageId: messageId || '',
+      chatType,
+      requireMention,
+      mentioned,
       textLen: String(text || '').length,
       inboundAttachmentCount: inboundAttachments.length
     })
@@ -188,6 +194,16 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
     if (getChannelConfig) {
       const config = getChannelConfig('feishu')
       if (config && !isAllowed(config.allowFrom, chatId)) return
+    }
+
+    // 群聊必须 @ 机器人才处理，避免群内噪音触发
+    if (requireMention && !mentioned) {
+      appLogger?.info?.('[Feishu] 跳过未@机器人群消息', {
+        chatId: chatId || '',
+        messageId: messageId || '',
+        chatType
+      })
+      return
     }
 
     if (HISTORY_CMD_RE.test(text || '')) {

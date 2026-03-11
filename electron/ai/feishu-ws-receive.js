@@ -55,6 +55,24 @@ function collectContentSignals(node, out) {
   for (const v of Object.values(node)) collectContentSignals(v, out)
 }
 
+function hasAtMention(msg, contentObj, rawContentStr) {
+  // 1) 飞书事件标准字段
+  if (Array.isArray(msg?.mentions) && msg.mentions.length > 0) return true
+  // 2) content JSON 内 mentions / at 节点
+  if (contentObj && typeof contentObj === 'object') {
+    if (Array.isArray(contentObj.mentions) && contentObj.mentions.length > 0) return true
+    const s = JSON.stringify(contentObj)
+    if (/"tag"\s*:\s*"at"/.test(s) || /"mention"\s*:/.test(s)) return true
+  }
+  // 3) 富文本 / 文本中的 at 标签兜底
+  const raw = String(rawContentStr || '')
+  if (!raw) return false
+  if (/<at\b/i.test(raw)) return true
+  if (/"tag"\s*:\s*"at"/.test(raw)) return true
+  if (/"mentions"\s*:\s*\[/.test(raw)) return true
+  return false
+}
+
 /**
  * 解析飞书 im.message.receive_v1 事件，提取 chat_id、文本、message_id、附件键
  * 事件结构参考：data 可能为 { message: { message_id, chat_id, content, message_type } }
@@ -65,10 +83,13 @@ function parseMessageEvent(data) {
   const chatId = msg.chat_id || (msg.chat && msg.chat.chat_id) || msg.open_chat_id
   const messageId = msg.message_id || msg.open_message_id
   const messageType = String(msg.message_type || '').trim()
+  const chatType = String(msg.chat_type || (msg.chat && msg.chat.chat_type) || '').trim().toLowerCase()
   const rawContentStr = typeof msg.content === 'string'
     ? msg.content
     : (typeof (msg.body && msg.body.content) === 'string' ? msg.body.content : '')
   const contentObj = parseMaybeJson(msg.content) || parseMaybeJson(msg.body && msg.body.content) || {}
+  const mentioned = hasAtMention(msg, contentObj, rawContentStr)
+  const requireMention = chatType === 'group'
   const collected = { texts: new Set(), imageKeys: new Set(), fileKeys: new Map() }
   collectContentSignals(contentObj, collected)
 
@@ -133,7 +154,17 @@ function parseMessageEvent(data) {
     seen.add(key)
     uniq.push(a)
   }
-  return { chatId, messageId, text, messageType, attachments: uniq, _rawContent: rawContentStr }
+  return {
+    chatId,
+    messageId,
+    text,
+    messageType,
+    chatType,
+    requireMention,
+    mentioned,
+    attachments: uniq,
+    _rawContent: rawContentStr
+  }
 }
 
 /**
@@ -169,6 +200,9 @@ async function start(onMessage) {
     }
     console.log('[Feishu WS] 解析结果:', {
       messageType: parsed.messageType,
+      chatType: parsed.chatType,
+      requireMention: !!parsed.requireMention,
+      mentioned: !!parsed.mentioned,
       textLen: (parsed.text || '').length,
       attachments: (parsed.attachments || []).length,
       imageCount: (parsed.attachments || []).filter(a => a?.type === 'image').length,
