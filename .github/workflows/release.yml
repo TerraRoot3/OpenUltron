@@ -51,14 +51,15 @@ jobs:
       - name: Sync package version from tag
         shell: bash
         run: |
-          TAG="${GITHUB_REF_NAME}"
+          TAG="${GITHUB_REF_NAME:-}"
           VERSION="${TAG#v}"
-          if [[ -z "$VERSION" || "$VERSION" == "$TAG" ]]; then
-            echo "Invalid tag: $TAG (expected vX.Y.Z)"
+          if [ -z "$VERSION" ] || [ "$VERSION" = "$TAG" ]; then
+            echo "Invalid tag: $TAG"
             exit 1
           fi
           npm version "$VERSION" --no-git-tag-version
-          echo "Build version set to: $(node -p \"require('./package.json').version\")"
+          echo "Build version set to:"
+          node -p "require('./package.json').version"
 
       - name: Build renderer
         run: npm run build
