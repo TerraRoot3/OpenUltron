@@ -6955,6 +6955,17 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
           forcedSpawnText = String(forced.result || '').trim()
           forcedSpawnRuntime = String(forced.runtime || '')
           forcedSpawnLogs = Array.isArray(forced.commandLogs) ? forced.commandLogs.join('\n') : ''
+          if (!forcedSpawnText && Array.isArray(forced.messages)) {
+            const last = [...forced.messages].reverse().find((m) => m && m.role === 'assistant')
+            forcedSpawnText = String(getAssistantText(last) || '').trim()
+          }
+          if (!forcedSpawnText && Array.isArray(forced.commandLogs)) {
+            const line = [...forced.commandLogs]
+              .reverse()
+              .find((x) => x && !/^\[(meta|tool_call|token)\]/i.test(String(x).trim()))
+            if (line) forcedSpawnText = String(line).replace(/^\[[^\]]+\]\s*/, '').trim()
+          }
+          if (!forcedSpawnText) forcedSpawnText = '子 Agent 已执行完成。'
           sendFeishuToolResultEvent(forcedToolCallId, 'sessions_spawn', {
             running: false,
             partial: false,
