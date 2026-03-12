@@ -89,6 +89,37 @@ function toBool(v, fallback = false) {
   return fallback
 }
 
+async function waitForScreenshotReady(wc, timeoutMs = 30000) {
+  const start = Date.now()
+  const deadline = start + Math.max(800, Number(timeoutMs) || 30000)
+  let lastErr = ''
+  while (Date.now() < deadline) {
+    try {
+      const status = await wc.executeJavaScript(`
+        (async function () {
+          const body = document.body
+          const ready = document.readyState === 'complete' || document.readyState === 'interactive'
+          const textLen = (body && body.innerText ? body.innerText.trim().length : 0)
+          let fontsReady = true
+          try { if (document.fonts && document.fonts.ready) await Promise.race([document.fonts.ready, new Promise(r => setTimeout(r, 200))]) } catch (_) {}
+          try { fontsReady = !document.fonts || document.fonts.status === 'loaded' } catch (_) {}
+          const imgs = Array.from(document.images || [])
+          const allImagesDone = imgs.every((img) => img.complete)
+          const hasVisualRoot = !!(body && body.children && body.children.length > 0)
+          return { ready, textLen, fontsReady, allImagesDone, hasVisualRoot, state: document.readyState }
+        })()
+      `)
+      const ok = !!(status && status.ready && status.hasVisualRoot && (status.textLen > 0 || status.allImagesDone) && status.fontsReady)
+      if (ok) return
+      lastErr = `state=${status?.state || 'unknown'} textLen=${status?.textLen || 0}`
+    } catch (e) {
+      lastErr = e && e.message ? e.message : String(e)
+    }
+    await new Promise((r) => setTimeout(r, 180))
+  }
+  throw new Error(`页面渲染等待超时: ${lastErr || 'unknown'}`)
+}
+
 async function execute(args) {
   const {
     action, user_agent, url, cookie_url, cookie_name, cookie_value, cookie_domain, cookie_path, cookie_http_only, cookie_secure, cookie_expires,
@@ -154,6 +185,9 @@ async function execute(args) {
     const fmt = String(format || 'png').trim().toLowerCase() === 'jpeg' ? 'jpeg' : 'png'
     const q = Number.isFinite(Number(quality)) ? Math.max(1, Math.min(100, Number(quality))) : 80
     let restoreSize = null
+    // 先等待页面渲染完成，避免截到白板
+    await waitForScreenshotReady(wc, timeout)
+    await new Promise((r) => setTimeout(r, 220))
     if (wantFullPage) {
       try {
         const dim = await wc.executeJavaScript(`({
@@ -165,7 +199,7 @@ async function execute(args) {
         const cur = win.getContentBounds()
         restoreSize = { width: cur.width, height: cur.height }
         win.setContentSize(w, h)
-        await new Promise((r) => setTimeout(r, 120))
+        await new Promise((r) => setTimeout(r, 220))
       } catch (_) { /* ignore */ }
     }
     const img = await wc.capturePage()
