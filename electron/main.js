@@ -4686,8 +4686,8 @@ function stripToolExecutionFromMessages(messages) {
   const sessionSpawnCallIds = new Set()
   const out = []
   const toText = (content) => {
-    if (typeof content === 'string') return content.trim()
-    if (Array.isArray(content)) return content.map(x => (x && x.text) || '').join('').trim()
+    if (typeof content === 'string') return stripRawToolCallXml(content).trim()
+    if (Array.isArray(content)) return stripRawToolCallXml(content.map(x => (x && x.text) || '').join('')).trim()
     return ''
   }
   const parseSpawnResult = (content) => {
@@ -4696,7 +4696,7 @@ function stripToolExecutionFromMessages(messages) {
     try {
       const obj = JSON.parse(text)
       if (obj && typeof obj === 'object') {
-        if (obj.result != null && String(obj.result).trim()) return String(obj.result).trim()
+        if (obj.result != null && String(obj.result).trim()) return stripRawToolCallXml(String(obj.result)).trim()
         if (obj.error != null && String(obj.error).trim()) return `子 Agent 执行失败：${String(obj.error).trim()}`
       }
     } catch (_) {}
@@ -5289,13 +5289,24 @@ function parseScreenshotFromToolResult(result) {
   return out
 }
 
+function stripRawToolCallXml(text) {
+  if (!text || typeof text !== 'string') return text
+  let s = text
+  s = s.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
+  s = s.replace(/<function=[^>]+>[\s\S]*?<\/function>/gi, '')
+  s = s.replace(/<\/?tool_call>/gi, '')
+  s = s.replace(/<function=[^>]+>/gi, '')
+  s = s.replace(/<\/function>/gi, '')
+  s = s.replace(/<parameter=[^>]+>/gi, '')
+  s = s.replace(/<\/parameter>/gi, '')
+  s = s.replace(/\n{3,}/g, '\n\n')
+  return s.trim()
+}
+
 // 已通过飞书发出截图时，去掉回复里「需要配置 chat_id」「请提供会话 ID」「截图文件路径」等误导性文案
 function stripFeishuScreenshotMisfireText(text) {
   if (!text || typeof text !== 'string') return text
-  let s = text
-  // 过滤掉 AI 输出的 <tool_call>...</tool_call> 原始 XML 块，不应透传给用户
-  s = s.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '')
-  s = s.replace(/<function=\w+>[\s\S]*?<\/function>/g, '')
+  let s = stripRawToolCallXml(text)
   // 整段：从「由于飞书通知需要配置」到「我就可以把截图发给你了」整句
   s = s.replace(/由于飞书通知需要配置[^。]*chat_id[^。]*。[^\n]*请提供[^。]*。[^\n]*我就可以把截图发给你了[^。]*。?/g, '')
   s = s.replace(/由于飞书通知需要配置[^\n]+/g, '')
@@ -5312,16 +5323,16 @@ function stripFeishuScreenshotMisfireText(text) {
 function getAssistantText(message) {
   if (!message || message.role !== 'assistant') return ''
   const c = message.content
-  if (typeof c === 'string') return c
+  if (typeof c === 'string') return stripRawToolCallXml(c)
   if (Array.isArray(c)) {
-    return c
+    return stripRawToolCallXml(c
       .map((part) => {
         if (!part) return ''
         if (typeof part === 'string') return part
         if (typeof part.text === 'string') return part.text
         return ''
       })
-      .join('')
+      .join(''))
   }
   return ''
 }

@@ -149,7 +149,7 @@ onUnmounted(() => {
 
 const copyContent = async () => {
   try {
-    await navigator.clipboard.writeText(props.message.content || '')
+    await navigator.clipboard.writeText(normalizeToolCallXmlForDisplay(props.message.content || ''))
     copied.value = true
     setTimeout(() => { copied.value = false }, 1500)
   } catch { /* ignore */ }
@@ -181,8 +181,41 @@ function onBubbleLinkClick(e) {
 }
 
 // 从 content 中拆分出 <think>...</think> 思维链和正文
+function normalizeToolCallXmlForDisplay(rawText = '') {
+  const raw = String(rawText || '')
+  if (!raw) return ''
+  const summaries = []
+  const cleaned = raw.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, (block) => {
+    const fn = (block.match(/<function=([^>\s]+)>/i)?.[1] || '').trim()
+    const params = []
+    const re = /<parameter=([^>\s]+)>/gi
+    let m = null
+    while ((m = re.exec(block)) !== null) {
+      const key = String(m[1] || '').trim()
+      if (key) params.push(key)
+      if (params.length >= 3) break
+    }
+    if (fn) {
+      const suffix = params.length ? `（${params.join(' / ')}）` : ''
+      summaries.push(`已执行工具：${fn}${suffix}`)
+    }
+    return ''
+  })
+  const stripped = cleaned
+    .replace(/<\/?tool_call>/gi, '')
+    .replace(/<function=[^>]+>/gi, '')
+    .replace(/<\/function>/gi, '')
+    .replace(/<parameter=[^>]+>/gi, '')
+    .replace(/<\/parameter>/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+  if (!summaries.length) return stripped
+  const head = summaries.join('\n')
+  return stripped ? `${head}\n\n${stripped}` : head
+}
+
 const splitContent = computed(() => {
-  const raw = (props.message.content || '').trim()
+  const raw = normalizeToolCallXmlForDisplay((props.message.content || '').trim())
   // 支持多个 <think> 块，全部收集到 thinkContent，剩余为 mainContent
   let thinkParts = []
   let main = raw.replace(/<think>([\s\S]*?)<\/think>/gi, (_, inner) => {
