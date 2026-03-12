@@ -3504,6 +3504,41 @@ function buildExternalPrompt({ task, systemPrompt, roleName, projectPath }) {
   return blocks.join('\n\n')
 }
 
+function getCodexProxyPresetEnv() {
+  const http = process.env.http_proxy || process.env.HTTP_PROXY || 'http://127.0.0.1:7890'
+  const https = process.env.https_proxy || process.env.HTTPS_PROXY || http
+  const all = process.env.all_proxy || process.env.ALL_PROXY || 'socks5://127.0.0.1:7890'
+  return {
+    http_proxy: http,
+    https_proxy: https,
+    all_proxy: all,
+    HTTP_PROXY: http,
+    HTTPS_PROXY: https,
+    ALL_PROXY: all
+  }
+}
+
+function createEnvWithoutProxy(baseEnv = process.env) {
+  const env = { ...(baseEnv || process.env) }
+  delete env.http_proxy
+  delete env.https_proxy
+  delete env.all_proxy
+  delete env.HTTP_PROXY
+  delete env.HTTPS_PROXY
+  delete env.ALL_PROXY
+  return env
+}
+
+function getExternalEnvVariants(specId = '') {
+  if (specId === 'codex') {
+    return [
+      { mode: 'proxy-on', env: { ...process.env, ...getCodexProxyPresetEnv() } },
+      { mode: 'proxy-off', env: createEnvWithoutProxy(process.env) }
+    ]
+  }
+  return [{ mode: 'default', env: process.env }]
+}
+
 async function runByExternalSubAgent(spec, ctx, resolvedCommand = '', heartbeat = null) {
   const rawProjectPath = String(ctx.projectPath || '').trim()
   const cwd = (rawProjectPath && path.isAbsolute(rawProjectPath) && fs.existsSync(rawProjectPath))
@@ -3514,59 +3549,66 @@ async function runByExternalSubAgent(spec, ctx, resolvedCommand = '', heartbeat 
   const timeoutMs = 180000
   const attempts = []
   const builders = Array.isArray(spec.runArgBuilders) ? spec.runArgBuilders : []
+  const envVariants = getExternalEnvVariants(spec.id)
   for (let idx = 0; idx < builders.length; idx++) {
     const buildArgs = builders[idx]
     const args = buildArgs(prompt)
-    console.log('[SubAgentDispatch] 外部子Agent执行尝试', `external:${spec.id}`, `attempt=${idx + 1}/${builders.length}`, `cmd=${command}`, `cwd=${cwd}`, `timeoutMs=${timeoutMs}`)
-    console.log('[SubAgentDispatch] 外部子Agent提示工作目录', `external:${spec.id}`, cwd)
-    try {
-      appLogger?.info?.('[SubAgentDispatch] 外部子Agent执行尝试', {
-        runtime: `external:${spec.id}`,
-        attempt: idx + 1,
-        total: builders.length,
-        command,
+    for (let v = 0; v < envVariants.length; v++) {
+      const envVariant = envVariants[v]
+      console.log('[SubAgentDispatch] 外部子Agent执行尝试', `external:${spec.id}`, `attempt=${idx + 1}/${builders.length}`, `mode=${envVariant.mode}`, `cmd=${command}`, `cwd=${cwd}`, `timeoutMs=${timeoutMs}`)
+      console.log('[SubAgentDispatch] 外部子Agent提示工作目录', `external:${spec.id}`, cwd)
+      try {
+        appLogger?.info?.('[SubAgentDispatch] 外部子Agent执行尝试', {
+          runtime: `external:${spec.id}`,
+          attempt: idx + 1,
+          total: builders.length,
+          mode: envVariant.mode,
+          command,
+          cwd,
+          rawProjectPath,
+          argsPreview: args.map((x) => String(x)).slice(0, 4)
+        })
+      } catch (_) {}
+      const r = await runCliCommand(command, args, {
         cwd,
-        rawProjectPath,
-        argsPreview: args.map((x) => String(x)).slice(0, 4)
+        timeoutMs,
+        env: envVariant.env,
+        shouldAbort: (stderrChunk) => isExternalNetworkTimeoutChunk(stderrChunk),
+        onStdout: (chunk) => {
+          const line = normalizeExternalLogChunk(chunk)
+          if (!line) return
+          console.log(`[SubAgentExternal][${spec.id}][${envVariant.mode}][stdout] ${line}`)
+          try { appLogger?.info?.(`[SubAgentExternal][${spec.id}][${envVariant.mode}][stdout] ${line}`) } catch (_) {}
+        },
+        onStderr: (chunk) => {
+          const line = normalizeExternalLogChunk(chunk)
+          if (!line) return
+          console.warn(`[SubAgentExternal][${spec.id}][${envVariant.mode}][stderr] ${line}`)
+          try { appLogger?.warn?.(`[SubAgentExternal][${spec.id}][${envVariant.mode}][stderr] ${line}`) } catch (_) {}
+        }
       })
-    } catch (_) {}
-    const r = await runCliCommand(command, args, {
-      cwd,
-      timeoutMs,
-      shouldAbort: (stderrChunk) => isExternalNetworkTimeoutChunk(stderrChunk),
-      onStdout: (chunk) => {
-        const line = normalizeExternalLogChunk(chunk)
-        if (!line) return
-        console.log(`[SubAgentExternal][${spec.id}][stdout] ${line}`)
-        try { appLogger?.info?.(`[SubAgentExternal][${spec.id}][stdout] ${line}`) } catch (_) {}
-      },
-      onStderr: (chunk) => {
-        const line = normalizeExternalLogChunk(chunk)
-        if (!line) return
-        console.warn(`[SubAgentExternal][${spec.id}][stderr] ${line}`)
-        try { appLogger?.warn?.(`[SubAgentExternal][${spec.id}][stderr] ${line}`) } catch (_) {}
+      const output = String(r.stdout || r.stderr || '').trim()
+      const errout = String(r.stderr || '').trim()
+      if (!r.success) {
+        console.warn('[SubAgentDispatch] 外部子Agent单次尝试失败', `external:${spec.id}`, `mode=${envVariant.mode}`, `exit=${r.exitCode}`, `error=${r.error || ''}`, `stderr=${errout.slice(-300)}`)
       }
-    })
-    const output = String(r.stdout || r.stderr || '').trim()
-    const errout = String(r.stderr || '').trim()
-    if (!r.success) {
-      console.warn('[SubAgentDispatch] 外部子Agent单次尝试失败', `external:${spec.id}`, `exit=${r.exitCode}`, `error=${r.error || ''}`, `stderr=${errout.slice(-300)}`)
-    }
-    try { if (typeof heartbeat === 'function') heartbeat({ event: 'attempt_done', success: !!r.success, exitCode: r.exitCode, error: r.error || '' }) } catch (_) {}
-    attempts.push({
-      args,
-      success: !!r.success,
-      exitCode: r.exitCode,
-      error: r.error || '',
-      stderr: errout.slice(-300)
-    })
-    if (r.success && output) {
-      return {
-        success: true,
-        result: output,
-        runtime: `external:${spec.id}`,
-        messages: [{ role: 'assistant', content: output }],
-        attempts
+      try { if (typeof heartbeat === 'function') heartbeat({ event: 'attempt_done', success: !!r.success, exitCode: r.exitCode, error: r.error || '' }) } catch (_) {}
+      attempts.push({
+        args,
+        mode: envVariant.mode,
+        success: !!r.success,
+        exitCode: r.exitCode,
+        error: r.error || '',
+        stderr: errout.slice(-300)
+      })
+      if (r.success && output) {
+        return {
+          success: true,
+          result: output,
+          runtime: `external:${spec.id}`,
+          messages: [{ role: 'assistant', content: output }],
+          attempts
+        }
       }
     }
   }
@@ -3818,6 +3860,7 @@ async function runSubChat(opts) {
         const attemptSummary = Array.isArray(out.attempts)
           ? out.attempts.map((x, i) => ({
             i: i + 1,
+            mode: x.mode || '',
             success: !!x.success,
             exitCode: x.exitCode,
             error: x.error || '',
