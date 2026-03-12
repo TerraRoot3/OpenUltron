@@ -5656,7 +5656,7 @@ function isProgressQueryText(text) {
 function isScreenshotFollowupText(text) {
   const t = String(text || '').trim()
   if (!t) return false
-  if (/(截图|截个图|效果图|预览图|screen\s*shot)/i.test(t) && /(发|给|看|补|再来|重新|没收到|没有)/i.test(t)) return true
+  if (/(截图|截.{0,6}图|效果图|预览图|screen\s*shot)/i.test(t) && /(发|给|看|补|再来|重新|没收到|没有)/i.test(t)) return true
   if (/(截图没发|没发截图|没有截图|图没发|发下截图)/i.test(t)) return true
   return false
 }
