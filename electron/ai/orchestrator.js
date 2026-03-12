@@ -1545,9 +1545,24 @@ class Orchestrator {
       // 无真实项目路径时，默认将相对路径落到统一 workspace 根目录
       args = { ...args, path: path.join(defaultWorkspaceCwd, args.path) }
     }
-    // 飞书会话下调用 feishu_send_message 时，未传 chat_id 则使用当前会话的 chat_id（用户在本会话发消息，回复应回同一会话）
-    if (name === 'feishu_send_message' && session?.feishuChatId && !(args && args.chat_id && String(args.chat_id).trim())) {
-      args = { ...args, chat_id: session.feishuChatId }
+    // 飞书会话下调用 feishu_send_message 时，优先使用当前会话 chat_id。
+    // 子 Agent 偶发会把 session/run id 当作 chat_id，导致 invalid receive_id，这里统一兜底纠正。
+    if (name === 'feishu_send_message' && session?.feishuChatId) {
+      const sessionChatId = String(session.feishuChatId || '').trim()
+      const rawChatId = String((args && args.chat_id) || '').trim()
+      const looksLikeFeishuChatId = /^oc_[a-zA-Z0-9]+$/.test(rawChatId)
+      const looksLikeSessionToken = /^(feishu-|sub-|run-)/.test(rawChatId) || rawChatId.includes('-run-')
+      const shouldRewrite = !rawChatId || !looksLikeFeishuChatId || looksLikeSessionToken
+      if (shouldRewrite) {
+        if (rawChatId !== sessionChatId) {
+          console.log('[FeishuToolRoute] 修正 feishu_send_message chat_id', {
+            sessionId,
+            from: rawChatId || '(empty)',
+            to: sessionChatId
+          })
+        }
+        args = { ...(args || {}), chat_id: sessionChatId }
+      }
     }
 
     return await tool.execute(args, {
