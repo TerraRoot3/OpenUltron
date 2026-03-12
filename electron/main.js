@@ -4176,6 +4176,33 @@ function getToolsForChat() {
   const rest = all.filter(t => !(t.function?.name || '').startsWith(CHROME_DEVTOOLS_TOOL_PREFIX))
   return [...chromeDevtools, ...rest]
 }
+
+const COORDINATOR_TOOL_ALLOWLIST = new Set([
+  'sessions_spawn',
+  'sessions_send',
+  'stop_previous_task',
+  'wait_for_previous_run',
+  'verify_provider_model',
+  'list_providers_and_models',
+  'list_configured_models'
+])
+
+function getToolsForCoordinatorChat() {
+  return getToolsForChat().filter(t => COORDINATOR_TOOL_ALLOWLIST.has(t.function?.name || ''))
+}
+
+function getCoordinatorSystemPrompt(channel = '') {
+  const channelName = channel === 'feishu'
+    ? '飞书'
+    : (channel === 'telegram' ? 'Telegram' : (channel === 'dingtalk' ? '钉钉' : '当前渠道'))
+  return [
+    '[主 Agent 协调模式]',
+    `你是 ${channelName} 主 Agent，只负责：接收消息、派发子任务、管理状态、向用户汇报。`,
+    '除纯问候或进度询问外，用户的实际任务必须调用 sessions_spawn 交给子 Agent 执行。',
+    '主 Agent 不直接调用业务工具、不直接执行具体任务。',
+    '收到子 Agent 结果后，简洁向用户回复结论与必要说明。'
+  ].join('\n')
+}
 registerChannel('ai-get-tools', async () => {
   return { success: true, tools: getToolsForChat() }
 })
@@ -4922,11 +4949,87 @@ const channelKeyByRunSessionId = new Map() // runSessionId -> key（供 stop_pre
 const runStartTimeBySessionId = new Map() // runSessionId -> startTime
 const abortedRunSessionIds = new Set() // 被 stop_previous_task 停掉的 run，完成时不合并、不回发
 
+function isProgressQueryText(text) {
+  const t = String(text || '').trim()
+  if (!t) return false
+  if (/(任务|当前|这个|刚才|前一个|子agent|子 agent|主agent|主 agent).{0,8}(进度|进展|状态|怎么样|如何|完成了吗|到哪)/i.test(t)) return true
+  if (/(进度|进展|状态).{0,6}(怎么样|如何|如何了|到哪|完成了吗|更新一下)/i.test(t)) return true
+  if (/(progress|status|update|how(?:'| i)?s it going)/i.test(t)) return true
+  return false
+}
+
+function formatRunningDuration(startTime) {
+  const ms = Math.max(0, Date.now() - Number(startTime || 0))
+  const sec = Math.floor(ms / 1000)
+  if (sec < 60) return `${sec}秒`
+  const min = Math.floor(sec / 60)
+  const remSec = sec % 60
+  if (min < 60) return remSec > 0 ? `${min}分${remSec}秒` : `${min}分`
+  const hour = Math.floor(min / 60)
+  const remMin = min % 60
+  return remMin > 0 ? `${hour}小时${remMin}分` : `${hour}小时`
+}
+
+function statusTextForUser(status) {
+  if (status === 'running') return '执行中'
+  if (status === 'paused') return '已暂停'
+  if (status === 'idle') return '空闲'
+  if (status === 'error') return '异常'
+  if (status === 'completed') return '已完成'
+  return status || '未知'
+}
+
+function buildChannelProgressSummary(key) {
+  const runs = (channelCurrentRun.get(key) || []).slice().sort((a, b) => a.startTime - b.startTime)
+  if (runs.length === 0) return ''
+  const snapshot = sessionRegistry.getSnapshot()
+  const byId = new Map(snapshot.map(s => [s.sessionId, s]))
+  const lines = [`当前有 ${runs.length} 个任务在进行：`]
+  for (let i = 0; i < runs.length; i++) {
+    const r = runs[i]
+    const s = byId.get(r.runSessionId)
+    const status = statusTextForUser(s?.status || 'running')
+    const progressPct = Number(s?.progress?.progress || 0)
+    const phase = s?.progress?.phase ? String(s.progress.phase) : ''
+    const lastAction = s?.progress?.last_action ? String(s.progress.last_action) : ''
+    const eta = s?.progress?.eta ? String(s.progress.eta) : ''
+    const duration = formatRunningDuration(r.startTime)
+    let tail = ''
+    if (lastAction) {
+      tail = `，最近步骤：${lastAction}`
+    } else if (s?.lastToolCall?.name) {
+      tail = `，最近步骤：${s.lastToolCall.name}`
+    } else if (s?.lastContent) {
+      const shortContent = String(s.lastContent).replace(/\s+/g, ' ').trim().slice(0, 28)
+      if (shortContent) tail = `，最近输出：${shortContent}`
+    }
+    const phaseText = phase ? `，阶段：${phase}` : ''
+    const progressText = `，进度：${Math.max(0, Math.min(100, progressPct))}%`
+    const etaText = eta ? `，预计剩余：${eta}` : ''
+    lines.push(`${i + 1}. ${r.runSessionId}（${status}${phaseText}${progressText}，已运行 ${duration}${etaText}${tail}）`)
+  }
+  return lines.join('\n')
+}
+
 async function processMessageReplace(payload) {
   const { binding } = payload || {}
   if (!binding || (binding.channel !== 'feishu' && binding.channel !== 'telegram' && binding.channel !== 'dingtalk')) return
   const key = channelSessionKey(binding)
   const mainSessionId = binding.sessionId
+  const messageText = String(payload?.message?.text || '').trim()
+  const progressQuery = isProgressQueryText(messageText)
+  if (progressQuery) {
+    const summary = buildChannelProgressSummary(key)
+    if (summary) {
+      const projectPath = binding.channel === 'feishu'
+        ? FEISHU_PROJECT
+        : (binding.channel === 'telegram' ? TELEGRAM_PROJECT : DINGTALK_PROJECT)
+      const chatId = binding.remoteId
+      const outBinding = { ...binding, sessionId: mainSessionId, projectPath, remoteId: chatId, ...(binding.channel === 'feishu' && { feishuChatId: chatId }) }
+      eventBus.emit('chat.session.completed', { binding: outBinding, payload: { text: summary } })
+      return
+    }
+  }
   // 同一会话收到新消息时，默认中止之前仍在运行的子任务，避免并发串话/错答
   const existingRuns = channelCurrentRun.get(key) || []
   for (const r of existingRuns) {
@@ -4985,6 +5088,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
     })
   }
   const messages = (conv && conv.messages) ? [...conv.messages] : []
+  messages.push({ role: 'system', content: getCoordinatorSystemPrompt(binding.channel) })
   messages.push({ role: 'user', content: message.text })
   const originalConvLength = messages.length - 1
   const nowIso = new Date().toISOString()
@@ -5048,7 +5152,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
       sessionId: runSessionId,
       messages,
       model: undefined,
-      tools: getToolsForChat(),
+      tools: getToolsForCoordinatorChat(),
       projectPath
     }
     if (binding.channel === 'feishu') runChatPayload.feishuChatId = chatId

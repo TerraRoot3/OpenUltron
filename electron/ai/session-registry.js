@@ -67,6 +67,13 @@ class SessionRegistry extends EventEmitter {
       paused: false,
       pauseResolver: null,
       completedAt: null,
+      progress: {
+        phase: 'idle',
+        progress: 0,
+        last_action: '等待任务',
+        eta: null,
+        updated_at: new Date().toISOString(),
+      }
     })
     return { success: true }
   }
@@ -112,6 +119,13 @@ class SessionRegistry extends EventEmitter {
         paused: false,
         pauseResolver: null,
         completedAt: null,
+        progress: {
+          phase: 'executing',
+          progress: 1,
+          last_action: '任务启动',
+          eta: null,
+          updated_at: new Date().toISOString(),
+        }
       })
     } else {
       entry.status = 'running'
@@ -120,6 +134,12 @@ class SessionRegistry extends EventEmitter {
       entry.iteration = 0
       if (meta.model) entry.model = meta.model
       if (meta.apiBaseUrl) entry.apiBaseUrl = meta.apiBaseUrl
+      this._setProgress(entry, {
+        phase: 'executing',
+        progress: Math.max(1, Number(entry.progress?.progress || 0)),
+        last_action: '继续执行',
+        eta: null,
+      })
     }
   }
 
@@ -139,6 +159,12 @@ class SessionRegistry extends EventEmitter {
         if (e && (e.status === 'completed' || e.status === 'closed')) this.sessions.delete(sessionId)
       }, 60000)
     }
+    this._setProgress(entry, {
+      phase: 'completed',
+      progress: 100,
+      last_action: '任务完成',
+      eta: null
+    })
   }
 
   /** 标记错误 */
@@ -147,6 +173,12 @@ class SessionRegistry extends EventEmitter {
     if (!entry) return
     entry.status = entry.viewOpen ? 'idle' : 'error'
     entry.lastContent = `❌ ${error}`
+    this._setProgress(entry, {
+      phase: 'failed',
+      progress: Number(entry.progress?.progress || 0),
+      last_action: `失败: ${String(error || '').slice(0, 120)}`,
+      eta: null
+    })
   }
 
   /** 更新最新 token */
@@ -155,6 +187,13 @@ class SessionRegistry extends EventEmitter {
     if (!entry) return
     entry.lastActivity = new Date().toISOString()
     entry.lastContent = (entry.lastContent + token).slice(-200)
+    const p = Number(entry.progress?.progress || 0)
+    this._setProgress(entry, {
+      phase: 'thinking',
+      progress: Math.min(90, Math.max(p, p + 1)),
+      last_action: '生成回复中',
+      eta: null
+    })
   }
 
   /** 更新工具调用 */
@@ -165,6 +204,13 @@ class SessionRegistry extends EventEmitter {
     entry.lastToolCall = { name: toolCall.name, arguments: toolCall.arguments }
     entry.iteration = (entry.iteration || 0) + 1
     entry.totalIterations = (entry.totalIterations || 0) + 1
+    const p = Number(entry.progress?.progress || 0)
+    this._setProgress(entry, {
+      phase: 'tool_running',
+      progress: Math.min(95, Math.max(p, p + 5)),
+      last_action: toolCall?.name ? `调用工具: ${toolCall.name}` : '调用工具',
+      eta: null
+    })
   }
 
   /** 前端更新会话元信息（模型切换等） */
@@ -185,6 +231,12 @@ class SessionRegistry extends EventEmitter {
     if (!entry || entry.paused || entry.status !== 'running') return false
     entry.paused = true
     entry.status = 'paused'
+    this._setProgress(entry, {
+      phase: 'paused',
+      progress: Number(entry.progress?.progress || 0),
+      last_action: '任务已暂停',
+      eta: null
+    })
     entry.pausePromise = new Promise(resolve => { entry.pauseResolver = resolve })
     return true
   }
@@ -194,6 +246,12 @@ class SessionRegistry extends EventEmitter {
     if (!entry || !entry.paused) return false
     entry.paused = false
     entry.status = 'running'
+    this._setProgress(entry, {
+      phase: 'executing',
+      progress: Number(entry.progress?.progress || 0),
+      last_action: '恢复执行',
+      eta: null
+    })
     if (entry.pauseResolver) {
       entry.pauseResolver()
       entry.pauseResolver = null
@@ -265,6 +323,7 @@ class SessionRegistry extends EventEmitter {
         totalIterations: entry.totalIterations,
         paused: entry.paused,
         completedAt: entry.completedAt || null,
+        progress: entry.progress || null,
       })
     }
     // 按注册时间排序（稳定顺序，不按状态分组）
@@ -302,6 +361,24 @@ class SessionRegistry extends EventEmitter {
     if (!name) return 'AI 助手'
     if (/^(session[_-]|panel[_-]|heartbeat[_-]|view[_-])/.test(name)) return 'AI 助手'
     return name
+  }
+
+  _setProgress(entry, patch = {}) {
+    if (!entry) return
+    const base = entry.progress && typeof entry.progress === 'object'
+      ? entry.progress
+      : { phase: 'idle', progress: 0, last_action: '', eta: null, updated_at: null }
+    const next = {
+      phase: patch.phase != null ? patch.phase : base.phase,
+      progress: patch.progress != null ? patch.progress : base.progress,
+      last_action: patch.last_action != null ? patch.last_action : base.last_action,
+      eta: patch.eta != null ? patch.eta : base.eta,
+      updated_at: new Date().toISOString(),
+    }
+    next.progress = Number.isFinite(Number(next.progress))
+      ? Math.max(0, Math.min(100, Number(next.progress)))
+      : 0
+    entry.progress = next
   }
 
 }
