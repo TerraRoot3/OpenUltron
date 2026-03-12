@@ -6534,7 +6534,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
     const currentRound = getCurrentRoundMessages(finalMessages)
     const spawnResultText = extractLatestSessionsSpawnResult(currentRound)
     const screenshotsFromTools = extractScreenshotsFromMessages(currentRound)
-    const imageItems = []
+    let imageItems = []
     const seenPath = new Set()
     const seenBase64Head = new Set()
     for (const item of collectedScreenshots) {
@@ -6559,7 +6559,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
       }
     }
     const cleanedText = stripFeishuScreenshotMisfireText(cleanedRaw)
-    const fileItems = []
+    let fileItems = []
     for (const p of extractLocalFilesFromText(cleanedText)) {
       if (isImageFilePath(p)) {
         if (!seenPath.has(p)) { seenPath.add(p); imageItems.push({ path: p }) }
