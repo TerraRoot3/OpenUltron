@@ -81,6 +81,18 @@ function extractScreenshotPathsFromText(text) {
   if (!src) return []
   const out = []
   const seen = new Set()
+  const addPath = (p) => {
+    const full = String(p || '').trim()
+    if (!full.startsWith('/')) return
+    const ext = path.extname(full).toLowerCase()
+    if (!['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg'].includes(ext)) return
+    if (!fs.existsSync(full)) return
+    if (seen.has(full)) return
+    seen.add(full)
+    out.push(full)
+  }
+
+  // 1) markdown 截图链接：![xx](local-resource://screenshots/xxx.png)
   const re = /!\[[^\]]*\]\((local-resource:\/\/screenshots\/[^)]+)\)/g
   let m
   while ((m = re.exec(src)) !== null) {
@@ -88,10 +100,13 @@ function extractScreenshotPathsFromText(text) {
     const filename = u.replace(/^local-resource:\/\/screenshots\//i, '').replace(/^\/+/, '').trim()
     if (!filename) continue
     const full = getAppRootPath('screenshots', filename)
-    if (!fs.existsSync(full)) continue
-    if (seen.has(full)) continue
-    seen.add(full)
-    out.push(full)
+    addPath(full)
+  }
+
+  // 2) 绝对路径（支持反引号/普通文本）：/Users/.../xxx.png
+  const absPathRe = /(?:^|[\s`"'“”‘’*])((?:\/[^\/\s`"'“”‘’*]+)+\.(?:png|jpg|jpeg|gif|webp|bmp|svg))(?:$|[\s`"'“”‘’*])/gi
+  while ((m = absPathRe.exec(src)) !== null) {
+    addPath(m[1])
   }
   return out
 }
