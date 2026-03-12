@@ -6672,6 +6672,26 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
     aiGateway.runChat(runChatPayload, fakeSender).catch(reject)
   })
   try {
+    const sendFeishuToolCallEvent = (toolCall) => {
+      if (binding.channel !== 'feishu' || !mainWindow || !mainWindow.webContents || !toolCall) return
+      try {
+        mainWindow.webContents.send('ai-chat-tool-call', {
+          sessionId: mainSessionId,
+          toolCall
+        })
+      } catch (_) {}
+    }
+    const sendFeishuToolResultEvent = (toolCallId, name, resultObj) => {
+      if (binding.channel !== 'feishu' || !mainWindow || !mainWindow.webContents || !toolCallId) return
+      try {
+        mainWindow.webContents.send('ai-chat-tool-result', {
+          sessionId: mainSessionId,
+          toolCallId,
+          name: name || 'sessions_spawn',
+          result: typeof resultObj === 'string' ? resultObj : JSON.stringify(resultObj || {})
+        })
+      } catch (_) {}
+    }
     const finalMessages = await completePromise
     const wasAborted = abortedRunSessionIds.has(runSessionId)
     if (wasAborted) {
@@ -6785,19 +6805,52 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
           runSessionId,
           messagePreview: String(message?.text || '').slice(0, 120)
         })
+        const forcedToolCallId = `forced_spawn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+        sendFeishuToolCallEvent({
+          id: forcedToolCallId,
+          name: 'sessions_spawn',
+          arguments: JSON.stringify({
+            task: String(message?.text || '').trim(),
+            role_name: '执行助手',
+            runtime: 'auto'
+          })
+        })
+        sendFeishuToolResultEvent(forcedToolCallId, 'sessions_spawn', {
+          running: true,
+          partial: true,
+          stdout: '[meta] fallback sessions_spawn started',
+          log_lines: ['[meta] fallback sessions_spawn started']
+        })
         const forced = await runSubChat({
           task: String(message?.text || '').trim(),
           roleName: '执行助手',
           projectPath,
-          runtime: 'auto'
+          runtime: 'auto',
+          stream: {
+            sendToolResult: (obj) => sendFeishuToolResultEvent(forcedToolCallId, 'sessions_spawn', obj)
+          }
         })
         if (forced && forced.success) {
           forcedSpawnText = String(forced.result || '').trim()
           forcedSpawnRuntime = String(forced.runtime || '')
           forcedSpawnLogs = Array.isArray(forced.commandLogs) ? forced.commandLogs.join('\n') : ''
+          sendFeishuToolResultEvent(forcedToolCallId, 'sessions_spawn', {
+            running: false,
+            partial: false,
+            success: true,
+            stdout: forcedSpawnLogs,
+            result: forcedSpawnText
+          })
         } else {
           forcedSpawnText = `子 Agent 执行失败：${String((forced && forced.error) || '未知错误')}`
           forcedSpawnLogs = Array.isArray(forced?.commandLogs) ? forced.commandLogs.join('\n') : ''
+          sendFeishuToolResultEvent(forcedToolCallId, 'sessions_spawn', {
+            running: false,
+            partial: false,
+            success: false,
+            error: String((forced && forced.error) || '未知错误'),
+            stdout: forcedSpawnLogs
+          })
         }
       } catch (e) {
         forcedSpawnText = `子 Agent 执行失败：${e.message || String(e)}`
