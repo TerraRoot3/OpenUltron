@@ -3488,7 +3488,8 @@ async function runByExternalSubAgent(spec, ctx) {
 function resolveRuntimeChain(runtime, availableExternalIds) {
   const extIds = availableExternalIds || []
   const normalized = String(runtime || '').trim().toLowerCase()
-  if (!normalized || normalized === 'internal') return ['internal']
+  if (!normalized) return [...extIds, 'internal'] // 默认 auto
+  if (normalized === 'internal') return ['internal']
   if (normalized === 'external' || normalized === 'auto') return [...extIds, 'internal']
   if (normalized.startsWith('external:')) {
     const pick = normalized.slice('external:'.length).trim()

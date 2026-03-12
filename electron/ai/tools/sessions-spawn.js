@@ -11,7 +11,7 @@ const definition = {
       task: { type: 'string', description: '交给子 Agent 执行的任务描述（作为一条 user 消息）' },
       system_prompt: { type: 'string', description: '可选。注入子 Agent 的 system 提示，用于限定角色或步骤' },
       role_name: { type: 'string', description: '可选。子 Agent 的角色名/显示名，便于在对话中区分（如「代码审查员」「翻译助手」）' },
-      runtime: { type: 'string', description: '可选。子 Agent 运行时：internal（默认）/ auto（先尝试可用外部子 Agent，失败自动回退）/ external:<name>（如 external:codex）' },
+      runtime: { type: 'string', description: '可选。子 Agent 运行时：auto（默认，先尝试可用外部子 Agent，失败自动回退）/ internal（仅内置）/ external:<name>（如 external:codex）' },
       provider: { type: 'string', description: '可选。子 Agent 使用的供应商：供应商名称（如「OpenAI」「DeepSeek」）或 base_url；不传则使用当前默认供应商' },
       model: { type: 'string', description: '可选。子 Agent 使用的模型 ID。根据任务复杂度选择：简单任务选 tags 含 fast 的模型；需要深度推理/复杂代码调试选 reasoning 模型；长文本创作/复杂指令选 powerful 模型。优先选 in_pool:true 的模型（已在全局配置中验证可用）。不传则使用当前默认模型。' },
       project_path: { type: 'string', description: '可选。子 Agent 的项目路径上下文，默认与主会话一致' }
