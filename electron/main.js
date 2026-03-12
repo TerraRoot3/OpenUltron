@@ -3359,12 +3359,13 @@ const EXTERNAL_AGENT_SCAN_TTL = 60 * 1000
 let _externalAgentScanCache = { ts: 0, agents: [] }
 
 async function runCliCommand(command, args = [], options = {}) {
-  const { cwd, timeoutMs = 90000, env, onStdout, onStderr } = options
+  const { cwd, timeoutMs = 90000, env, onStdout, onStderr, shouldAbort } = options
   return await new Promise((resolve) => {
     let stdout = ''
     let stderr = ''
     let done = false
     let timedOut = false
+    let abortedByPattern = false
     const child = spawn(command, args, {
       cwd: cwd || getWorkspaceRoot(),
       shell: false,
@@ -3383,6 +3384,12 @@ async function runCliCommand(command, args = [], options = {}) {
       const text = String(chunk || '')
       stderr += text
       try { if (typeof onStderr === 'function') onStderr(text) } catch (_) {}
+      try {
+        if (!done && typeof shouldAbort === 'function' && shouldAbort(text, { stdout, stderr })) {
+          abortedByPattern = true
+          try { child.kill('SIGKILL') } catch (_) {}
+        }
+      } catch (_) {}
     })
     child.on('error', (err) => {
       if (done) return
@@ -3395,11 +3402,13 @@ async function runCliCommand(command, args = [], options = {}) {
       done = true
       clearTimeout(timer)
       resolve({
-        success: !timedOut && code === 0,
+        success: !timedOut && !abortedByPattern && code === 0,
         exitCode: timedOut ? -1 : (code ?? 0),
         stdout,
         stderr,
-        error: timedOut ? `命令执行超时 (${Math.floor(timeoutMs / 1000)}秒)` : '',
+        error: timedOut
+          ? `命令执行超时 (${Math.floor(timeoutMs / 1000)}秒)`
+          : (abortedByPattern ? '命中快速失败条件，已提前终止' : ''),
         timedOut
       })
     })
@@ -3410,6 +3419,16 @@ function normalizeExternalLogChunk(text, maxLen = 400) {
   const s = String(text || '').replace(/\r/g, '').replace(/\n+/g, ' ').trim()
   if (!s) return ''
   return s.length > maxLen ? `${s.slice(0, maxLen)}…` : s
+}
+
+function isExternalNetworkTimeoutChunk(text) {
+  const s = String(text || '').toLowerCase()
+  if (!s) return false
+  return s.includes('failed to connect to websocket') ||
+    s.includes('operation timed out') ||
+    s.includes('os error 60') ||
+    s.includes('error sending request for url') ||
+    s.includes('stream disconnected before completion')
 }
 
 async function scanExternalSubAgents(force = false) {
@@ -3496,6 +3515,7 @@ async function runByExternalSubAgent(spec, ctx, resolvedCommand = '', heartbeat 
     const r = await runCliCommand(command, args, {
       cwd,
       timeoutMs,
+      shouldAbort: (stderrChunk) => isExternalNetworkTimeoutChunk(stderrChunk),
       onStdout: (chunk) => {
         const line = normalizeExternalLogChunk(chunk)
         if (!line) return
