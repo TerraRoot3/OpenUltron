@@ -3826,7 +3826,7 @@ async function runSubChat(opts) {
   const userRuntime = String(runtime || '').trim()
   let effectiveRuntime = userRuntime
   if (!effectiveRuntime || effectiveRuntime.toLowerCase() === 'auto') {
-    const inferred = inferPreferredExternalRuntimeFromText([delegatedTask, systemPrompt, roleName].filter(Boolean).join('\n'))
+    const inferred = inferPreferredExternalRuntimeFromText([task, systemPrompt, roleName].filter(Boolean).join('\n'))
     effectiveRuntime = inferred || 'internal'
   }
   pushCommandLog(`[meta] effective_runtime=${effectiveRuntime || 'internal'}`)
