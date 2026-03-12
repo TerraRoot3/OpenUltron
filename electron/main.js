@@ -3424,6 +3424,9 @@ async function scanExternalSubAgents(force = false) {
   }
   _externalAgentScanCache = { ts: now, agents: list }
   try {
+    const summaryText = list
+      .map(x => `${x.id}:${x.available ? 'ok' : 'missing'}${x.version ? `@${x.version}` : ''}`)
+      .join(', ')
     appLogger?.info?.('[SubAgentScan] 外部子Agent扫描完成', {
       force: !!force,
       total: list.length,
@@ -3436,6 +3439,7 @@ async function scanExternalSubAgents(force = false) {
         reason: x.reason || ''
       }))
     })
+    appLogger?.info?.(`[SubAgentScan] 可用性摘要 ${summaryText}`)
   } catch (_) {}
   return list
 }
@@ -3571,6 +3575,7 @@ async function runSubChat(opts) {
       availableExternalIds,
       taskPreview: String(task || '').slice(0, 120)
     })
+    appLogger?.info?.(`[SubAgentDispatch] runtime=${runtime || 'internal'} chain=${runtimeChain.join('>')} available=${availableExternalIds.join(',') || 'none'}`)
   } catch (_) {}
 
   for (const rt of runtimeChain) {
@@ -5473,7 +5478,7 @@ function buildSingleRunProgressSummary(key, runSessionId) {
     taskText ? `任务：${taskText}` : '',
     lastAction ? `当前：${lastAction}` : ''
   ].filter(Boolean)
-  return parts.join('，')
+  return parts.map((p) => `- ${p}`).join('\n')
 }
 
 function createLongRunNotifier({ binding, mainSessionId, projectPath, chatId, key, runSessionId }) {
