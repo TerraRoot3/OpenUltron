@@ -3578,9 +3578,10 @@ async function runByExternalSubAgent(spec, ctx, resolvedCommand = '', heartbeat 
 function resolveRuntimeChain(runtime, availableExternalIds) {
   const extIds = availableExternalIds || []
   const normalized = String(runtime || '').trim().toLowerCase()
-  if (!normalized) return [...extIds, 'internal'] // 默认 auto
+  if (!normalized) return ['internal'] // 默认仅 internal；显式指定外部才外派
   if (normalized === 'internal') return ['internal']
-  if (normalized === 'external' || normalized === 'auto') return [...extIds, 'internal']
+  if (normalized === 'external') return [...extIds, 'internal']
+  if (normalized === 'auto') return ['internal']
   if (normalized.startsWith('external:')) {
     const pick = normalized.slice('external:'.length).trim()
     return [pick, 'internal']
@@ -3666,7 +3667,7 @@ async function runSubChat(opts) {
   let effectiveRuntime = userRuntime
   if (!effectiveRuntime || effectiveRuntime.toLowerCase() === 'auto') {
     const inferred = inferPreferredExternalRuntimeFromText([task, systemPrompt, roleName].filter(Boolean).join('\n'))
-    if (inferred) effectiveRuntime = inferred
+    effectiveRuntime = inferred || 'internal'
   }
   const scan = await scanExternalSubAgents(false)
   const availableExternal = scan.filter(a => a.available)
@@ -4697,7 +4698,7 @@ function getCoordinatorSystemPrompt(channel = '') {
     '[主 Agent 协调模式]',
     `你是 ${channelName} 主 Agent，只负责：接收消息、派发子任务、管理状态、向用户汇报。`,
     '除纯问候或进度询问外，用户的实际任务必须调用 sessions_spawn 交给子 Agent 执行。',
-    '优先使用 sessions_spawn(runtime="auto")，系统会先尝试可用外部子 Agent（codex/claude/openclaw/opencode），失败自动回退到其他可用子 Agent 与 internal。',
+    '默认使用 sessions_spawn(runtime="auto")，其默认走 internal。仅当用户明确指定外部子 Agent（如“用 codex”“用 claude”）时，才使用 external:<name>。',
     '若用户明确指定某子 Agent（如“用 codex”“用 claude”），必须把 runtime 设为 external:<name>（例如 external:codex）；若不可用再按系统回退链执行，并在回复里说明已回退。',
     '主 Agent 不直接调用业务工具、不直接执行具体任务。',
     '收到子 Agent 结果后，简洁向用户回复结论与必要说明。'
