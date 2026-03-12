@@ -16,6 +16,7 @@ const { getAppRoot, getAppRootPath, getWorkspaceRoot, getWorkspacePath, ensureWo
 const { ingestRoundAttachments } = require('./ai/attachment-ingest')
 const artifactRegistry = require('./ai/artifact-registry')
 const aiBrowserManager = require('./ai/browser-window-manager')
+const { resolveCapabilityRoute, detectRequestedExternalRuntime } = require('./ai/capability-router')
 const { getLogPath, readTail, getForAi, logger: appLogger, patchConsole } = require('./app-logger')
 const { filterSessionsList, isRunSessionId } = require('./ai/sessions-list-filter')
 
@@ -3675,13 +3676,7 @@ function resolveRuntimeChain(runtime, availableExternalIds) {
 }
 
 function inferPreferredExternalRuntimeFromText(text = '') {
-  const t = String(text || '').toLowerCase()
-  if (!t) return ''
-  if (/\bcodex\b|用codex|走codex|指定codex/.test(t)) return 'external:codex'
-  if (/\bclaude\b|用claude|走claude|指定claude/.test(t)) return 'external:claude'
-  if (/\bopenclaw\b|用openclaw|走openclaw|指定openclaw/.test(t)) return 'external:openclaw'
-  if (/\bopencode\b|用opencode|走opencode|指定opencode/.test(t)) return 'external:opencode'
-  return ''
+  return detectRequestedExternalRuntime(text)
 }
 
 function buildDelegatedTaskWithParentContext(task = '', { projectPath = '', parentSessionId = '' } = {}) {
@@ -3719,13 +3714,16 @@ function buildDelegatedTaskWithParentContext(task = '', { projectPath = '', pare
   }
 }
 
-async function runByInternalSubAgent({ task, systemPrompt, roleName, model, projectPath, provider, eventSink, feishuChatId }, subSessionId) {
+async function runByInternalSubAgent({ task, systemPrompt, roleName, model, projectPath, provider, eventSink, feishuChatId, capability }, subSessionId) {
   const messages = []
   const rolePrompt = roleName && String(roleName).trim()
     ? `你当前扮演的角色是「${String(roleName).trim()}」。请严格按该角色完成任务，并仅输出该角色应给出的结果。`
     : ''
+  const capabilityPrompt = capability === 'docs'
+    ? '本任务属于飞书文档写作/修改能力。你必须优先调用文档能力工具（feishu_doc_capability 或可用的 lark docx 工具）执行真实创建/修改；不要只返回纯文本草稿。完成后返回文档链接/ID与变更摘要。'
+    : ''
   const deliveryPrompt = buildSubAgentDeliveryPrompt(projectPath || '')
-  const mergedSystemPrompt = [rolePrompt, systemPrompt && String(systemPrompt).trim() ? String(systemPrompt).trim() : '', deliveryPrompt]
+  const mergedSystemPrompt = [rolePrompt, capabilityPrompt, systemPrompt && String(systemPrompt).trim() ? String(systemPrompt).trim() : '', deliveryPrompt]
     .filter(Boolean)
     .join('\n\n')
   if (mergedSystemPrompt) messages.push({ role: 'system', content: mergedSystemPrompt })
@@ -3781,10 +3779,14 @@ async function runByInternalSubAgent({ task, systemPrompt, roleName, model, proj
 async function runSubChat(opts) {
   const { task, systemPrompt, roleName, model, projectPath, provider, runtime, parentSessionId, feishuChatId, stream } = opts || {}
   const subSessionId = `sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  const delegatedTask = buildDelegatedTaskWithParentContext(task, {
+  const route = resolveCapabilityRoute({ text: String(task || ''), runtime: String(runtime || '') })
+  let delegatedTask = buildDelegatedTaskWithParentContext(task, {
     projectPath: projectPath || '__main_chat__',
     parentSessionId: parentSessionId || ''
   })
+  if (route.capability === 'docs') {
+    delegatedTask = `${delegatedTask}\n\n[能力约束]\n- 本任务为飞书文档写作/修改任务。\n- 必须优先调用文档能力工具（feishu_doc_capability 或可用 lark docx 工具）执行真实写入。\n- 最终返回文档链接/ID与变更摘要。`
+  }
   const commandLogLines = []
   const pushCommandLog = (line) => {
     const text = String(line || '').replace(/\r/g, '').trim()
@@ -3824,9 +3826,10 @@ async function runSubChat(opts) {
     pushCommandLog(`[${n}] ${String(s).replace(/\s+/g, ' ').trim()}`)
   }
   const userRuntime = String(runtime || '').trim()
+  const routeFromRuntime = resolveCapabilityRoute({ text: String(task || ''), runtime: userRuntime || '' })
   let effectiveRuntime = userRuntime
   if (!effectiveRuntime || effectiveRuntime.toLowerCase() === 'auto') {
-    const inferred = inferPreferredExternalRuntimeFromText([task, systemPrompt, roleName].filter(Boolean).join('\n'))
+    const inferred = routeFromRuntime.externalRuntime || inferPreferredExternalRuntimeFromText([task, systemPrompt, roleName].filter(Boolean).join('\n'))
     effectiveRuntime = inferred || 'internal'
   }
   pushCommandLog(`[meta] effective_runtime=${effectiveRuntime || 'internal'}`)
@@ -3857,6 +3860,9 @@ async function runSubChat(opts) {
       subSessionId,
       requestedRuntime: userRuntime || 'auto',
       effectiveRuntime: effectiveRuntime || 'auto',
+      capability: routeFromRuntime.capability || 'general',
+      deliveryPolicy: routeFromRuntime.deliveryPolicy || 'defer',
+      riskLevel: routeFromRuntime.riskLevel || 'safe',
       runtimeChain,
       availableExternalIds,
       taskPreview: String(task || '').slice(0, 120)
@@ -3918,6 +3924,7 @@ async function runSubChat(opts) {
           systemPrompt,
           roleName,
           model,
+          capability: routeFromRuntime.capability || 'general',
           projectPath,
           provider,
           eventSink: internalEventSink,
@@ -4983,6 +4990,7 @@ function getCoordinatorSystemPrompt(channel = '') {
     '除纯问候或进度询问外，用户的实际任务必须调用 sessions_spawn 交给子 Agent 执行。',
     '默认使用 sessions_spawn(runtime="auto")，其默认走 internal。仅当用户明确指定外部子 Agent（如“用 codex”“用 claude”）时，才使用 external:<name>。',
     '若用户明确指定某子 Agent（如“用 codex”“用 claude”），必须把 runtime 设为 external:<name>（例如 external:codex）；若不可用再按系统回退链执行，并在回复里说明已回退。',
+    '当用户要求飞书文档编写/改写/追加时，必须派发子 Agent 执行，并优先要求子 Agent 使用文档能力工具（如 feishu_doc_capability 或 lark docx 相关工具），不要只给纯文本答案。',
     '主 Agent 不直接调用业务工具、不直接执行具体任务。',
     '收到子 Agent 结果后，简洁向用户回复结论与必要说明。'
   ].join('\n')
@@ -5883,9 +5891,13 @@ function extractLatestSessionsSpawnResult(messages = []) {
       const r = obj && obj.result != null ? String(obj.result).trim() : ''
       const s = obj && obj.stdout != null ? String(obj.stdout).trim() : ''
       const msg = obj && obj.message != null ? String(obj.message).trim() : ''
+      const envSummary = obj && obj.envelope && obj.envelope.summary != null
+        ? String(obj.envelope.summary).trim()
+        : ''
       if (r) last = r
       else if (s) last = s
       else if (msg) last = msg
+      else if (envSummary) last = envSummary
     } catch (_) {}
   }
   return last
@@ -6986,9 +6998,12 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
     let forcedSpawnLogs = ''
     if (!aiAlreadySent && !hasSpawnCall && !spawnResultText) {
       try {
+        const forcedRoute = resolveCapabilityRoute({ text: String(message?.text || ''), runtime: 'auto' })
         appLogger?.warn?.('[SubAgentDispatch] 主Agent未触发 sessions_spawn，启用兜底派发', {
           runSessionId,
-          messagePreview: String(message?.text || '').slice(0, 120)
+          messagePreview: String(message?.text || '').slice(0, 120),
+          capability: forcedRoute.capability || 'general',
+          deliveryPolicy: forcedRoute.deliveryPolicy || 'defer'
         })
         const forcedToolCallId = `forced_spawn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
         sendFeishuToolCallEvent({
@@ -6997,7 +7012,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
           arguments: JSON.stringify({
             task: String(message?.text || '').trim(),
             role_name: '执行助手',
-            runtime: 'auto'
+            runtime: forcedRoute.executionMode || 'internal'
           })
         })
         sendFeishuToolResultEvent(forcedToolCallId, 'sessions_spawn', {
@@ -7012,7 +7027,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
           projectPath,
           parentSessionId: mainSessionId,
           feishuChatId: binding.channel === 'feishu' ? chatId : '',
-          runtime: 'auto',
+          runtime: forcedRoute.executionMode || 'internal',
           stream: {
             sendToolResult: (obj) => sendFeishuToolResultEvent(forcedToolCallId, 'sessions_spawn', obj)
           }

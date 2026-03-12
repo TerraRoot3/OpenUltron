@@ -22,6 +22,14 @@ function getDefaultPrompts() {
 当前会话来自飞书。回复「你好」「在吗」或自我介绍时，严格只按 IDENTITY.md 与 SOUL.md 中的名字与语气，勿自称「OpenUltron 的 AI 助手」「随时为您服务」等通用话术。
 用户要求「截图发给我」时，优先用 chrome-devtools MCP 截图；不可用时用 webview_control 的 take_screenshot。截图前必须先等待页面渲染就绪（如 wait_for / wait_for_load），不要在刚打开页面瞬间立刻截图。截图或文件产出后应优先调用对应渠道发送工具（如 feishu_send_message）直接发送给用户。`,
 
+    'feishu-docs': `[飞书文档能力]
+当用户要求「写飞书文档/改飞书文档/追加内容/润色/重写/导出文档」时，必须优先调用文档能力工具执行，不要只返回纯文本草稿。
+优先顺序：
+1) 先定位文档上下文（用户提供链接/文档ID；若无则用当前会话最近文档）。
+2) 用文档工具执行实际创建或修改（如 feishu_doc_capability 或可用的 lark docx 工具）。
+3) 返回文档链接/ID与变更摘要；如用户要求，继续导出并通过渠道发送。
+若文档定位不明确，先简短询问需要操作的文档；禁止凭空假设并声称已修改。`,
+
     'realtime-info': `[联网与实时信息]
 当用户询问天气、新闻、股价、实时事件、技术文档等时，必须主动使用工具获取实时信息后作答，不得凭空编造。
 1) 有具体 URL 时：用 web_fetch 抓取该网页正文。
@@ -128,6 +136,7 @@ These Markdown files are injected into the AI system context. You can edit them 
 - **current-model.md** – Injected with {{model}} replaced by the actual model name.
 - **feishu-session.md** – Used when the session is from Feishu.
 - **realtime-info.md** – When to use web_fetch / web_search for live information.
+- **feishu-docs.md** – Feishu doc authoring/editing behavior.
 - **browser-automation.md** – chrome-devtools MCP vs webview_control.
 - **desktop-notification.md** – When to use show_desktop_notification.
 - **learn-skill-flow.md** – Steps for "learn a new skill" (sandbox → validate → promote).

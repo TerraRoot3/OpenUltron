@@ -192,6 +192,8 @@ class Orchestrator {
       if (session && session.feishuChatId) {
         const feishuText = loadPrompt('feishu-session')
         if (feishuText) memParts.push(feishuText)
+        const feishuDocsText = loadPrompt('feishu-docs')
+        if (feishuDocsText) memParts.push(feishuDocsText)
         memParts.push(
           '[飞书附件处理规则]\n' +
           '当用户消息中已包含附件的 local_path（例如 [Inbound Attachment Paths] 或 local_path: /...）时：\n' +

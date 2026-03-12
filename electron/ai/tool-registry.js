@@ -195,6 +195,13 @@ function createDefaultRegistry(options = {}) {
     console.warn('加载 feishu_send_message 工具失败:', e.message)
   }
 
+  // 飞书文档能力：创建/读取/追加改写副本
+  try {
+    registry.register('feishu_doc_capability', require('./tools/feishu-doc-capability'))
+  } catch (e) {
+    console.warn('加载 feishu_doc_capability 工具失败:', e.message)
+  }
+
   // Telegram 通知：发送文本/语音
   try {
     registry.register('telegram_send_message', require('./tools/telegram-send-message'))
