@@ -5562,6 +5562,45 @@ const channelKeyByRunSessionId = new Map() // runSessionId -> key（供 stop_pre
 const runStartTimeBySessionId = new Map() // runSessionId -> startTime
 const abortedRunSessionIds = new Set() // 被 stop_previous_task 停掉的 run，完成时不合并、不回发
 const LONG_RUN_NOTIFY_STEPS_SEC = [30, 90, 180, 300]
+const recentArtifactsBySession = new Map() // sessionId -> Array<{ path: string, kind: 'image'|'file', ts: number }>
+
+function rememberSessionArtifacts(sessionId, payload = {}) {
+  const sid = String(sessionId || '').trim()
+  if (!sid) return
+  const now = Date.now()
+  const list = recentArtifactsBySession.get(sid) || []
+  const pushItem = (p, kind) => {
+    const full = String(p || '').trim()
+    if (!full || !path.isAbsolute(full)) return
+    if (!fs.existsSync(full)) return
+    list.push({ path: full, kind, ts: now })
+  }
+  for (const x of (Array.isArray(payload.images) ? payload.images : [])) {
+    if (x && x.path) pushItem(x.path, 'image')
+  }
+  for (const x of (Array.isArray(payload.files) ? payload.files : [])) {
+    if (x && x.path) pushItem(x.path, 'file')
+  }
+  const dedup = new Map()
+  for (const it of list.slice(-80)) {
+    dedup.set(`${it.kind}:${it.path}`, it)
+  }
+  recentArtifactsBySession.set(sid, [...dedup.values()].sort((a, b) => b.ts - a.ts).slice(0, 30))
+}
+
+function getRememberedSessionArtifacts(sessionId) {
+  const sid = String(sessionId || '').trim()
+  if (!sid) return { images: [], files: [] }
+  const list = recentArtifactsBySession.get(sid) || []
+  const images = []
+  const files = []
+  for (const it of list) {
+    if (!it || !it.path || !fs.existsSync(it.path)) continue
+    if (it.kind === 'image') images.push({ path: it.path })
+    else files.push({ path: it.path })
+  }
+  return { images, files }
+}
 
 function isProgressQueryText(text) {
   const t = String(text || '').trim()
@@ -5581,26 +5620,33 @@ function isScreenshotFollowupText(text) {
 }
 
 function collectRecentSessionArtifacts(projectPath, sessionId) {
+  const remembered = getRememberedSessionArtifacts(sessionId)
+  if (remembered.images.length > 0 || remembered.files.length > 0) return remembered
   const projectKey = conversationFile.hashProjectPath(projectPath)
   const conv = conversationFile.loadConversation(projectKey, sessionId)
   const messages = Array.isArray(conv?.messages) ? conv.messages : []
-  const lastAssistant = [...messages].reverse().find((m) => m && m.role === 'assistant' && getAssistantText(m).trim())
-  const text = lastAssistant ? getAssistantText(lastAssistant) : ''
-  const { filePaths: screenshotPaths } = extractLocalResourceScreenshots(text)
-  const filePaths = extractLocalFilesFromText(text)
+  const assistantTexts = [...messages]
+    .filter((m) => m && m.role === 'assistant')
+    .map((m) => getAssistantText(m))
+    .filter((x) => String(x || '').trim())
+    .slice(-20)
   const images = []
   const files = []
   const seen = new Set()
-  for (const p of screenshotPaths) {
-    if (!p || seen.has(p)) continue
-    seen.add(p)
-    images.push({ path: p })
-  }
-  for (const p of filePaths) {
-    if (!p || seen.has(p)) continue
-    seen.add(p)
-    if (isImageFilePath(p)) images.push({ path: p })
-    else files.push({ path: p })
+  for (const text of assistantTexts.reverse()) {
+    const { filePaths: screenshotPaths } = extractLocalResourceScreenshots(text)
+    const filePaths = extractLocalFilesFromText(text)
+    for (const p of screenshotPaths) {
+      if (!p || seen.has(p)) continue
+      seen.add(p)
+      images.push({ path: p })
+    }
+    for (const p of filePaths) {
+      if (!p || seen.has(p)) continue
+      seen.add(p)
+      if (isImageFilePath(p)) images.push({ path: p })
+      else files.push({ path: p })
+    }
   }
   return { images, files }
 }
@@ -6150,6 +6196,11 @@ eventBus.on('chat.message.received', processMessageReplace)
 function handleChatSessionCompleted(payload) {
   const { binding, payload: outPayload } = payload || {}
   if (!binding || !binding.channel) return
+  try {
+    if (binding.sessionId && outPayload && (Array.isArray(outPayload.images) || Array.isArray(outPayload.files))) {
+      rememberSessionArtifacts(binding.sessionId, outPayload)
+    }
+  } catch (_) {}
   const adapter = chatChannelRegistry.get(binding.channel)
   if (adapter && adapter.send) {
     adapter.send(binding, outPayload || {}).catch(e => console.error('[ChatChannel] send failed:', e.message))
