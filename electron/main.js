@@ -3505,10 +3505,32 @@ async function scanExternalSubAgents(force = false) {
   return list
 }
 
-function buildExternalPrompt({ task, systemPrompt, roleName, projectPath }) {
+function getChannelSendToolByProjectPath(projectPath = '') {
+  const p = String(projectPath || '').trim()
+  if (p === '__feishu__') return 'feishu_send_message'
+  if (p === '__telegram__') return 'telegram_send_message'
+  if (p === '__dingtalk__') return 'dingtalk_send_message'
+  return ''
+}
+
+function buildSubAgentDeliveryPrompt(projectPath = '') {
+  const tool = getChannelSendToolByProjectPath(projectPath)
+  const toolHint = tool
+    ? `当前渠道可用发送工具：${tool}。`
+    : '若存在 *_send_message 渠道发送工具，优先调用它发送产物。'
+  return [
+    '[产物回传规则]',
+    toolHint,
+    '当任务产出图片/截图/文件，且用户诉求是“发给我/发送给我/把图给我/把文件给我”时，必须优先直接调用发送工具发送，不要只回复“已保存/已发送”。',
+    '发送成功后，文本里只做简短确认；发送失败时，明确失败原因并附本地绝对路径。'
+  ].join('\n')
+}
+
+function buildExternalPrompt({ task, systemPrompt, roleName, projectPath, channelProjectPath }) {
   const blocks = []
   if (roleName) blocks.push(`角色：${roleName}`)
   if (systemPrompt) blocks.push(`系统约束：\n${systemPrompt}`)
+  blocks.push(buildSubAgentDeliveryPrompt(channelProjectPath || projectPath))
   if (projectPath) blocks.push(`工作目录：${projectPath}`)
   blocks.push(`任务：\n${task}`)
   blocks.push('请直接输出最终答案，不要输出工具调用 XML。')
@@ -3555,7 +3577,7 @@ async function runByExternalSubAgent(spec, ctx, resolvedCommand = '', heartbeat 
   const cwd = (rawProjectPath && path.isAbsolute(rawProjectPath) && fs.existsSync(rawProjectPath))
     ? rawProjectPath
     : getWorkspaceRoot()
-  const prompt = buildExternalPrompt({ ...ctx, projectPath: cwd })
+  const prompt = buildExternalPrompt({ ...ctx, projectPath: cwd, channelProjectPath: rawProjectPath })
   const command = String(resolvedCommand || spec.command || '').trim() || spec.command
   const timeoutMs = 180000
   const attempts = []
@@ -3666,7 +3688,8 @@ async function runByInternalSubAgent({ task, systemPrompt, roleName, model, proj
   const rolePrompt = roleName && String(roleName).trim()
     ? `你当前扮演的角色是「${String(roleName).trim()}」。请严格按该角色完成任务，并仅输出该角色应给出的结果。`
     : ''
-  const mergedSystemPrompt = [rolePrompt, systemPrompt && String(systemPrompt).trim() ? String(systemPrompt).trim() : '']
+  const deliveryPrompt = buildSubAgentDeliveryPrompt(projectPath || '')
+  const mergedSystemPrompt = [rolePrompt, systemPrompt && String(systemPrompt).trim() ? String(systemPrompt).trim() : '', deliveryPrompt]
     .filter(Boolean)
     .join('\n\n')
   if (mergedSystemPrompt) messages.push({ role: 'system', content: mergedSystemPrompt })

@@ -183,7 +183,7 @@ async function execute(args) {
       file_path: filepath,
       file_url: resourceUrl,
       url: wc.getURL(),
-      tip: `截图已保存到本地。应用内展示：![截图](${resourceUrl})。飞书会话中会由系统自动发到当前会话，无需再调 feishu_send_message。`
+      tip: `截图已保存到本地。应用内展示：![截图](${resourceUrl})。如需发给用户，请调用对应渠道的 *_send_message 工具发送。`
     }
   }
 
