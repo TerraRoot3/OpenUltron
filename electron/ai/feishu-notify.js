@@ -627,14 +627,39 @@ async function uploadFile(filePathOrBuffer, fileName, fileType, durationSec) {
     body = fs.readFileSync(fp)
   }
   const ext = path.extname(name).toLowerCase().replace(/^\./, '') || 'bin'
+  // 飞书 file/upload 的 file_type 不是任意扩展名；未知类型需用 stream，避免 zip 等直接报 Invalid request param.
+  const allowedFileTypes = new Set(['opus', 'mp4', 'pdf', 'doc', 'xls', 'ppt', 'stream'])
+  const normalizedType = String(type || '').toLowerCase().replace(/^\./, '')
+  const inferredTypeMap = {
+    docx: 'doc',
+    txt: 'stream',
+    zip: 'stream',
+    rar: 'stream',
+    '7z': 'stream',
+    csv: 'stream',
+    json: 'stream',
+    html: 'stream',
+    md: 'stream',
+    png: 'stream',
+    jpg: 'stream',
+    jpeg: 'stream',
+    gif: 'stream',
+    webp: 'stream',
+    bmp: 'stream'
+  }
+  const inferredType = inferredTypeMap[ext] || ext
+  const uploadFileType = allowedFileTypes.has(normalizedType)
+    ? normalizedType
+    : (allowedFileTypes.has(inferredType) ? inferredType : 'stream')
   const mimeMap = {
     pdf: 'application/pdf', doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    mp4: 'video/mp4', mp3: 'audio/mpeg', txt: 'text/plain', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg'
+    mp4: 'video/mp4', mp3: 'audio/mpeg', txt: 'text/plain', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+    zip: 'application/zip'
   }
-  const mime = type ? (mimeMap[type.replace(/^\./, '')] || 'application/octet-stream') : (mimeMap[ext] || 'application/octet-stream')
+  const mime = normalizedType ? (mimeMap[normalizedType] || 'application/octet-stream') : (mimeMap[ext] || 'application/octet-stream')
   const formParts = [
-    { name: 'file_type', body: type || ext },
+    { name: 'file_type', body: uploadFileType },
     { name: 'file_name', body: name },
     { name: 'file', body, filename: name, contentType: mime }
   ]
