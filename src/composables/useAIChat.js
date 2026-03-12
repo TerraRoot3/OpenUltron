@@ -13,6 +13,15 @@ export function useAIChat() {
   let listenersRegistered = false
   const toolResultPushState = new Map() // toolCallId -> { lastTs, timer, latest }
 
+  // Electron IPC 仅支持可结构化克隆对象；这里统一转为纯 JSON 可序列化对象
+  const toSerializable = (val) => {
+    try {
+      return JSON.parse(JSON.stringify(val))
+    } catch (_) {
+      return val
+    }
+  }
+
   // 生成唯一会话 ID
   const genSessionId = () => `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
@@ -279,7 +288,7 @@ export function useAIChat() {
       }
 
       // 应用内：IPC 启动对话
-      const result = await window.electronAPI.ai.chatStart({
+      const payload = toSerializable({
         sessionId: currentSessionId,
         messages: reqMessages,
         model,
@@ -287,6 +296,7 @@ export function useAIChat() {
         projectPath: projectPath || '',
         panelId: panelId || undefined
       })
+      const result = await window.electronAPI.ai.chatStart(payload)
 
       if (!result.success) {
         error.value = result.message || result.error || '启动对话失败'
