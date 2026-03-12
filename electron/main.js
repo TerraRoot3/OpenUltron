@@ -14,6 +14,7 @@ const { registerConfigHandlers } = require('./api/registerConfigHandlers')
 const { createApiServer, DEFAULT_PORT: API_DEFAULT_PORT } = require('./api/server')
 const { getAppRoot, getAppRootPath, getWorkspaceRoot, getWorkspacePath, ensureWorkspaceDirs } = require('./app-root')
 const { ingestRoundAttachments } = require('./ai/attachment-ingest')
+const artifactRegistry = require('./ai/artifact-registry')
 const { getLogPath, readTail, getForAi, logger: appLogger, patchConsole } = require('./app-logger')
 const { filterSessionsList, isRunSessionId } = require('./ai/sessions-list-filter')
 
@@ -3987,8 +3988,8 @@ const aiGateway = createGateway({
       lastText = typeof last.content === 'string' ? last.content : (last.content && Array.isArray(last.content) ? last.content.map(c => (c && c.text) || '').join('') : '')
     }
     const { cleanedText: cleanedRaw, filePaths: pathsFromText } = extractLocalResourceScreenshots(lastText)
-    const imageItems = []
-    const fileItems = []
+    let imageItems = []
+    let fileItems = []
     const seenPath = new Set()
     const seenBase64Head = new Set()
     for (const item of list) {
@@ -4800,6 +4801,26 @@ registerChannel('ai-upload-attachments', async (event, { sessionId, source, atta
       attachments: Array.isArray(attachments) ? attachments : [],
       imageMode: imageMode === 'vision' ? 'vision' : 'ocr'
     })
+    try {
+      const accepted = Array.isArray(result?.accepted) ? result.accepted : []
+      for (const item of accepted) {
+        const p = String(item?.localPath || '').trim()
+        if (!p || !path.isAbsolute(p) || !fs.existsSync(p)) continue
+        artifactRegistry.registerFileArtifact({
+          path: p,
+          filename: item?.name || path.basename(p),
+          kind: item?.kind || 'file',
+          source: 'app_upload',
+          channel: 'app',
+          sessionId: String(sessionId).trim(),
+          messageId: '',
+          chatId: '',
+          role: 'user'
+        })
+      }
+    } catch (e) {
+      appLogger?.warn?.('[ArtifactRegistry] register app uploads failed', { error: e.message || String(e) })
+    }
     return result
   } catch (e) {
     return { success: false, message: e.message || 'attachment ingest failed' }
@@ -5648,23 +5669,106 @@ function getRememberedSessionArtifacts(sessionId) {
 
 function normalizeArtifactsFromItems(images = [], files = []) {
   const out = []
-  const pushArtifact = (kind, p) => {
+  const pushArtifact = (kind, p, artifactId = '') => {
     const full = String(p || '').trim()
     if (!full || !path.isAbsolute(full) || !fs.existsSync(full)) return
-    out.push({
+    const item = {
       kind,
       path: full,
       name: path.basename(full),
       ts: new Date().toISOString()
-    })
+    }
+    if (artifactId) item.artifactId = String(artifactId)
+    out.push(item)
   }
   for (const x of (Array.isArray(images) ? images : [])) {
-    if (x && x.path) pushArtifact('image', x.path)
+    if (x && x.path) pushArtifact('image', x.path, x.artifactId || '')
   }
   for (const x of (Array.isArray(files) ? files : [])) {
-    if (x && x.path) pushArtifact('file', x.path)
+    if (x && x.path) pushArtifact('file', x.path, x.artifactId || '')
   }
   return out
+}
+
+function registerArtifactsFromItems({ images = [], files = [], context = {} } = {}) {
+  const registeredImages = []
+  const registeredFiles = []
+  const refs = []
+  const registerOne = (input = {}, kindHint = 'file') => {
+    try {
+      const p = String(input.path || '').trim()
+      const existingId = String(input.artifactId || '').trim()
+      if (existingId && p && path.isAbsolute(p) && fs.existsSync(p)) {
+        refs.push({
+          artifactId: existingId,
+          kind: kindHint,
+          path: p,
+          name: input.filename || path.basename(p),
+          ts: new Date().toISOString()
+        })
+        return {
+          path: p,
+          filename: input.filename || path.basename(p),
+          artifactId: existingId
+        }
+      }
+      let rec = null
+      if (p && path.isAbsolute(p) && fs.existsSync(p)) {
+        rec = artifactRegistry.registerFileArtifact({
+          path: p,
+          filename: input.filename || path.basename(p),
+          kind: kindHint,
+          source: String(context.source || 'unknown'),
+          channel: String(context.channel || ''),
+          sessionId: String(context.sessionId || ''),
+          runSessionId: String(context.runSessionId || ''),
+          messageId: String(context.messageId || ''),
+          chatId: String(context.chatId || ''),
+          role: String(context.role || '')
+        })
+      } else if (!p && input.base64) {
+        rec = artifactRegistry.registerBase64Artifact({
+          base64: input.base64,
+          ext: kindHint === 'image' ? '.png' : '.bin',
+          kind: kindHint,
+          source: String(context.source || 'unknown'),
+          channel: String(context.channel || ''),
+          sessionId: String(context.sessionId || ''),
+          runSessionId: String(context.runSessionId || ''),
+          messageId: String(context.messageId || ''),
+          chatId: String(context.chatId || ''),
+          role: String(context.role || '')
+        })
+      }
+      if (!rec) return null
+      refs.push({
+        artifactId: rec.artifactId,
+        kind: rec.kind || kindHint,
+        path: rec.path,
+        name: rec.filename || path.basename(rec.path),
+        ts: rec.createdAt || new Date().toISOString()
+      })
+      return {
+        path: rec.path,
+        filename: rec.filename || input.filename || path.basename(rec.path),
+        artifactId: rec.artifactId
+      }
+    } catch (e) {
+      appLogger?.warn?.('[ArtifactRegistry] register from items failed', { error: e.message || String(e) })
+      return null
+    }
+  }
+  for (const img of (Array.isArray(images) ? images : [])) {
+    const rec = registerOne(img || {}, 'image')
+    if (rec) registeredImages.push(rec)
+    else if (img?.path || img?.base64) registeredImages.push(img)
+  }
+  for (const f of (Array.isArray(files) ? files : [])) {
+    const rec = registerOne(f || {}, 'file')
+    if (rec) registeredFiles.push(rec)
+    else if (f?.path || f?.base64) registeredFiles.push(f)
+  }
+  return { images: registeredImages, files: registeredFiles, refs }
 }
 
 function attachArtifactsToLatestAssistant(messages = [], artifacts = []) {
@@ -5679,7 +5783,8 @@ function attachArtifactsToLatestAssistant(messages = [], artifacts = []) {
   const dedup = new Map()
   for (const a of [...prev, ...artifacts]) {
     if (!a || !a.path) continue
-    dedup.set(`${a.kind || ''}:${a.path}`, a)
+    const key = a.artifactId ? `id:${a.artifactId}` : `${a.kind || ''}:${a.path}`
+    dedup.set(key, a)
   }
   meta.artifacts = [...dedup.values()]
   const next = [...messages]
@@ -5786,6 +5891,25 @@ function findRecentPageTarget(projectPath, sessionId) {
 }
 
 function collectRecentSessionArtifacts(projectPath, sessionId) {
+  try {
+    const rows = artifactRegistry.listRecentArtifactsBySession(sessionId, { limit: 40 })
+    if (Array.isArray(rows) && rows.length > 0) {
+      const images = []
+      const files = []
+      const seen = new Set()
+      for (const r of rows) {
+        const p = String(r?.path || '').trim()
+        if (!p || seen.has(p) || !path.isAbsolute(p) || !fs.existsSync(p)) continue
+        seen.add(p)
+        const kind = String(r?.kind || '').toLowerCase()
+        if (kind === 'image' || isImageFilePath(p)) images.push({ path: p, artifactId: String(r?.id || '') })
+        else files.push({ path: p, artifactId: String(r?.id || '') })
+      }
+      if (images.length > 0 || files.length > 0) return { images, files }
+    }
+  } catch (e) {
+    appLogger?.warn?.('[ArtifactRegistry] query recent failed', { sessionId, error: e.message || String(e) })
+  }
   const projectKey = conversationFile.hashProjectPath(projectPath)
   const conv = conversationFile.loadConversation(projectKey, sessionId)
   const messages = Array.isArray(conv?.messages) ? conv.messages : []
@@ -6237,13 +6361,65 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
   const attachments = Array.isArray(message?.metadata?.attachments)
     ? message.metadata.attachments
     : (Array.isArray(message?.attachments) ? message.attachments : [])
+  const inboundArtifactRefs = []
+  const inboundAttachmentsForUi = []
+  for (const a of attachments) {
+    if (!a) continue
+    const p = String(a.path || '').trim()
+    let uiPath = p
+    if (p && path.isAbsolute(p) && fs.existsSync(p)) {
+      try {
+        const rec = artifactRegistry.registerFileArtifact({
+          path: p,
+          filename: a.name || path.basename(p),
+          kind: a.type === 'image' ? 'image' : (a.type === 'audio' ? 'audio' : 'file'),
+          source: `${binding.channel}_inbound`,
+          channel: binding.channel,
+          sessionId: mainSessionId,
+          runSessionId,
+          messageId: userMessageId || '',
+          chatId: chatId || '',
+          role: 'user'
+        })
+        if (rec?.path) uiPath = rec.path
+        if (rec) {
+          inboundArtifactRefs.push({
+            artifactId: rec.artifactId,
+            kind: rec.kind,
+            path: rec.path,
+            name: rec.filename || a.name || path.basename(rec.path),
+            ts: rec.createdAt || new Date().toISOString()
+          })
+        }
+      } catch (e) {
+        appLogger?.warn?.('[ArtifactRegistry] inbound register failed', { error: e.message || String(e) })
+      }
+    }
+    inboundAttachmentsForUi.push({ ...a, ...(uiPath ? { path: uiPath } : {}) })
+  }
   const userDisplayText = String(displayText || '').trim() || (attachments.length > 0 ? '[附件]' : String(message?.text || '').trim())
   const historyMessages = (conv && conv.messages) ? [...conv.messages] : []
-  historyMessages.push({ role: 'user', content: userDisplayText || '[附件]' })
+  historyMessages.push({
+    role: 'user',
+    content: userDisplayText || '[附件]',
+    ...(inboundArtifactRefs.length > 0 ? { metadata: { artifacts: inboundArtifactRefs } } : {})
+  })
   const earlyToSave = stripToolExecutionFromMessages(historyMessages)
   const earlySavePayload = { id: mainSessionId, messages: earlyToSave, projectPath }
   if (binding.channel === 'feishu') earlySavePayload.feishuChatId = chatId
   conversationFile.saveConversation(projectKey, earlySavePayload)
+  if (userMessageId && inboundArtifactRefs.length > 0) {
+    try {
+      artifactRegistry.bindArtifactsToMessage({
+        sessionId: mainSessionId,
+        messageId: userMessageId,
+        role: 'user',
+        artifactIds: inboundArtifactRefs.map((x) => x.artifactId).filter(Boolean)
+      })
+    } catch (e) {
+      appLogger?.warn?.('[ArtifactRegistry] bind inbound message failed', { error: e.message || String(e) })
+    }
+  }
 
   const messages = (conv && conv.messages) ? [...conv.messages] : []
   messages.push({ role: 'system', content: getCoordinatorSystemPrompt(binding.channel) })
@@ -6255,7 +6431,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
     mainWindow.webContents.send('feishu-session-user-message', {
       sessionId: mainSessionId,
       text: displayText,
-      attachments,
+      attachments: inboundAttachmentsForUi,
       messageId: userMessageId || ''
     })
   }
@@ -6391,6 +6567,33 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
         fileItems.push({ path: p })
       }
     }
+    const regResult = registerArtifactsFromItems({
+      images: imageItems,
+      files: fileItems,
+      context: {
+        source: `${binding.channel}_assistant`,
+        channel: binding.channel,
+        sessionId: mainSessionId,
+        runSessionId,
+        messageId: userMessageId || '',
+        chatId: chatId || '',
+        role: 'assistant'
+      }
+    })
+    imageItems = regResult.images
+    fileItems = regResult.files
+    if (userMessageId && regResult.refs.length > 0) {
+      try {
+        artifactRegistry.bindArtifactsToMessage({
+          sessionId: mainSessionId,
+          messageId: userMessageId,
+          role: 'assistant',
+          artifactIds: regResult.refs.map((x) => x.artifactId).filter(Boolean)
+        })
+      } catch (e) {
+        appLogger?.warn?.('[ArtifactRegistry] bind assistant message failed', { error: e.message || String(e) })
+      }
+    }
     // 检查 AI 是否已通过工具主动发送过消息，或派生子 agent 处理（无需再补发）
     const channelSendTools = { feishu: 'feishu_send_message', telegram: 'telegram_send_message', dingtalk: 'dingtalk_send_message' }
     const sendToolName = channelSendTools[binding.channel]
@@ -6511,6 +6714,27 @@ eventBus.on('chat.message.received', processMessageReplace)
 function handleChatSessionCompleted(payload) {
   const { binding, payload: outPayload } = payload || {}
   if (!binding || !binding.channel) return
+  if (binding.sessionId && outPayload && (Array.isArray(outPayload.images) || Array.isArray(outPayload.files))) {
+    try {
+      const reg = registerArtifactsFromItems({
+        images: Array.isArray(outPayload.images) ? outPayload.images : [],
+        files: Array.isArray(outPayload.files) ? outPayload.files : [],
+        context: {
+          source: `${binding.channel}_outbound`,
+          channel: binding.channel,
+          sessionId: String(binding.sessionId || ''),
+          runSessionId: '',
+          messageId: '',
+          chatId: String(binding.remoteId || ''),
+          role: 'assistant'
+        }
+      })
+      outPayload.images = reg.images
+      outPayload.files = reg.files
+    } catch (e) {
+      appLogger?.warn?.('[ArtifactRegistry] register outbound payload failed', { error: e.message || String(e) })
+    }
+  }
   try {
     if (binding.sessionId && outPayload && (Array.isArray(outPayload.images) || Array.isArray(outPayload.files))) {
       rememberSessionArtifacts(binding.sessionId, outPayload)
