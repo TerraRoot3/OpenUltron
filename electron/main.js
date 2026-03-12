@@ -5964,10 +5964,13 @@ function isPureScreenshotRequestText(text) {
   if (!isScreenshotFollowupText(t)) return false
   // 包含页面改动意图时，交给 AI 自主理解上下文，不走快捷补图
   if (hasPageEditIntentText(t)) return false
+  // 含 URL 的通常是“打开页面并操作”的任务，交给 AI
+  if (/https?:\/\//i.test(t)) return false
+  // 含明显实现/改造任务关键词，交给 AI
+  if (/(生成|新建|创建|改造|实现|设计|编码|写一个|做一个|开发|功能|页面|网页|html|css|javascript|js|代码)/i.test(t)) return false
   // 过长或多约束复合指令，不走快捷分支
-  if (t.length > 40) return false
-  const pureRe = /(按上次页面再截|再截一张图|重新截一张图|补发截图|把截图发我|截图发我|打开截图后发我|再来一张截图|重发截图|截个图发给我|打开截个图发给我|打开.*截.*图.*发给我)/i
-  return pureRe.test(t)
+  if (t.length > 48) return false
+  return true
 }
 
 function isRecaptureRequestText(text) {
