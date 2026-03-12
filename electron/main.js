@@ -3443,7 +3443,11 @@ const aiGateway = createGateway({
     const list = sessionScreenshots.get(sessionId) || []
     sessionScreenshots.delete(sessionId)
     const last = (data.messages && Array.isArray(data.messages))
-      ? [...data.messages].reverse().find(m => m.role === 'assistant')
+      ? [...data.messages].reverse().find(m => m.role === 'assistant' && (() => {
+          const c = m.content
+          const t = typeof c === 'string' ? c : (Array.isArray(c) ? c.map(x => (x && x.text) || '').join('') : '')
+          return t.trim()
+        })())
       : null
     let lastText = ''
     if (last && last.content) {
@@ -3460,7 +3464,14 @@ const aiGateway = createGateway({
     for (const p of pathsFromText) {
       if (!seenPath.has(p)) { seenPath.add(p); imageItems.push({ path: p }) }
     }
-    const textToSend = (stripFeishuScreenshotMisfireText(cleanedRaw) || '').trim() || (imageItems.length > 0 ? '截图已发至当前会话。' : '（无回复内容）')
+    const cleanedFeishu = (stripFeishuScreenshotMisfireText(cleanedRaw) || '').trim()
+    const delegatedToolNames = new Set(['feishu_send_message', 'sessions_spawn', 'sessions_send'])
+    const aiAlreadySentFeishu = Array.isArray(data.messages) && data.messages.some(m =>
+      m && m.role === 'assistant' && Array.isArray(m.tool_calls) &&
+      m.tool_calls.some(tc => tc && tc.function && delegatedToolNames.has(tc.function.name))
+    )
+    if (aiAlreadySentFeishu && !cleanedFeishu && imageItems.length === 0) return
+    const textToSend = cleanedFeishu || (imageItems.length > 0 ? '截图已发至当前会话。' : '（无回复内容）')
     const outBinding = { sessionId, projectPath: '__feishu__', channel: 'feishu', remoteId: chatId, feishuChatId: chatId }
     const outPayload = { text: textToSend, images: imageItems }
     if (imageItems.length > 0) appLogger?.info?.('[Feishu] 应用内飞书会话完成，带图回发', { imageCount: imageItems.length })
@@ -4869,6 +4880,9 @@ function parseScreenshotFromToolResult(result) {
 function stripFeishuScreenshotMisfireText(text) {
   if (!text || typeof text !== 'string') return text
   let s = text
+  // 过滤掉 AI 输出的 <tool_call>...</tool_call> 原始 XML 块，不应透传给用户
+  s = s.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '')
+  s = s.replace(/<function=\w+>[\s\S]*?<\/function>/g, '')
   // 整段：从「由于飞书通知需要配置」到「我就可以把截图发给你了」整句
   s = s.replace(/由于飞书通知需要配置[^。]*chat_id[^。]*。[^\n]*请提供[^。]*。[^\n]*我就可以把截图发给你了[^。]*。?/g, '')
   s = s.replace(/由于飞书通知需要配置[^\n]+/g, '')
@@ -5083,7 +5097,15 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
       }
     }
     const cleanedText = stripFeishuScreenshotMisfireText(cleanedRaw)
-    const textToSend = (cleanedText && cleanedText.trim()) ? cleanedText.trim() : (imageItems.length > 0 ? '截图已发至当前会话。' : '（无回复内容）')
+    // 检查 AI 是否已通过工具主动发送过消息，或派生子 agent 处理（无需再补发）
+    const channelSendTools = { feishu: 'feishu_send_message', telegram: 'telegram_send_message', dingtalk: 'dingtalk_send_message' }
+    const sendToolName = channelSendTools[binding.channel]
+    const delegatedTools = new Set([sendToolName, 'sessions_spawn', 'sessions_send'].filter(Boolean))
+    const aiAlreadySent = delta.some(m =>
+      m && m.role === 'assistant' && Array.isArray(m.tool_calls) &&
+      m.tool_calls.some(tc => tc && tc.function && delegatedTools.has(tc.function.name))
+    )
+    const textToSend = (cleanedText && cleanedText.trim()) ? cleanedText.trim() : (imageItems.length > 0 ? '截图已发至当前会话。' : null)
     if (binding.channel === 'feishu' && userMessageId && typingReactionId) {
       await feishuNotify.deleteMessageReaction(userMessageId, typingReactionId).catch(() => {})
     }
@@ -5098,8 +5120,10 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
     if (binding.channel === 'feishu' && mainWindow && mainWindow.webContents) {
       mainWindow.webContents.send('feishu-session-updated', { sessionId: mainSessionId })
     }
+    // AI 已主动发消息且没有额外文本/图片要补发，跳过自动回复
+    if (aiAlreadySent && !textToSend && imageItems.length === 0) return
     const outBinding = { ...binding, sessionId: mainSessionId, projectPath, remoteId: chatId, ...(binding.channel === 'feishu' && { feishuChatId: chatId }) }
-    const outPayload = { text: textToSend, images: imageItems }
+    const outPayload = { text: textToSend || '（无回复内容）', images: imageItems }
     if (binding.channel === 'telegram') {
       try {
         const tgCfg = require('./openultron-config').getTelegram()

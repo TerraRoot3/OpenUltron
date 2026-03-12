@@ -19,6 +19,18 @@ function createListProvidersAndModelsTool(store, getAIConfigLegacy) {
     }
   }
 
+  function inferModelTags(modelId) {
+    const id = String(modelId || '').toLowerCase()
+    const tags = []
+    if (/\br1\b|o1[-\s]|o3[-\s]|thinking|reasoner|\breason\b|qwq|marco-o1/.test(id)) tags.push('reasoning')
+    if (/vision|vl\b|visual|image|multimodal/.test(id)) tags.push('vision')
+    if (/flash|mini|lite|tiny|fast|turbo|haiku|nano/.test(id)) tags.push('fast')
+    if ((/plus|pro\b|max\b|large|opus|claude-3-5|claude-3-7/.test(id) || /gpt-4/.test(id) && !/mini/.test(id) || /sonnet/.test(id) && !/haiku/.test(id))) tags.push('powerful')
+    if (/coder|code|dev|instruct(?=.*code)/.test(id)) tags.push('coding')
+    if (tags.length === 0) tags.push('general')
+    return tags
+  }
+
   async function execute() {
     try {
       const legacy = getAIConfigLegacy()
@@ -51,10 +63,19 @@ function createListProvidersAndModelsTool(store, getAIConfigLegacy) {
           default_model: globalDefaultModel,
           global_model_pool: globalPool,
           selected_in_pool: selectedInPool,
-          models
+          models: models.map(m => ({
+            id: m,
+            tags: inferModelTags(m),
+            is_default: m === globalDefaultModel,
+            in_pool: globalPool.includes(m)
+          }))
         })
       }
-      return { success: true, providers: list }
+      return {
+        success: true,
+        providers: list,
+        model_selection_guide: '根据任务选择模型：reasoning 适合复杂推理/数学/代码调试；fast 适合简单问答/格式转换/摘要；powerful 适合长文本/创作/复杂指令；coding 适合代码生成；vision 适合图片理解；general 为通用模型。优先选 in_pool:true 的模型，这些是经过验证的全局可用模型。'
+      }
     } catch (e) {
       return { success: false, error: e.message || String(e) }
     }

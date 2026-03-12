@@ -340,9 +340,35 @@ function makeTmpFile(ext = '.tmp') {
   return path.join(tmpRoot, name)
 }
 
+function resolveFfmpegBundledPath(tool) {
+  try {
+    const staticPkg = require('ffmpeg-static')
+    // ffmpeg-static 返回 ffmpeg 路径，ffprobe 在同目录
+    const base = typeof staticPkg === 'string' ? staticPkg : staticPkg.path
+    if (tool === 'ffmpeg') {
+      if (fs.existsSync(base)) return base
+    } else {
+      const probePath = path.join(path.dirname(base), 'ffprobe')
+      if (fs.existsSync(probePath)) return probePath
+    }
+  } catch (_) {}
+  return null
+}
+
+function resolveFfprobePath() {
+  const bundled = resolveFfmpegBundledPath('ffprobe')
+  if (bundled) return bundled
+  const candidates = ['/usr/local/bin/ffprobe', '/opt/homebrew/bin/ffprobe', '/usr/bin/ffprobe', 'ffprobe']
+  for (const p of candidates) {
+    if (p === 'ffprobe') return p
+    try { if (fs.existsSync(p)) return p } catch (_) {}
+  }
+  return 'ffprobe'
+}
+
 async function ffprobeDurationSec(filePath) {
   try {
-    const { stdout } = await execFileAsync('ffprobe', [
+    const { stdout } = await execFileAsync(resolveFfprobePath(), [
       '-v', 'error',
       '-show_entries', 'format=duration',
       '-of', 'default=nokey=1:noprint_wrappers=1',
@@ -356,9 +382,21 @@ async function ffprobeDurationSec(filePath) {
   }
 }
 
+function resolveFfmpegPath() {
+  const bundled = resolveFfmpegBundledPath('ffmpeg')
+  if (bundled) return bundled
+  const candidates = ['/usr/local/bin/ffmpeg', '/opt/homebrew/bin/ffmpeg', '/usr/bin/ffmpeg', 'ffmpeg']
+  for (const p of candidates) {
+    if (p === 'ffmpeg') return p
+    try { if (fs.existsSync(p)) return p } catch (_) {}
+  }
+  return 'ffmpeg'
+}
+
 async function convertMp3ToOpus(inputMp3, outputOpus) {
+  const ffmpegBin = resolveFfmpegPath()
   try {
-    await execFileAsync('ffmpeg', [
+    await execFileAsync(ffmpegBin, [
       '-y',
       '-i', inputMp3,
       '-ac', '1',
@@ -939,5 +977,7 @@ module.exports = {
   deleteMessage,
   addMessageReaction,
   deleteMessageReaction,
-  CONFIG_PATH
+  CONFIG_PATH,
+  resolveFfmpegPath,
+  resolveFfprobePath
 }
