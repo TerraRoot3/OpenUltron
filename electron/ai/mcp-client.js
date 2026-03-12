@@ -332,6 +332,9 @@ class StdioMcpConnection {
   }
 
   async callTool(originalName, args) {
+    if (this.name === 'chrome-devtools' && originalName === 'take_screenshot') {
+      await this._ensureChromePageReadyForScreenshot()
+    }
     const result = await this._sendRequest('tools/call', {
       name: originalName,
       arguments: args || {}
@@ -357,6 +360,65 @@ class StdioMcpConnection {
       }
     }
     return Object.keys(out).length ? out : { result: text || '(空)' }
+  }
+
+  async _callToolAndParse(originalName, args) {
+    const result = await this._sendRequest('tools/call', {
+      name: originalName,
+      arguments: args || {}
+    })
+    if (result?.isError) {
+      const errText = result.content?.map(c => c.text || '').join('\n') || '工具执行失败'
+      throw new Error(errText)
+    }
+    const content = result?.content || []
+    const text = content.filter(c => c.type === 'text').map(c => c.text).join('\n')
+    let out
+    try {
+      out = text ? JSON.parse(text) : {}
+    } catch {
+      out = text ? { result: text } : {}
+    }
+    for (const c of content) {
+      if (c.type === 'image' && c.data) {
+        out.image_base64 = c.data
+        break
+      }
+    }
+    return Object.keys(out).length ? out : { result: text || '(空)' }
+  }
+
+  async _ensureChromePageReadyForScreenshot() {
+    const maxWaitMs = 8000
+    const start = Date.now()
+    while (Date.now() - start < maxWaitMs) {
+      let state = null
+      try {
+        state = await this._callToolAndParse('evaluate_script', {
+          function: '() => ({ href: location.href, ready: document.readyState, textLen: (document.body && document.body.innerText ? document.body.innerText.trim().length : 0), childCount: (document.body && document.body.children ? document.body.children.length : 0) })'
+        })
+      } catch (_) {
+        state = null
+      }
+      const href = String((state && state.href) || '').trim()
+      const ready = String((state && state.ready) || '').trim().toLowerCase()
+      const textLen = Number((state && state.textLen) || 0)
+      const childCount = Number((state && state.childCount) || 0)
+      const invalidPage = !href || href === 'about:blank' || href.startsWith('chrome-error://')
+      if (invalidPage) {
+        const err = new Error(`chrome-devtools 当前页不可截图: ${href || 'about:blank'}。请先导航到目标页面后再截图。`)
+        err.code = 'SCREENSHOT_INVALID_PAGE'
+        err.nonRetryable = true
+        throw err
+      }
+      const looksReady = (ready === 'complete' || ready === 'interactive') && (textLen > 0 || childCount > 0)
+      if (looksReady) return
+      await new Promise((r) => setTimeout(r, 300))
+    }
+    const err = new Error('chrome-devtools 页面渲染未就绪，截图已中止。请先等待页面加载完成后重试。')
+    err.code = 'SCREENSHOT_NOT_READY'
+    err.nonRetryable = true
+    throw err
   }
 
   stop() {
