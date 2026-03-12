@@ -5739,6 +5739,30 @@ function findRecentHtmlArtifact(projectPath, sessionId) {
   return ''
 }
 
+function extractFirstHttpUrl(text) {
+  const s = String(text || '')
+  if (!s) return ''
+  const md = s.match(/\]\((https?:\/\/[^)\s]+)\)/i)
+  if (md && md[1]) return String(md[1]).trim()
+  const plain = s.match(/https?:\/\/[^\s<>"')]+/i)
+  if (plain && plain[0]) return String(plain[0]).trim()
+  return ''
+}
+
+function findRecentPageTarget(projectPath, sessionId) {
+  const htmlPath = findRecentHtmlArtifact(projectPath, sessionId)
+  if (htmlPath) return { kind: 'file', value: htmlPath }
+  const projectKey = conversationFile.hashProjectPath(projectPath)
+  const conv = conversationFile.loadConversation(projectKey, sessionId)
+  const messages = Array.isArray(conv?.messages) ? conv.messages : []
+  const recentAssistants = [...messages].filter((m) => m && m.role === 'assistant').slice(-40).reverse()
+  for (const m of recentAssistants) {
+    const url = extractFirstHttpUrl(getAssistantText(m))
+    if (url) return { kind: 'url', value: url }
+  }
+  return { kind: '', value: '' }
+}
+
 function collectRecentSessionArtifacts(projectPath, sessionId) {
   const projectKey = conversationFile.hashProjectPath(projectPath)
   const conv = conversationFile.loadConversation(projectKey, sessionId)
@@ -5825,6 +5849,34 @@ async function captureLocalHtmlScreenshot(htmlPath) {
     return out
   } catch (e) {
     appLogger?.warn?.('[Feishu] 本地HTML截图失败', { path: p, error: e.message || String(e) })
+    return null
+  } finally {
+    try { if (win && !win.isDestroyed()) win.destroy() } catch (_) {}
+  }
+}
+
+async function captureUrlScreenshot(url) {
+  const u = String(url || '').trim()
+  if (!/^https?:\/\//i.test(u)) return null
+  let win = null
+  try {
+    win = new BrowserWindow({
+      show: false,
+      width: 1366,
+      height: 900,
+      webPreferences: { sandbox: true, contextIsolation: true }
+    })
+    await win.loadURL(u)
+    await new Promise((r) => setTimeout(r, 650))
+    const image = await win.webContents.capturePage()
+    const png = image.toPNG()
+    if (!png || png.length === 0) return null
+    const fileName = `capture-url-${Date.now()}.png`
+    const out = getAppRootPath('screenshots', fileName)
+    fs.writeFileSync(out, png)
+    return out
+  } catch (e) {
+    appLogger?.warn?.('[Feishu] URL截图失败', { url: u, error: e.message || String(e) })
     return null
   } finally {
     try { if (win && !win.isDestroyed()) win.destroy() } catch (_) {}
@@ -6030,9 +6082,11 @@ async function processMessageReplace(payload) {
     const { images, files } = collectRecentSessionArtifacts(projectPath, mainSessionId)
     const outBinding = { ...binding, sessionId: mainSessionId, projectPath, remoteId: chatId, ...(binding.channel === 'feishu' && { feishuChatId: chatId }) }
     const recapture = isRecaptureRequestText(messageText)
-    const latestHtmlPath = findRecentHtmlArtifact(projectPath, mainSessionId)
-    if (recapture && latestHtmlPath) {
-      const shot = await captureLocalHtmlScreenshot(latestHtmlPath)
+    const pageTarget = findRecentPageTarget(projectPath, mainSessionId)
+    if (recapture && pageTarget.value) {
+      const shot = pageTarget.kind === 'file'
+        ? await captureLocalHtmlScreenshot(pageTarget.value)
+        : await captureUrlScreenshot(pageTarget.value)
       if (shot) {
         eventBus.emit('chat.session.completed', {
           binding: outBinding,
@@ -6052,7 +6106,7 @@ async function processMessageReplace(payload) {
       })
       return
     }
-    const latestHtml = latestHtmlPath || ((files || []).find((f) => {
+    const latestHtml = (pageTarget.kind === 'file' ? pageTarget.value : '') || ((files || []).find((f) => {
       const pp = String(f?.path || '').trim().toLowerCase()
       return pp.endsWith('.html') || pp.endsWith('.htm')
     })?.path || '')
@@ -6062,6 +6116,16 @@ async function processMessageReplace(payload) {
         eventBus.emit('chat.session.completed', {
           binding: outBinding,
           payload: { text: '已根据上次生成的页面重新截图并发送。', images: [{ path: shot }], files: [] }
+        })
+        return
+      }
+    }
+    if (pageTarget.kind === 'url' && pageTarget.value) {
+      const shot = await captureUrlScreenshot(pageTarget.value)
+      if (shot) {
+        eventBus.emit('chat.session.completed', {
+          binding: outBinding,
+          payload: { text: '已根据上次页面链接重新截图并发送。', images: [{ path: shot }], files: [] }
         })
         return
       }
