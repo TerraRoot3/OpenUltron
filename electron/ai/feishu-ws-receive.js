@@ -12,6 +12,12 @@ function getConfig() {
 let wsClient = null
 let lastError = null
 
+function previewText(input, maxLen = 160) {
+  const s = String(input || '').replace(/\s+/g, ' ').trim()
+  if (!s) return ''
+  return s.length > maxLen ? `${s.slice(0, maxLen)}…` : s
+}
+
 function parseMaybeJson(raw) {
   if (!raw) return null
   if (typeof raw === 'object') return raw
@@ -205,6 +211,7 @@ async function start(onMessage) {
       requireMention: !!parsed.requireMention,
       mentioned: !!parsed.mentioned,
       textLen: (parsed.text || '').length,
+      textPreview: previewText(parsed.text, 200),
       attachments: (parsed.attachments || []).length,
       imageCount: (parsed.attachments || []).filter(a => a?.type === 'image').length,
       fileCount: (parsed.attachments || []).filter(a => a?.type === 'file').length,
