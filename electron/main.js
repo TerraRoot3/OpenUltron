@@ -3669,14 +3669,15 @@ const aiGateway = createGateway({
     for (const p of pathsFromText) {
       if (!seenPath.has(p)) { seenPath.add(p); imageItems.push({ path: p }) }
     }
+    const spawnResultText = extractLatestSessionsSpawnResult(data.messages || [])
     const cleanedFeishu = (stripFeishuScreenshotMisfireText(cleanedRaw) || '').trim()
-    const delegatedToolNames = new Set(['feishu_send_message', 'sessions_spawn', 'sessions_send'])
+    const delegatedToolNames = new Set(['feishu_send_message'])
     const aiAlreadySentFeishu = Array.isArray(data.messages) && data.messages.some(m =>
       m && m.role === 'assistant' && Array.isArray(m.tool_calls) &&
       m.tool_calls.some(tc => tc && tc.function && delegatedToolNames.has(tc.function.name))
     )
-    if (aiAlreadySentFeishu && !cleanedFeishu && imageItems.length === 0) return
-    const textToSend = cleanedFeishu || (imageItems.length > 0 ? '截图已发至当前会话。' : '（无回复内容）')
+    if (aiAlreadySentFeishu && !cleanedFeishu && !spawnResultText && imageItems.length === 0) return
+    const textToSend = cleanedFeishu || spawnResultText || (imageItems.length > 0 ? '截图已发至当前会话。' : '（无回复内容）')
     const outBinding = { sessionId, projectPath: '__feishu__', channel: 'feishu', remoteId: chatId, feishuChatId: chatId }
     const outPayload = { text: textToSend, images: imageItems }
     if (imageItems.length > 0) appLogger?.info?.('[Feishu] 应用内飞书会话完成，带图回发', { imageCount: imageItems.length })
@@ -4575,15 +4576,52 @@ registerChannel('ai-editor-open-files-response', (event, { requestId, files }) =
 // 命令执行情况仅在进行中展示，不保留到历史消息；剥离后保存
 function stripToolExecutionFromMessages(messages) {
   if (!Array.isArray(messages)) return messages
-  return messages
-    .filter(m => m && m.role !== 'tool')
-    .map(m => {
-      const out = { ...m }
-      if (out.toolCalls !== undefined) delete out.toolCalls
-      if (out.tool_calls !== undefined) delete out.tool_calls
-      return out
-    })
-    .filter(m => m.role !== 'assistant' || (m.content && String(m.content).trim()))
+  const sessionSpawnCallIds = new Set()
+  const out = []
+  const toText = (content) => {
+    if (typeof content === 'string') return content.trim()
+    if (Array.isArray(content)) return content.map(x => (x && x.text) || '').join('').trim()
+    return ''
+  }
+  const parseSpawnResult = (content) => {
+    const text = String(content || '').trim()
+    if (!text) return ''
+    try {
+      const obj = JSON.parse(text)
+      if (obj && typeof obj === 'object') {
+        if (obj.result != null && String(obj.result).trim()) return String(obj.result).trim()
+        if (obj.error != null && String(obj.error).trim()) return `子 Agent 执行失败：${String(obj.error).trim()}`
+      }
+    } catch (_) {}
+    return ''
+  }
+  for (const m of messages) {
+    if (!m) continue
+    if (m.role === 'assistant' && Array.isArray(m.tool_calls)) {
+      for (const tc of m.tool_calls) {
+        const fn = tc && tc.function ? tc.function.name : ''
+        const id = tc && tc.id ? String(tc.id) : ''
+        if (fn === 'sessions_spawn' && id) sessionSpawnCallIds.add(id)
+      }
+    }
+    if (m.role === 'tool') {
+      const toolCallId = String(m.tool_call_id || '')
+      if (toolCallId && sessionSpawnCallIds.has(toolCallId)) {
+        const spawnText = parseSpawnResult(m.content)
+        if (spawnText) out.push({ role: 'assistant', content: spawnText })
+      }
+      continue
+    }
+    const item = { ...m }
+    if (item.toolCalls !== undefined) delete item.toolCalls
+    if (item.tool_calls !== undefined) delete item.tool_calls
+    if (item.role === 'assistant') {
+      const txt = toText(item.content)
+      if (!txt) continue
+    }
+    out.push(item)
+  }
+  return out
 }
 
 function isCompactedSummaryMessage(msg) {
@@ -5146,6 +5184,31 @@ function getAssistantText(message) {
   return ''
 }
 
+function extractLatestSessionsSpawnResult(messages = []) {
+  if (!Array.isArray(messages) || messages.length === 0) return ''
+  const spawnCallIds = new Set()
+  for (const m of messages) {
+    if (!m || m.role !== 'assistant' || !Array.isArray(m.tool_calls)) continue
+    for (const tc of m.tool_calls) {
+      if (tc?.function?.name === 'sessions_spawn' && tc.id) spawnCallIds.add(String(tc.id))
+    }
+  }
+  let last = ''
+  for (const m of messages) {
+    if (!m || m.role !== 'tool') continue
+    const tcid = String(m.tool_call_id || '')
+    if (!tcid || !spawnCallIds.has(tcid)) continue
+    const raw = String(m.content || '').trim()
+    if (!raw) continue
+    try {
+      const obj = JSON.parse(raw)
+      const r = obj && obj.result != null ? String(obj.result).trim() : ''
+      if (r) last = r
+    } catch (_) {}
+  }
+  return last
+}
+
 // 主 Agent + 子 Agent：新消息到达时派生子 Agent，不直接停前一个；子 Agent 可调 stop_previous_task 停掉前边，或 wait_for_previous_run 等待前边完成再继续
 function channelSessionKey(binding) {
   return `${binding.projectPath}:${binding.sessionId}`
@@ -5452,6 +5515,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
     const toSend = latestAssistant ? getAssistantText(latestAssistant) : ''
     const { cleanedText: cleanedRaw, filePaths: pathsFromText } = extractLocalResourceScreenshots(toSend)
     const currentRound = getCurrentRoundMessages(finalMessages)
+    const spawnResultText = extractLatestSessionsSpawnResult(currentRound)
     const screenshotsFromTools = extractScreenshotsFromMessages(currentRound)
     const imageItems = []
     const seenPath = new Set()
@@ -5481,12 +5545,14 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
     // 检查 AI 是否已通过工具主动发送过消息，或派生子 agent 处理（无需再补发）
     const channelSendTools = { feishu: 'feishu_send_message', telegram: 'telegram_send_message', dingtalk: 'dingtalk_send_message' }
     const sendToolName = channelSendTools[binding.channel]
-    const delegatedTools = new Set([sendToolName, 'sessions_spawn', 'sessions_send'].filter(Boolean))
+    const delegatedTools = new Set([sendToolName].filter(Boolean))
     const aiAlreadySent = delta.some(m =>
       m && m.role === 'assistant' && Array.isArray(m.tool_calls) &&
       m.tool_calls.some(tc => tc && tc.function && delegatedTools.has(tc.function.name))
     )
-    const textToSend = (cleanedText && cleanedText.trim()) ? cleanedText.trim() : (imageItems.length > 0 ? '截图已发至当前会话。' : null)
+    const textToSend = (cleanedText && cleanedText.trim())
+      ? cleanedText.trim()
+      : (spawnResultText || (imageItems.length > 0 ? '截图已发至当前会话。' : null))
     if (binding.channel === 'feishu' && userMessageId && typingReactionId) {
       await feishuNotify.deleteMessageReaction(userMessageId, typingReactionId).catch(() => {})
     }
