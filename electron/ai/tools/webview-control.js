@@ -70,14 +70,31 @@ const definition = {
       index:           { type: 'number',  description: 'get_console_message 时可选，默认最后一条' },
       width:           { type: 'number',  description: 'resize_page 时必填' },
       height:          { type: 'number',  description: 'resize_page 时必填' },
+      fullPage:        { type: 'boolean', description: 'take_screenshot 时可选，是否截取整页' },
+      full_page:       { type: 'boolean', description: 'take_screenshot 时可选，fullPage 的别名' },
+      format:          { type: 'string',  description: 'take_screenshot 时可选：png/jpeg' },
+      quality:         { type: 'number',  description: 'take_screenshot 时可选：jpeg 质量 1-100' },
       timeout:         { type: 'number',  description: '超时毫秒，默认 30000' }
     },
     required: ['action']
   }
 }
 
+function toBool(v, fallback = false) {
+  if (typeof v === 'boolean') return v
+  const s = String(v == null ? '' : v).trim().toLowerCase()
+  if (!s) return fallback
+  if (['true', '1', 'yes', 'y', 'on'].includes(s)) return true
+  if (['false', '0', 'no', 'n', 'off'].includes(s)) return false
+  return fallback
+}
+
 async function execute(args) {
-  const { action, user_agent, url, cookie_url, cookie_name, cookie_value, cookie_domain, cookie_path, cookie_http_only, cookie_secure, cookie_expires, js_code, selector, target_selector, offset_x, offset_y, value, fields, text, key, dialog_action, prompt_text, index, width, height, timeout = 30000 } = args
+  const {
+    action, user_agent, url, cookie_url, cookie_name, cookie_value, cookie_domain, cookie_path, cookie_http_only, cookie_secure, cookie_expires,
+    js_code, selector, target_selector, offset_x, offset_y, value, fields, text, key, dialog_action, prompt_text, index, width, height,
+    fullPage, full_page, format, quality, timeout = 30000
+  } = args
 
   if (action === 'close') {
     browserManager.destroy()
@@ -133,13 +150,34 @@ async function execute(args) {
   }
 
   if (action === 'take_screenshot') {
+    const wantFullPage = toBool(fullPage, toBool(full_page, false))
+    const fmt = String(format || 'png').trim().toLowerCase() === 'jpeg' ? 'jpeg' : 'png'
+    const q = Number.isFinite(Number(quality)) ? Math.max(1, Math.min(100, Number(quality))) : 80
+    let restoreSize = null
+    if (wantFullPage) {
+      try {
+        const dim = await wc.executeJavaScript(`({
+          width: Math.max(document.documentElement.scrollWidth, document.body ? document.body.scrollWidth : 0, window.innerWidth),
+          height: Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0, window.innerHeight)
+        })`)
+        const w = Math.max(800, Math.min(5000, Number(dim?.width || 1366)))
+        const h = Math.max(600, Math.min(12000, Number(dim?.height || 900)))
+        const cur = win.getContentBounds()
+        restoreSize = { width: cur.width, height: cur.height }
+        win.setContentSize(w, h)
+        await new Promise((r) => setTimeout(r, 120))
+      } catch (_) { /* ignore */ }
+    }
     const img = await wc.capturePage()
-    const pngBuffer = img.toPNG()
+    const outBuffer = fmt === 'jpeg' ? img.toJPEG(q) : img.toPNG()
+    if (restoreSize) {
+      try { win.setContentSize(restoreSize.width, restoreSize.height) } catch (_) {}
+    }
     const screenshotDir = getAppRootPath('screenshots')
     fs.mkdirSync(screenshotDir, { recursive: true })
-    const filename = `screenshot-${Date.now()}.png`
+    const filename = `screenshot-${Date.now()}.${fmt === 'jpeg' ? 'jpg' : 'png'}`
     const filepath = path.join(screenshotDir, filename)
-    fs.writeFileSync(filepath, pngBuffer)
+    fs.writeFileSync(filepath, outBuffer)
     const resourceUrl = `local-resource://screenshots/${filename}`
     return {
       file_path: filepath,
