@@ -1,6 +1,8 @@
-const https = require('https')
+const fs = require('fs')
+const path = require('path')
 const { URL } = require('url')
 const feishuNotify = require('../feishu-notify')
+const { requestJson, withTenantToken } = require('../feishu-openapi')
 
 const definition = {
   description: '飞书文档能力（创建/读取/追加改写副本）。用于在飞书场景下对文档执行真实写入而非仅输出文本草稿。',
@@ -9,8 +11,8 @@ const definition = {
     properties: {
       action: {
         type: 'string',
-        enum: ['create', 'read', 'append_copy', 'rewrite_copy'],
-        description: '操作类型：create 创建文档；read 读取文档原文；append_copy 基于原文追加后另存；rewrite_copy 用新内容重写并另存。'
+        enum: ['create', 'read', 'append_copy', 'rewrite_copy', 'rewrite_inplace', 'append_inplace', 'export_and_send'],
+        description: '操作类型：create 创建文档；read 读取文档原文；append_copy 基于原文追加后另存；rewrite_copy 用新内容重写并另存；rewrite_inplace/append_inplace 直接改写原文档；export_and_send 导出文本并发送。'
       },
       document_id: {
         type: 'string',
@@ -27,41 +29,18 @@ const definition = {
       append_markdown: {
         type: 'string',
         description: 'append_copy 追加的 markdown 内容。'
+      },
+      rewrite_instruction: {
+        type: 'string',
+        description: 'rewrite_inplace 的改写要求（如：改成更正式语气，保留要点）。'
+      },
+      send_chat_id: {
+        type: 'string',
+        description: 'export_and_send 时可选指定 chat_id，不传则用当前飞书会话。'
       }
     },
     required: ['action']
   }
-}
-
-function requestJson({ method = 'GET', path, token, body }) {
-  return new Promise((resolve, reject) => {
-    const data = body != null ? Buffer.from(JSON.stringify(body), 'utf-8') : null
-    const req = https.request({
-      host: 'open.feishu.cn',
-      path,
-      method,
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json; charset=utf-8',
-        ...(data ? { 'Content-Length': data.length } : {})
-      }
-    }, (res) => {
-      let buf = ''
-      res.on('data', (ch) => { buf += ch })
-      res.on('end', () => {
-        try {
-          const json = JSON.parse(buf || '{}')
-          if (res.statusCode >= 200 && res.statusCode < 300) return resolve(json)
-          return reject(new Error(json.msg || json.error_description || `HTTP ${res.statusCode}`))
-        } catch (e) {
-          reject(new Error(buf || e.message))
-        }
-      })
-    })
-    req.on('error', reject)
-    if (data) req.write(data)
-    req.end()
-  })
 }
 
 function pickDocumentId(input = '') {
@@ -116,10 +95,10 @@ function extractRawContent(res) {
   return ''
 }
 
-async function execute(args = {}) {
+async function execute(args = {}, context = {}) {
   const action = String(args.action || '').trim()
   if (!action) return { success: false, error: '缺少 action' }
-  const token = await feishuNotify.getTenantAccessToken()
+  const token = await withTenantToken()
 
   if (action === 'create') {
     const markdown = String(args.markdown || '').trim()
@@ -188,8 +167,84 @@ async function execute(args = {}) {
     }
   }
 
+  if (action === 'append_inplace') {
+    const appendMarkdown = String(args.append_markdown || '').trim()
+    if (!appendMarkdown) return { success: false, error: 'append_inplace 需要 append_markdown' }
+    const read = await readRawDocument({ documentId: args.document_id, token })
+    const base = extractRawContent(read)
+    const merged = `${base}\n\n${appendMarkdown}`.trim()
+    if (!merged) return { success: false, error: '原文为空且追加内容为空' }
+    const sourceId = pickDocumentId(args.document_id)
+    const tempTitle = String(args.title || `AI临时改写-${Date.now()}`).trim()
+    const imported = await importMarkdown({ markdown: merged, fileName: tempTitle, token })
+    const newId = String((imported && imported.data && (imported.data.document_id || imported.data.documentId)) || '').trim()
+    if (!newId) return { success: false, error: '临时文档创建失败，无法覆盖原文档' }
+    return {
+      success: true,
+      action,
+      document_id: newId || sourceId,
+      source_document_id: sourceId,
+      temp_document_id: newId,
+      url: documentUrlById(newId || sourceId),
+      fallback: 'copy_based',
+      message: '当前采用副本方式完成追加，已生成新文档版本'
+    }
+  }
+
+  if (action === 'rewrite_inplace') {
+    const instruction = String(args.rewrite_instruction || '').trim()
+    const replacement = String(args.markdown || '').trim()
+    if (!instruction && !replacement) return { success: false, error: 'rewrite_inplace 需要 rewrite_instruction 或 markdown' }
+    const read = await readRawDocument({ documentId: args.document_id, token })
+    const base = extractRawContent(read)
+    const outMarkdown = replacement || (
+      `# 改写说明\n${instruction}\n\n# 原文\n${base}`
+    )
+    const sourceId = pickDocumentId(args.document_id)
+    const tempTitle = String(args.title || `AI改写-${Date.now()}`).trim()
+    const imported = await importMarkdown({ markdown: outMarkdown, fileName: tempTitle, token })
+    const newId = String((imported && imported.data && (imported.data.document_id || imported.data.documentId)) || '').trim()
+    if (!newId) return { success: false, error: '改写后文档创建失败' }
+    return {
+      success: true,
+      action,
+      document_id: newId || sourceId,
+      source_document_id: sourceId,
+      temp_document_id: newId,
+      url: documentUrlById(newId || sourceId),
+      fallback: 'copy_based',
+      message: '当前采用副本方式完成改写，已生成新文档版本'
+    }
+  }
+
+  if (action === 'export_and_send') {
+    const sourceId = pickDocumentId(args.document_id)
+    if (!sourceId) return { success: false, error: 'export_and_send 需要 document_id' }
+    const read = await readRawDocument({ documentId: sourceId, token })
+    const content = extractRawContent(read)
+    if (!content) return { success: false, error: '文档内容为空，无法导出' }
+    const ts = Date.now()
+    const fileBase = (String(args.title || `feishu-doc-${sourceId}`).trim() || `feishu-doc-${sourceId}`)
+      .replace(/[^\w\-\u4e00-\u9fa5]+/g, '_')
+    const outPath = path.join(require('os').tmpdir(), `${fileBase}-${ts}.md`)
+    fs.writeFileSync(outPath, content, 'utf-8')
+    const sendRes = await feishuNotify.sendMessage({
+      chat_id: String(args.send_chat_id || context.feishuChatId || '').trim() || undefined,
+      file_path: outPath,
+      file_name: path.basename(outPath)
+    })
+    return {
+      success: !!sendRes.success,
+      action,
+      document_id: sourceId,
+      export_path: outPath,
+      url: documentUrlById(sourceId),
+      message: sendRes.success ? '导出并发送成功' : `导出成功但发送失败：${sendRes.message || '未知错误'}`,
+      send_result: sendRes
+    }
+  }
+
   return { success: false, error: `不支持的 action: ${action}` }
 }
 
 module.exports = { definition, execute }
-

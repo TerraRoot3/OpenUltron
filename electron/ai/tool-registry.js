@@ -202,6 +202,20 @@ function createDefaultRegistry(options = {}) {
     console.warn('加载 feishu_doc_capability 工具失败:', e.message)
   }
 
+  // 飞书多维表格能力：表/字段/记录
+  try {
+    registry.register('feishu_bitable_capability', require('./tools/feishu-bitable-capability'))
+  } catch (e) {
+    console.warn('加载 feishu_bitable_capability 工具失败:', e.message)
+  }
+
+  // 飞书电子表格能力：读取/写入单元格范围
+  try {
+    registry.register('feishu_sheets_capability', require('./tools/feishu-sheets-capability'))
+  } catch (e) {
+    console.warn('加载 feishu_sheets_capability 工具失败:', e.message)
+  }
+
   // Telegram 通知：发送文本/语音
   try {
     registry.register('telegram_send_message', require('./tools/telegram-send-message'))

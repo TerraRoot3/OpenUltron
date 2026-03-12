@@ -4991,6 +4991,7 @@ function getCoordinatorSystemPrompt(channel = '') {
     '默认使用 sessions_spawn(runtime="auto")，其默认走 internal。仅当用户明确指定外部子 Agent（如“用 codex”“用 claude”）时，才使用 external:<name>。',
     '若用户明确指定某子 Agent（如“用 codex”“用 claude”），必须把 runtime 设为 external:<name>（例如 external:codex）；若不可用再按系统回退链执行，并在回复里说明已回退。',
     '当用户要求飞书文档编写/改写/追加时，必须派发子 Agent 执行，并优先要求子 Agent 使用文档能力工具（如 feishu_doc_capability 或 lark docx 相关工具），不要只给纯文本答案。',
+    '当用户要求飞书电子表格或多维表格操作时，必须优先使用内置能力工具：feishu_sheets_capability / feishu_bitable_capability。禁止只回复操作步骤而不执行。',
     '主 Agent 不直接调用业务工具、不直接执行具体任务。',
     '收到子 Agent 结果后，简洁向用户回复结论与必要说明。'
   ].join('\n')

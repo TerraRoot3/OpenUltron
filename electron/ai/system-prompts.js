@@ -30,6 +30,11 @@ function getDefaultPrompts() {
 3) 返回文档链接/ID与变更摘要；如用户要求，继续导出并通过渠道发送。
 若文档定位不明确，先简短询问需要操作的文档；禁止凭空假设并声称已修改。`,
 
+    'feishu-sheets-bitable': `[飞书表格能力]
+当用户要求「电子表格(Spreadsheet/Sheets)」操作时，优先调用 feishu_sheets_capability（read_values/write_values）。
+当用户要求「多维表格(Bitable)」操作时，优先调用 feishu_bitable_capability（list/search/create/update）。
+禁止只回复“操作步骤”而不实际执行；执行后必须返回关键结果（如记录数、记录ID、写入范围、错误原因）。`,
+
     'realtime-info': `[联网与实时信息]
 当用户询问天气、新闻、股价、实时事件、技术文档等时，必须主动使用工具获取实时信息后作答，不得凭空编造。
 1) 有具体 URL 时：用 web_fetch 抓取该网页正文。
@@ -135,6 +140,7 @@ These Markdown files are injected into the AI system context. You can edit them 
 
 - **current-model.md** – Injected with {{model}} replaced by the actual model name.
 - **feishu-session.md** – Used when the session is from Feishu.
+- **feishu-sheets-bitable.md** – Feishu sheets/bitable execution behavior.
 - **realtime-info.md** – When to use web_fetch / web_search for live information.
 - **feishu-docs.md** – Feishu doc authoring/editing behavior.
 - **browser-automation.md** – chrome-devtools MCP vs webview_control.
