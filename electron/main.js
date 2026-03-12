@@ -3005,7 +3005,7 @@ const aiMcpManager = new McpManager()
 const BUILTIN_CHROME_DEVTOOLS_MCP = {
   'chrome-devtools': {
     command: 'npx',
-    args: ['-y', 'chrome-devtools-mcp@latest']
+    args: ['-y', 'chrome-devtools-mcp@latest', '--headless=true', '--isolated=true']
   }
 }
 
@@ -3016,16 +3016,25 @@ function parseMcpJsonConfig(jsonStr, disabledServers = []) {
     // 兼容 Claude Desktop 格式（带 mcpServers 包装）
     if (obj.mcpServers && typeof obj.mcpServers === 'object') obj = obj.mcpServers
     const merged = { ...BUILTIN_CHROME_DEVTOOLS_MCP, ...obj }
-    return Object.entries(merged).map(([name, cfg]) => ({
+    return Object.entries(merged).map(([name, cfg]) => {
+      const rawArgs = Array.isArray(cfg.args) ? [...cfg.args] : []
+      let args = rawArgs
+      if (name === 'chrome-devtools') {
+        const strArgs = rawArgs.map((x) => String(x))
+        if (!strArgs.some((x) => x.startsWith('--headless'))) args.push('--headless=true')
+        if (!strArgs.some((x) => x.startsWith('--isolated'))) args.push('--isolated=true')
+      }
+      return ({
       name,
       type: (cfg.type === 'sse' || cfg.url) ? 'sse' : 'stdio',
       command: cfg.command,
-      args: cfg.args || [],
+      args,
       env: cfg.env || {},
       url: cfg.url,
       headers: cfg.headers || {},
       enabled: !disabledServers.includes(name)
-    }))
+      })
+    })
   } catch { return [] }
 }
 
@@ -4096,6 +4105,10 @@ const aiGateway = createGateway({
       lastText = typeof last.content === 'string' ? last.content : (last.content && Array.isArray(last.content) ? last.content.map(c => (c && c.text) || '').join('') : '')
     }
     const { cleanedText: cleanedRaw, filePaths: pathsFromText } = extractLocalResourceScreenshots(lastText)
+    const spawnResultText = extractLatestSessionsSpawnResult(data.messages || [])
+    const { cleanedText: spawnCleanedRaw, filePaths: spawnPathsFromText } = extractLocalResourceScreenshots(spawnResultText || '')
+    const cleanedFeishu = (stripFeishuScreenshotMisfireText(cleanedRaw) || '').trim()
+    const cleanedSpawn = (stripFeishuScreenshotMisfireText(spawnCleanedRaw) || '').trim()
     let imageItems = []
     let fileItems = []
     const seenPath = new Set()
@@ -4107,6 +4120,9 @@ const aiGateway = createGateway({
     for (const p of pathsFromText) {
       if (!seenPath.has(p)) { seenPath.add(p); imageItems.push({ path: p }) }
     }
+    for (const p of spawnPathsFromText) {
+      if (!seenPath.has(p)) { seenPath.add(p); imageItems.push({ path: p }) }
+    }
     for (const p of extractLocalFilesFromText(cleanedRaw)) {
       if (isImageFilePath(p) && !seenPath.has(p)) {
         seenPath.add(p)
@@ -4114,15 +4130,19 @@ const aiGateway = createGateway({
       }
       // 飞书自动回发阶段仅自动发送图片；非图片文件由显式工具调用发送，避免误发本地路径
     }
-    const spawnResultText = extractLatestSessionsSpawnResult(data.messages || [])
-    const cleanedFeishu = (stripFeishuScreenshotMisfireText(cleanedRaw) || '').trim()
+    for (const p of extractLocalFilesFromText(cleanedSpawn)) {
+      if (isImageFilePath(p) && !seenPath.has(p)) {
+        seenPath.add(p)
+        imageItems.push({ path: p })
+      }
+    }
     const delegatedToolNames = new Set(['feishu_send_message'])
     const aiAlreadySentFeishu = Array.isArray(data.messages) && data.messages.some(m =>
       m && m.role === 'assistant' && Array.isArray(m.tool_calls) &&
       m.tool_calls.some(tc => tc && tc.function && delegatedToolNames.has(tc.function.name))
     )
-    if (aiAlreadySentFeishu && !cleanedFeishu && !spawnResultText && imageItems.length === 0 && fileItems.length === 0) return
-    const textToSend = cleanedFeishu || spawnResultText || (imageItems.length > 0 ? '截图已发至当前会话。' : '（无回复内容）')
+    if (aiAlreadySentFeishu && !cleanedFeishu && !cleanedSpawn && imageItems.length === 0 && fileItems.length === 0) return
+    const textToSend = cleanedFeishu || cleanedSpawn || (imageItems.length > 0 ? '截图已发至当前会话。' : '（无回复内容）')
     const outBinding = { sessionId, projectPath: '__feishu__', channel: 'feishu', remoteId: chatId, feishuChatId: chatId }
     const outPayload = { text: textToSend, images: imageItems, files: fileItems }
     appLogger?.info?.('[Feishu] 回发载荷', {
@@ -6701,6 +6721,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
     const { cleanedText: cleanedRaw, filePaths: pathsFromText } = extractLocalResourceScreenshots(toSend)
     const currentRound = getCurrentRoundMessages(finalMessages)
     const spawnResultText = extractLatestSessionsSpawnResult(currentRound)
+    const { cleanedText: spawnCleanedRaw, filePaths: spawnPathsFromText } = extractLocalResourceScreenshots(spawnResultText || '')
     const screenshotsFromTools = extractScreenshotsFromMessages(currentRound)
     let imageItems = []
     const seenPath = new Set()
@@ -6717,6 +6738,9 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
     for (const p of pathsFromText) {
       if (!seenPath.has(p)) { seenPath.add(p); imageItems.push({ path: p }) }
     }
+    for (const p of spawnPathsFromText) {
+      if (!seenPath.has(p)) { seenPath.add(p); imageItems.push({ path: p }) }
+    }
     for (const item of screenshotsFromTools) {
       if (item.path && !seenPath.has(item.path)) {
         seenPath.add(item.path)
@@ -6727,12 +6751,19 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
       }
     }
     const cleanedText = stripFeishuScreenshotMisfireText(cleanedRaw)
+    const cleanedSpawnText = stripFeishuScreenshotMisfireText(spawnCleanedRaw)
     let fileItems = []
     for (const p of extractLocalFilesFromText(cleanedText)) {
       if (isImageFilePath(p)) {
         if (!seenPath.has(p)) { seenPath.add(p); imageItems.push({ path: p }) }
       } else {
         fileItems.push({ path: p })
+      }
+    }
+    for (const p of extractLocalFilesFromText(cleanedSpawnText)) {
+      if (isImageFilePath(p) && !seenPath.has(p)) {
+        seenPath.add(p)
+        imageItems.push({ path: p })
       }
     }
     const regResult = registerArtifactsFromItems({
@@ -6838,7 +6869,9 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
       ? forcedSpawnText
       : ((cleanedText && cleanedText.trim())
         ? cleanedText.trim()
-        : (spawnResultText || (imageItems.length > 0 ? '截图已发至当前会话。' : null)))
+        : ((cleanedSpawnText && cleanedSpawnText.trim())
+            ? cleanedSpawnText.trim()
+            : (imageItems.length > 0 ? '截图已发至当前会话。' : null)))
     const textToSend = baseTextToSend
     if (binding.channel === 'feishu' && userMessageId && typingReactionId) {
       await feishuNotify.deleteMessageReaction(userMessageId, typingReactionId).catch(() => {})
