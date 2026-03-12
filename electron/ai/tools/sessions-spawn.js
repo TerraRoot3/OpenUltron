@@ -59,7 +59,7 @@ function createSessionsSpawnTool(runSubChat) {
         systemPrompt: system_prompt && String(system_prompt).trim() ? String(system_prompt).trim() : undefined,
         roleName: role_name != null && String(role_name).trim() !== '' ? String(role_name).trim() : undefined,
         runtime: runtime != null && String(runtime).trim() !== '' ? String(runtime).trim() : undefined,
-        parentSessionId: context.sessionId || '',
+        parentSessionId,
         feishuChatId: context.feishuChatId || context.remoteId || '',
         stream,
         provider: provider != null && String(provider).trim() !== '' ? String(provider).trim() : undefined,
@@ -91,3 +91,11 @@ function createSessionsSpawnTool(runSubChat) {
 }
 
 module.exports = { definition, createSessionsSpawnTool }
+    const normalizeParentSessionId = (sid) => {
+      const s = String(sid || '').trim()
+      if (!s) return ''
+      // run 会话格式: <mainSessionId>-run-<timestamp>
+      const m = s.match(/^(.*)-run-\d+$/)
+      return m && m[1] ? String(m[1]).trim() : s
+    }
+    const parentSessionId = normalizeParentSessionId(context.sessionId || '')

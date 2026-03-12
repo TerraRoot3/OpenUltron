@@ -5895,6 +5895,7 @@ const channelCurrentRun = new Map() // key -> Array<{ runId, runSessionId, promi
 const channelKeyByRunSessionId = new Map() // runSessionId -> key（供 stop_previous_task / wait_for_previous_run 用）
 const runStartTimeBySessionId = new Map() // runSessionId -> startTime
 const abortedRunSessionIds = new Set() // 被 stop_previous_task 停掉的 run，完成时不合并、不回发
+const completedRunSessionIds = new Set() // run 已完成（用于抑制长耗时安抚消息竞态）
 const LONG_RUN_NOTIFY_START_SEC = 60
 const LONG_RUN_NOTIFY_INTERVAL_SEC = 60
 const LONG_RUN_NOTIFY_MAX_TIMES = 5
@@ -6470,6 +6471,10 @@ function createLongRunNotifier({ binding, mainSessionId, projectPath, chatId, ke
   }
   const notifyOnce = () => {
     if (stopped) return
+    if (completedRunSessionIds.has(runSessionId)) {
+      stopAll()
+      return
+    }
     if (sentCount >= LONG_RUN_NOTIFY_MAX_TIMES) {
       stopAll()
       return
@@ -6619,6 +6624,7 @@ async function processMessageReplace(payload) {
     runSessionId
   })
   const promise = handleChatMessageReceived(payload, runSessionId, mainSessionId, key, runId, startTime).finally(() => {
+    completedRunSessionIds.add(runSessionId)
     try { stopLongRunNotify() } catch (_) {}
     const arr = channelCurrentRun.get(key)
     if (arr) {
@@ -6628,6 +6634,7 @@ async function processMessageReplace(payload) {
     }
     channelKeyByRunSessionId.delete(runSessionId)
     runStartTimeBySessionId.delete(runSessionId)
+    completedRunSessionIds.delete(runSessionId)
   })
   const runEntry = {
     runId,
@@ -6735,7 +6742,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
 
   const messages = (conv && conv.messages) ? [...conv.messages] : []
   messages.push({ role: 'system', content: getCoordinatorSystemPrompt(binding.channel) })
-  messages.push({ role: 'user', content: message.text })
+  messages.push({ role: 'user', content: userDisplayText || String(message?.text || '').trim() || '[附件]' })
   const originalConvLength = messages.length - 1
   const nowIso = new Date().toISOString()
   conversationFile.updateConversationMeta(projectKey, mainSessionId, { updatedAt: nowIso })
@@ -6844,6 +6851,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
       }
       return
     }
+    completedRunSessionIds.add(runSessionId)
     let delta = finalMessages.slice(originalConvLength)
     const getMsgText = (m) => {
       if (!m) return ''
@@ -7083,6 +7091,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
     }
     eventBus.emit('chat.session.completed', { binding: outBinding, payload: outPayload })
   } catch (e) {
+    completedRunSessionIds.add(runSessionId)
     console.error(`[${binding.channel}] 处理或回复失败:`, e.message)
     if (binding.channel === 'feishu' && userMessageId && typingReactionId) {
       await feishuNotify.deleteMessageReaction(userMessageId, typingReactionId).catch(() => {})
