@@ -166,6 +166,13 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
     const requireMention = !!(inbound && inbound.requireMention)
     const mentioned = !!(inbound && inbound.mentioned)
     const inboundAttachments = Array.isArray(inbound && inbound.attachments) ? inbound.attachments : []
+    const textPreview = compactText(text).slice(0, 200)
+    const attachmentSummary = inboundAttachments.map((a) => ({
+      type: a && a.type ? String(a.type) : '',
+      name: a && a.name ? String(a.name).slice(0, 80) : '',
+      has_image_key: !!(a && a.image_key),
+      has_file_key: !!(a && a.file_key)
+    }))
     appLogger?.info?.('[Feishu] 入站消息', {
       chatId: chatId || '',
       messageId: messageId || '',
@@ -173,7 +180,9 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
       requireMention,
       mentioned,
       textLen: String(text || '').length,
-      inboundAttachmentCount: inboundAttachments.length
+      textPreview,
+      inboundAttachmentCount: inboundAttachments.length,
+      attachments: attachmentSummary
     })
     if (messageId) {
       const sizeBefore = feishuRepliedMessageIds.size
@@ -411,6 +420,20 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
     async send(binding, payload) {
       const chatId = binding.remoteId
       const FEISHU_IMAGE_MAX_BYTES = 4 * 1024 * 1024
+      const imageCount = Array.isArray(payload.images) ? payload.images.length : 0
+      const fileCount = Array.isArray(payload.files) ? payload.files.length : 0
+      const text = (payload.text && payload.text.trim()) ? payload.text.trim() : '（无回复内容）'
+      appLogger?.info?.('[Feishu] 出站消息请求', {
+        chatId: chatId || '',
+        textLen: text.length,
+        textPreview: text.slice(0, 200),
+        imageCount,
+        fileCount
+      })
+      let imageSent = 0
+      let imageFailed = 0
+      let fileSent = 0
+      let fileFailed = 0
       if (payload.images && payload.images.length > 0) {
         for (const img of payload.images) {
           let imageBase64 = null
@@ -447,7 +470,10 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
             image_filename: imageFilename
           })
           if (!result || !result.success) {
+            imageFailed++
             await feishuNotify.sendMessage({ chat_id: chatId, text: `截图发送失败：${(result && result.message) || '未知'}` }).catch(() => {})
+          } else {
+            imageSent++
           }
         }
       }
@@ -467,12 +493,23 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
             file_name: (f && f.name) ? String(f.name) : path.basename(p)
           })
           if (!result || !result.success) {
+            fileFailed++
             await feishuNotify.sendMessage({ chat_id: chatId, text: `文件发送失败：${(result && result.message) || '未知'}` }).catch(() => {})
+          } else {
+            fileSent++
           }
         }
       }
-      const text = (payload.text && payload.text.trim()) ? payload.text.trim() : '（无回复内容）'
-      await feishuNotify.sendMessage({ chat_id: chatId, text })
+      const textResult = await feishuNotify.sendMessage({ chat_id: chatId, text })
+      appLogger?.info?.('[Feishu] 出站消息结果', {
+        chatId: chatId || '',
+        textSuccess: !!(textResult && textResult.success),
+        textMessage: textResult && textResult.message ? String(textResult.message).slice(0, 160) : '',
+        imageSent,
+        imageFailed,
+        fileSent,
+        fileFailed
+      })
     }
   }
 }

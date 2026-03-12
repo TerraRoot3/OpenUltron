@@ -1,5 +1,6 @@
 // 工具：向飞书会话发送消息（文本 / 图片 / 文件 / 富文本 / 语音 / 图文）
 const feishuNotify = require('../feishu-notify')
+const { logger: appLogger } = require('../../app-logger')
 
 const definition = {
   description: '向飞书群或会话发送消息。支持 text、image、file、post（富文本）、audio（语音）、media（图文）。语音支持三种方式：audio_file_key、audio_file_path（本地 opus）、audio_text（内置 node-edge-tts 生成 mp3 再转 opus 上传；无需额外安装依赖）。音色建议先用 tts_voice_manager 配置别名与默认值。当用户是在飞书里与机器人对话时，不传 chat_id 会自动发往当前会话。',
@@ -132,6 +133,12 @@ async function execute(args) {
   } = args || {}
 
   const opts = { chat_id: chat_id && chat_id.trim() ? chat_id.trim() : undefined }
+  let mode = 'text'
+  if (post_title != null || (post_content && post_content.length > 0)) mode = 'post'
+  else if (audio_file_key || audio_file_path || audio_text) mode = 'audio'
+  else if (media_file_key || media_file_path) mode = 'media'
+  else if (image_key || image_base64) mode = 'image'
+  else if (file_key || file_path) mode = 'file'
 
   if (post_title != null || (post_content && post_content.length > 0)) {
     opts.post = buildPostPayload(post_title, post_content)
@@ -163,7 +170,26 @@ async function execute(args) {
     opts.text = String(text)
   }
 
+  appLogger?.info?.('[FeishuTool] feishu_send_message 调用', {
+    mode,
+    chat_id: opts.chat_id || '',
+    has_text: typeof opts.text === 'string' && opts.text.length > 0,
+    text_len: typeof opts.text === 'string' ? opts.text.length : 0,
+    text_preview: typeof opts.text === 'string' ? opts.text.slice(0, 160) : '',
+    has_image_key: !!opts.image_key,
+    has_image_base64: !!opts.image_base64,
+    has_file_key: !!opts.file_key,
+    has_file_path: !!opts.file_path,
+    has_audio: !!(opts.audio_file_key || opts.audio_file_path || opts.audio_text),
+    has_media: !!(opts.media_file_key || opts.media_file_path)
+  })
+
   const result = await feishuNotify.sendMessage(opts)
+  appLogger?.info?.('[FeishuTool] feishu_send_message 返回', {
+    success: !!(result && result.success),
+    message: result && result.message ? String(result.message).slice(0, 160) : '',
+    message_id: result && result.message_id ? result.message_id : ''
+  })
   return result
 }
 
