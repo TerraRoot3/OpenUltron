@@ -60,6 +60,7 @@ function createSessionsSpawnTool(runSubChat) {
         roleName: role_name != null && String(role_name).trim() !== '' ? String(role_name).trim() : undefined,
         runtime: runtime != null && String(runtime).trim() !== '' ? String(runtime).trim() : undefined,
         parentSessionId: context.sessionId || '',
+        feishuChatId: context.feishuChatId || context.remoteId || '',
         stream,
         provider: provider != null && String(provider).trim() !== '' ? String(provider).trim() : undefined,
         model: model && String(model).trim() ? String(model).trim() : undefined,

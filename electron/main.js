@@ -3683,7 +3683,7 @@ function inferPreferredExternalRuntimeFromText(text = '') {
   return ''
 }
 
-async function runByInternalSubAgent({ task, systemPrompt, roleName, model, projectPath, provider, eventSink }, subSessionId) {
+async function runByInternalSubAgent({ task, systemPrompt, roleName, model, projectPath, provider, eventSink, feishuChatId }, subSessionId) {
   const messages = []
   const rolePrompt = roleName && String(roleName).trim()
     ? `你当前扮演的角色是「${String(roleName).trim()}」。请严格按该角色完成任务，并仅输出该角色应给出的结果。`
@@ -3726,7 +3726,7 @@ async function runByInternalSubAgent({ task, systemPrompt, roleName, model, proj
     config: resolvedConfig,
     projectPath: projectPath || '__main_chat__',
     panelId: undefined,
-    feishuChatId: undefined
+    feishuChatId: feishuChatId && String(feishuChatId).trim() ? String(feishuChatId).trim() : undefined
   })
   if (!result.success) {
     return { success: false, error: result.error || '子 Agent 执行失败', subSessionId, runtime: 'internal' }
@@ -3743,7 +3743,7 @@ async function runByInternalSubAgent({ task, systemPrompt, roleName, model, proj
 
 // 多 Agent：派生子 Agent 执行任务并返回结果（sessions_spawn）
 async function runSubChat(opts) {
-  const { task, systemPrompt, roleName, model, projectPath, provider, runtime, parentSessionId, stream } = opts || {}
+  const { task, systemPrompt, roleName, model, projectPath, provider, runtime, parentSessionId, feishuChatId, stream } = opts || {}
   const subSessionId = `sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const commandLogLines = []
   const pushCommandLog = (line) => {
@@ -3880,7 +3880,8 @@ async function runSubChat(opts) {
           model,
           projectPath,
           provider,
-          eventSink: internalEventSink
+          eventSink: internalEventSink,
+          feishuChatId
         }, subSessionId)
         if (out.success) {
           pushCommandLog('[meta] attempt internal success')
@@ -6857,6 +6858,8 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
           task: String(message?.text || '').trim(),
           roleName: '执行助手',
           projectPath,
+          parentSessionId: mainSessionId,
+          feishuChatId: binding.channel === 'feishu' ? chatId : '',
           runtime: 'auto',
           stream: {
             sendToolResult: (obj) => sendFeishuToolResultEvent(forcedToolCallId, 'sessions_spawn', obj)
