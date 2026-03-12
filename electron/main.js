@@ -3460,11 +3460,13 @@ async function runByExternalSubAgent(spec, ctx, resolvedCommand = '') {
     ? rawProjectPath
     : getWorkspaceRoot()
   const command = String(resolvedCommand || spec.command || '').trim() || spec.command
+  const timeoutMs = 180000
   const attempts = []
   const builders = Array.isArray(spec.runArgBuilders) ? spec.runArgBuilders : []
   for (let idx = 0; idx < builders.length; idx++) {
     const buildArgs = builders[idx]
     const args = buildArgs(prompt)
+    console.log('[SubAgentDispatch] 外部子Agent执行尝试', `external:${spec.id}`, `attempt=${idx + 1}/${builders.length}`, `cmd=${command}`, `cwd=${cwd}`, `timeoutMs=${timeoutMs}`)
     try {
       appLogger?.info?.('[SubAgentDispatch] 外部子Agent执行尝试', {
         runtime: `external:${spec.id}`,
@@ -3476,9 +3478,12 @@ async function runByExternalSubAgent(spec, ctx, resolvedCommand = '') {
         argsPreview: args.map((x) => String(x)).slice(0, 4)
       })
     } catch (_) {}
-    const r = await runCliCommand(command, args, { cwd, timeoutMs: 10 * 60 * 1000 })
+    const r = await runCliCommand(command, args, { cwd, timeoutMs })
     const output = String(r.stdout || r.stderr || '').trim()
     const errout = String(r.stderr || '').trim()
+    if (!r.success) {
+      console.warn('[SubAgentDispatch] 外部子Agent单次尝试失败', `external:${spec.id}`, `exit=${r.exitCode}`, `error=${r.error || ''}`, `stderr=${errout.slice(-300)}`)
+    }
     attempts.push({
       args,
       success: !!r.success,
@@ -3509,12 +3514,10 @@ function resolveRuntimeChain(runtime, availableExternalIds) {
   if (normalized === 'external' || normalized === 'auto') return [...extIds, 'internal']
   if (normalized.startsWith('external:')) {
     const pick = normalized.slice('external:'.length).trim()
-    const rest = extIds.filter(id => id !== pick)
-    return [pick, ...rest, 'internal']
+    return [pick, 'internal']
   }
   if (extIds.includes(normalized)) {
-    const rest = extIds.filter(id => id !== normalized)
-    return [normalized, ...rest, 'internal']
+    return [normalized, 'internal']
   }
   return ['internal']
 }
