@@ -1,6 +1,8 @@
 // 工具：向飞书会话发送消息（文本 / 图片 / 文件 / 富文本 / 语音 / 图文）
+const path = require('path')
 const feishuNotify = require('../feishu-notify')
 const { logger: appLogger } = require('../../app-logger')
+const artifactRegistry = require('../artifact-registry')
 
 const definition = {
   description: '向飞书群或会话发送消息。支持 text、image、file、post（富文本）、audio（语音）、media（图文）。语音支持三种方式：audio_file_key、audio_file_path（本地 opus）、audio_text（内置 node-edge-tts 生成 mp3 再转 opus 上传；无需额外安装依赖）。音色建议先用 tts_voice_manager 配置别名与默认值。当用户是在飞书里与机器人对话时，不传 chat_id 会自动发往当前会话。',
@@ -125,7 +127,7 @@ function buildPostPayload(title, content) {
   return { zh_cn: { title: title || '通知', content: paragraphs } }
 }
 
-async function execute(args) {
+async function execute(args, context = {}) {
   const {
     chat_id, text, image_key, image_base64, image_filename, file_key, file_name, file_path, post_title, post_content,
     audio_file_key, audio_file_name, audio_file_path, audio_duration, audio_text, audio_voice, audio_lang, audio_rate, audio_volume, audio_pitch,
@@ -184,12 +186,75 @@ async function execute(args) {
     has_media: !!(opts.media_file_key || opts.media_file_path)
   })
 
+  const contextSessionId = String((context && context.sessionId) || '').trim()
+  const contextRunSessionId = String((context && context.runSessionId) || '').trim()
+  const artifactIds = []
+  try {
+    if (opts.image_base64 && typeof opts.image_base64 === 'string') {
+      const m = opts.image_base64.match(/^data:[^;,]+;base64,(.*)$/i)
+      const raw = (m ? m[1] : opts.image_base64).replace(/\s+/g, '')
+      const ext = path.extname(String(opts.image_filename || '')).toLowerCase() || '.png'
+      const rec = artifactRegistry.registerBase64Artifact({
+        base64: raw,
+        ext,
+        kind: 'image',
+        source: 'feishu_tool',
+        channel: 'feishu',
+        sessionId: contextSessionId,
+        runSessionId: contextRunSessionId,
+        messageId: '',
+        chatId: String(opts.chat_id || ''),
+        role: 'assistant'
+      })
+      if (rec && rec.artifactId) artifactIds.push(rec.artifactId)
+    }
+    const registerPath = (p, kindHint = 'file') => {
+      const full = String(p || '').trim()
+      if (!full) return
+      const rec = artifactRegistry.registerFileArtifact({
+        path: full,
+        kind: kindHint,
+        source: 'feishu_tool',
+        channel: 'feishu',
+        sessionId: contextSessionId,
+        runSessionId: contextRunSessionId,
+        messageId: '',
+        chatId: String(opts.chat_id || ''),
+        role: 'assistant'
+      })
+      if (rec && rec.artifactId) artifactIds.push(rec.artifactId)
+    }
+    if (opts.file_path) registerPath(opts.file_path, 'file')
+    if (opts.audio_file_path) registerPath(opts.audio_file_path, 'audio')
+    if (opts.media_file_path) registerPath(opts.media_file_path, 'video')
+  } catch (e) {
+    appLogger?.warn?.('[FeishuTool] 产物入库失败', { error: e.message || String(e) })
+  }
+
+  appLogger?.info?.('[FeishuTool] feishu_send_message 产物', {
+    sessionId: contextSessionId,
+    artifactCount: artifactIds.length,
+    artifactIds: artifactIds.slice(0, 20)
+  })
+
   const result = await feishuNotify.sendMessage(opts)
   appLogger?.info?.('[FeishuTool] feishu_send_message 返回', {
     success: !!(result && result.success),
     message: result && result.message ? String(result.message).slice(0, 160) : '',
     message_id: result && result.message_id ? result.message_id : ''
   })
+  try {
+    if (result && result.success && contextSessionId && result.message_id && artifactIds.length > 0) {
+      artifactRegistry.bindArtifactsToMessage({
+        sessionId: contextSessionId,
+        messageId: String(result.message_id),
+        role: 'assistant',
+        artifactIds
+      })
+    }
+  } catch (e) {
+    appLogger?.warn?.('[FeishuTool] 产物绑定消息失败', { error: e.message || String(e) })
+  }
   return result
 }
 

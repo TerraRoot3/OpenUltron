@@ -1,5 +1,7 @@
 // 工具：向钉钉发送文本/语音（支持 audio_text 内置 TTS）
 const dingtalkNotify = require('../dingtalk-notify')
+const artifactRegistry = require('../artifact-registry')
+const { logger: appLogger } = require('../../app-logger')
 
 const definition = {
   description: '向钉钉发送消息。支持 text 文本与语音（audio_file_path 或 audio_text 内置 TTS）。优先使用 session_webhook（文本）；语音发送需 open_conversation_id + robot_code。',
@@ -59,8 +61,41 @@ const definition = {
   }
 }
 
-async function execute(args = {}) {
-  return dingtalkNotify.sendMessage(args)
+async function execute(args = {}, context = {}) {
+  const artifactIds = []
+  try {
+    const p = String(args.audio_file_path || '').trim()
+    if (p) {
+      const rec = artifactRegistry.registerFileArtifact({
+        path: p,
+        kind: 'audio',
+        source: 'dingtalk_tool',
+        channel: 'dingtalk',
+        sessionId: String(context.sessionId || ''),
+        runSessionId: String(context.runSessionId || ''),
+        messageId: '',
+        chatId: String(args.open_conversation_id || args.chat_id || ''),
+        role: 'assistant'
+      })
+      if (rec && rec.artifactId) artifactIds.push(rec.artifactId)
+    }
+  } catch (e) {
+    appLogger?.warn?.('[DingTalkTool] 产物入库失败', { error: e.message || String(e) })
+  }
+  const result = await dingtalkNotify.sendMessage(args)
+  try {
+    if (result && result.success && result.message_id && context.sessionId && artifactIds.length > 0) {
+      artifactRegistry.bindArtifactsToMessage({
+        sessionId: String(context.sessionId || ''),
+        messageId: String(result.message_id),
+        role: 'assistant',
+        artifactIds
+      })
+    }
+  } catch (e) {
+    appLogger?.warn?.('[DingTalkTool] 产物绑定消息失败', { error: e.message || String(e) })
+  }
+  return result
 }
 
 module.exports = { definition, execute }
