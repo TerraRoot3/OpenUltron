@@ -20,30 +20,32 @@ function getBackupPath() {
 const DEFAULT_AI = {
   defaultProvider: 'https://api.qnaigc.com/v1',
   defaultModel: 'deepseek-v3',
+  modelPool: ['deepseek-v3'],
+  modelBindings: { 'deepseek-v3': 'https://api.qnaigc.com/v1' },
   temperature: 0,
   maxTokens: 0,
   maxToolIterations: 0,
   providers: [
     // 国内主流
-    { name: '七牛 AI', baseUrl: 'https://api.qnaigc.com/v1', apiKey: '', defaultModel: 'deepseek-v3' },
-    { name: '智谱 AI', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', apiKey: '', defaultModel: 'glm-4-flash' },
-    { name: '通义千问', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', apiKey: '', defaultModel: 'qwen-turbo' },
-    { name: '百度千帆', baseUrl: 'https://qianfan.baidubce.com/v2', apiKey: '', defaultModel: 'ernie-4.0-turbo-8k' },
-    { name: '腾讯混元', baseUrl: 'https://api.hunyuan.cloud.tencent.com/v1', apiKey: '', defaultModel: 'hunyuan-lite' },
-    { name: '月之暗面 Kimi', baseUrl: 'https://api.moonshot.ai/v1', apiKey: '', defaultModel: 'moonshot-v1-8k' },
-    { name: '零一万物 Yi', baseUrl: 'https://api.lingyiwanwu.com/v1', apiKey: '', defaultModel: 'yi-large-turbo' },
-    { name: 'Minimax', baseUrl: 'https://api.minimax.chat/v1', apiKey: '', defaultModel: '' },
-    { name: '火山引擎豆包', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', apiKey: '', defaultModel: '' },
-    { name: '硅基流动', baseUrl: 'https://api.siliconflow.cn/v1', apiKey: '', defaultModel: '' },
-    { name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', apiKey: '', defaultModel: 'deepseek-chat' },
+    { name: '七牛 AI', baseUrl: 'https://api.qnaigc.com/v1', apiKey: '' },
+    { name: '智谱 AI', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', apiKey: '' },
+    { name: '通义千问', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', apiKey: '' },
+    { name: '百度千帆', baseUrl: 'https://qianfan.baidubce.com/v2', apiKey: '' },
+    { name: '腾讯混元', baseUrl: 'https://api.hunyuan.cloud.tencent.com/v1', apiKey: '' },
+    { name: '月之暗面 Kimi', baseUrl: 'https://api.moonshot.ai/v1', apiKey: '' },
+    { name: '零一万物 Yi', baseUrl: 'https://api.lingyiwanwu.com/v1', apiKey: '' },
+    { name: 'Minimax', baseUrl: 'https://api.minimax.chat/v1', apiKey: '' },
+    { name: '火山引擎豆包', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', apiKey: '' },
+    { name: '硅基流动', baseUrl: 'https://api.siliconflow.cn/v1', apiKey: '' },
+    { name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', apiKey: '' },
     // 国外主流
-    { name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', apiKey: '', defaultModel: 'gpt-4o-mini' },
-    { name: 'Anthropic Claude', baseUrl: 'https://api.anthropic.com/v1', apiKey: '', defaultModel: 'claude-3-5-sonnet-20241022' },
-    { name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', apiKey: '', defaultModel: '' },
-    { name: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', apiKey: '', defaultModel: 'llama-3.1-70b-versatile' },
-    { name: 'Together AI', baseUrl: 'https://api.together.xyz/v1', apiKey: '', defaultModel: '' },
-    { name: 'Mistral', baseUrl: 'https://api.mistral.ai/v1', apiKey: '', defaultModel: 'mistral-small-latest' },
-    { name: 'xAI Grok', baseUrl: 'https://api.x.ai/v1', apiKey: '', defaultModel: 'grok-2-1212' },
+    { name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', apiKey: '' },
+    { name: 'Anthropic Claude', baseUrl: 'https://api.anthropic.com/v1', apiKey: '' },
+    { name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', apiKey: '' },
+    { name: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', apiKey: '' },
+    { name: 'Together AI', baseUrl: 'https://api.together.xyz/v1', apiKey: '' },
+    { name: 'Mistral', baseUrl: 'https://api.mistral.ai/v1', apiKey: '' },
+    { name: 'xAI Grok', baseUrl: 'https://api.x.ai/v1', apiKey: '' },
   ],
 }
 
@@ -88,7 +90,35 @@ const DEFAULT_HARDWARE = {
 /** 技能远程源：url 为 skills 列表 JSON 的完整 URL（返回 { skills: [{ id, name, description, install_url?, ... }] }） */
 const DEFAULT_SKILLS_SOURCES = []
 
-/** 合并默认供应商与已保存列表：默认列表保证全部展示，已保存的 apiKey/defaultModel 保留；保存里多出的自定义供应商追加到末尾 */
+/** 合并默认供应商与已保存列表：默认列表保证全部展示，已保存的 apiKey 保留；保存里多出的自定义供应商追加到末尾 */
+function normalizeModelPool(pool, fallbackModel = '') {
+  const arr = Array.isArray(pool) ? pool.map(x => String(x || '').trim()).filter(Boolean) : []
+  const uniq = [...new Set(arr)]
+  const fb = String(fallbackModel || '').trim()
+  if (fb && !uniq.includes(fb)) uniq.unshift(fb)
+  return uniq
+}
+
+function normalizeModelBindings(bindings, providers = [], pool = [], fallbackProvider = '') {
+  const allow = new Set((providers || []).map(p => String(p?.baseUrl || '').trim()).filter(Boolean))
+  const out = {}
+  const raw = bindings && typeof bindings === 'object' ? bindings : {}
+  for (const [k, v] of Object.entries(raw)) {
+    const model = String(k || '').trim()
+    const provider = String(v || '').trim()
+    if (!model || !provider) continue
+    if (allow.size > 0 && !allow.has(provider)) continue
+    out[model] = provider
+  }
+  const fb = String(fallbackProvider || '').trim()
+  for (const m of (pool || [])) {
+    const model = String(m || '').trim()
+    if (!model) continue
+    if (!out[model] && fb) out[model] = fb
+  }
+  return out
+}
+
 function mergeProviders(defaultList, savedList) {
   if (!Array.isArray(savedList) || savedList.length === 0) return defaultList.map(p => ({ ...p }))
   const byUrl = new Map(savedList.filter(p => p && p.baseUrl).map(p => [p.baseUrl, p]))
@@ -96,11 +126,13 @@ function mergeProviders(defaultList, savedList) {
     const saved = byUrl.get(p.baseUrl)
     if (saved) {
       byUrl.delete(p.baseUrl)
-      return { name: p.name, baseUrl: p.baseUrl, apiKey: saved.apiKey ?? '', defaultModel: saved.defaultModel ?? p.defaultModel ?? '' }
+      return { name: p.name, baseUrl: p.baseUrl, apiKey: saved.apiKey ?? '' }
     }
     return { ...p }
   })
-  byUrl.forEach((saved) => { merged.push({ name: saved.name || saved.baseUrl, baseUrl: saved.baseUrl, apiKey: saved.apiKey ?? '', defaultModel: saved.defaultModel ?? '' }) })
+  byUrl.forEach((saved) => {
+    merged.push({ name: saved.name || saved.baseUrl, baseUrl: saved.baseUrl, apiKey: saved.apiKey ?? '' })
+  })
   return merged
 }
 
@@ -122,6 +154,8 @@ function readAll() {
         : DEFAULT_SKILLS_SOURCES
       let ai = data.ai && Array.isArray(data.ai.providers) ? data.ai : { ...DEFAULT_AI, ...data.ai }
       ai = { ...ai, providers: mergeProviders(DEFAULT_AI.providers, ai.providers) }
+      ai.modelPool = normalizeModelPool(ai.modelPool, ai.defaultModel)
+      ai.modelBindings = normalizeModelBindings(ai.modelBindings, ai.providers, ai.modelPool, ai.defaultProvider)
       return {
         ai,
         feishu: { ...DEFAULT_FEISHU, ...data.feishu },
@@ -210,7 +244,13 @@ function getAI() {
 
 function writeAI(aiData) {
   const all = readAll()
-  all.ai = aiData
+  const providers = Array.isArray(aiData?.providers) ? aiData.providers : DEFAULT_AI.providers
+  const modelPool = normalizeModelPool(aiData?.modelPool, aiData?.defaultModel)
+  all.ai = {
+    ...aiData,
+    modelPool,
+    modelBindings: normalizeModelBindings(aiData?.modelBindings, providers, modelPool, aiData?.defaultProvider)
+  }
   writeAll(all)
 }
 

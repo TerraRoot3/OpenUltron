@@ -9,7 +9,7 @@ const { SSEParser } = require('./stream-parser')
 const { shouldCompress, compressMessages, flushMemoryBeforeCompaction } = require('./context-compressor')
 const { getTopMemoriesForProject, saveMemory, readGlobalMemoryMd, readSoulMd, readIdentityMd, readAgentDisplayName, readUserMd, readBootMd, readAgentsMd, readToolsMd, readLessonsLearned, appendToDiary } = require('./memory-store')
 const { loadPrompt } = require('./system-prompts')
-const { sanitizeAssistantIdentityWording } = require('./identity-wording')
+const { sanitizeAssistantIdentityWording, sanitizeAssistantModelIdentity } = require('./identity-wording')
 const { getAppRootPath, getWorkspaceRoot } = require('../app-root')
 const responseCache = require('./response-cache')
 const sessionRegistry = require('./session-registry')
@@ -58,6 +58,42 @@ class Orchestrator {
     return CLAUDE_PREFIXES.some(p => m.startsWith(p))
   }
 
+  _isModelCatalogQuery(text) {
+    const s = String(text || '').toLowerCase()
+    if (!s) return false
+    return (
+      /你是什么模型|你是啥模型|当前模型|现在用的模型|用的什么模型|可用模型|有哪些模型|能用什么模型|模型列表|配置了哪些模型|供应商/.test(s) ||
+      /what model are you|which model are you using|current model|available models|model list|which models can you use|configured models|providers/.test(s)
+    )
+  }
+
+  _isProviderScopedModelQuery(text) {
+    const s = String(text || '').toLowerCase()
+    if (!s) return false
+    return (
+      /供应商|按供应商|各供应商|provider|providers|by provider/.test(s)
+    )
+  }
+
+  _hasToolCallAfterLastUser(messages, toolName) {
+    if (!Array.isArray(messages) || !toolName) return false
+    let lastUserIdx = -1
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i] && messages[i].role === 'user') {
+        lastUserIdx = i
+        break
+      }
+    }
+    if (lastUserIdx < 0) return false
+    for (let i = lastUserIdx + 1; i < messages.length; i++) {
+      const m = messages[i]
+      if (!m || m.role !== 'assistant') continue
+      const calls = Array.isArray(m.tool_calls) ? m.tool_calls : (Array.isArray(m.toolCalls) ? m.toolCalls : [])
+      if (calls.some(tc => tc?.function?.name === toolName || tc?.name === toolName)) return true
+    }
+    return false
+  }
+
   // ---------- 启动 Agent 对话循环 ----------
   async startChat({ sessionId, messages, model, tools, sender, config: externalConfig, projectPath, panelId, feishuChatId }) {
     const config = externalConfig || this.getConfig()
@@ -99,14 +135,26 @@ class Orchestrator {
       isDestroyed: () => !canSend(sender)
     }
 
-    const useModel = model || config.defaultModel || 'deepseek-v3'
-    const fallbackModels = config.fallbackModels || []  // 故障转移备用模型列表
+    const allowedPool = Array.isArray(config.modelPool)
+      ? config.modelPool.map(x => String(x || '').trim()).filter(Boolean)
+      : []
+    let useModel = model || config.defaultModel || 'deepseek-v3'
+    if (allowedPool.length > 0 && !allowedPool.includes(useModel)) {
+      console.warn(`[AI] 指定模型 ${useModel} 不在模型池中，自动回退主模型 ${config.defaultModel || allowedPool[0]}`)
+      useModel = config.defaultModel || allowedPool[0]
+    }
+    const configuredFallbacks = Array.isArray(config.fallbackModels) ? config.fallbackModels : []
+    const poolFallbacks = allowedPool.filter(id => id !== useModel)
+    const fallbackModels = [...new Set([...poolFallbacks, ...configuredFallbacks].filter(Boolean))]  // 故障转移备用模型列表
+    const fallbackRoutes = Array.isArray(config.fallbackRoutes) ? config.fallbackRoutes : []
     const isAnthropic = this._isClaudeModel(useModel)
     const maxIterations = config.maxToolIterations || 0 // 0 = 不限制（安全上限 200）
     const safeMax = maxIterations > 0 ? maxIterations : 200
     const displayName = readAgentDisplayName() || 'Ultron'
     const normalizeAssistantContent = (content) =>
-      typeof content === 'string' ? sanitizeAssistantIdentityWording(content, displayName) : content
+      typeof content === 'string'
+        ? sanitizeAssistantIdentityWording(sanitizeAssistantModelIdentity(content, useModel), displayName)
+        : content
     let iteration = 0
     let currentMessages = [...messages]
 
@@ -218,7 +266,8 @@ class Orchestrator {
       memParts.push(
         '[可用供应商与模型]\n' +
         '**主会话**的供应商与模型由用户在设置页配置。为**子任务**指定模型请用 sessions_spawn(provider=..., model=...)，勿用 ai_config_control 改主会话以免错配。若必须改主会话：先调用 verify_provider_model(provider=..., model=...) 验证该供应商+模型可用，仅当返回 success 后再调用 ai_config_control 的 switch_provider 或 switch_model（switch_model 切到别家模型时须同时传 provider）。\n' +
-        '**当用户询问「有哪些模型可以用」等时**：先 list_providers_and_models，再逐项列出；不得仅回复需配置 API Key。\n' +
+        '**当用户询问「有哪些模型可以用」等且未要求按供应商展开时**：先 list_configured_models，严格按主模型+模型池回答。\n' +
+        '仅当用户明确要求按供应商查看时，才调用 list_providers_and_models。\n' +
         '派生子 Agent：可先 verify_provider_model(provider, model) 确认可用，再 sessions_spawn(task=..., provider=..., model=...)。'
       )
 
@@ -313,6 +362,7 @@ class Orchestrator {
     await maybeCompress()
 
     try {
+      let modelCatalogNudgeCount = 0
       while (iteration < safeMax) {
         if (abortController.signal.aborted) break
 
@@ -333,9 +383,11 @@ class Orchestrator {
 
         // 响应缓存：上一轮纯 Q&A 且当前用户消息与上一轮完全一致时直接复用，减少 token
         const lastUserContent = responseCache.getLastUserContent(currentMessages)
+        const isModelCatalogQuestion = this._isModelCatalogQuery(lastUserContent)
+        const isProviderScopedModelQuery = this._isProviderScopedModelQuery(lastUserContent)
         let response = null
         let fromCache = false
-        if (lastUserContent) {
+        if (lastUserContent && !isModelCatalogQuestion) {
           const cached = responseCache.get(sessionId, lastUserContent)
           if (cached) {
             response = { content: cached, toolCalls: [] }
@@ -344,9 +396,18 @@ class Orchestrator {
           }
         }
         if (!response) {
-          const modelsToTry = [useModel, ...fallbackModels]
-          for (let mi = 0; mi < modelsToTry.length; mi++) {
-            const tryModel = modelsToTry[mi]
+          const modelCandidates = [{ model: useModel, routeConfig: config }]
+          for (const r of fallbackRoutes) {
+            if (!r || !r.model || !r.config) continue
+            if (r.model === useModel) continue
+            modelCandidates.push({ model: String(r.model), routeConfig: r.config })
+          }
+          for (const m of fallbackModels) {
+            if (!modelCandidates.some(x => x.model === m)) modelCandidates.push({ model: m, routeConfig: config })
+          }
+          for (let mi = 0; mi < modelCandidates.length; mi++) {
+            const tryModel = modelCandidates[mi].model
+            const tryConfig = modelCandidates[mi].routeConfig || config
             const tryAnthropic = this._isClaudeModel(tryModel)
             const callFn = tryAnthropic ? this._callAnthropicLLM.bind(this) : this._callOpenAILLM.bind(this)
             try {
@@ -362,9 +423,9 @@ class Orchestrator {
                     messages: messagesToSend,
                     model: tryModel,
                     tools: mode.tools,
-                    temperature: config.temperature ?? 0,
-                    max_tokens: config.maxTokens || 0
-                  }, config, wrappedSender, sessionId, abortController.signal)
+                    temperature: tryConfig.temperature ?? 0,
+                    max_tokens: tryConfig.maxTokens || 0
+                  }, tryConfig, wrappedSender, sessionId, abortController.signal)
                   if (!mode.withTools) {
                     wrappedSender.send('ai-chat-token', {
                       sessionId,
@@ -387,8 +448,9 @@ class Orchestrator {
               }
               if (!response && lastModeErr) throw lastModeErr
               if (mi > 0) {
-                console.log(`[AI] 已故障转移到备用模型: ${tryModel}`)
-                wrappedSender.send('ai-chat-token', { sessionId, token: `\n\n> ⚠️ 主模型不可用，已自动切换至备用模型 ${tryModel}\n\n` })
+                const host = String((tryConfig.apiBaseUrl || '')).replace(/^https?:\/\//, '').replace(/\/.*$/, '')
+                console.log(`[AI] 已故障转移到备用模型: ${tryModel} @ ${host}`)
+                wrappedSender.send('ai-chat-token', { sessionId, token: `\n\n> ⚠️ 主模型不可用，已自动切换至备用模型 ${tryModel}${host ? ` @ ${host}` : ''}\n\n` })
               }
               break
             } catch (err) {
@@ -396,7 +458,7 @@ class Orchestrator {
               if (classify.action === 'fail_fast') {
                 throw err
               }
-              if (mi < modelsToTry.length - 1) {
+              if (mi < modelCandidates.length - 1) {
                 console.warn(`[AI] 模型 ${tryModel} 调用失败，尝试下一个:`, err.message)
               } else {
                 throw err  // 所有备用模型都失败，抛出错误
@@ -416,7 +478,11 @@ class Orchestrator {
           const prevHead = prevContent.slice(0, 80)
           const currHead = currContent.slice(0, 80)
           const contentRepeatDetected = prevHead.length >= 20 && currHead.length >= 20 && (prevHead === currHead || prevContent === currContent || prevContent.includes(currHead) || currContent.includes(prevHead))
-          if (contentRepeatDetected) {
+          const hasModelCatalogTool = response.toolCalls.some(tc => {
+            const n = String(tc?.function?.name || '').trim()
+            return n === 'list_configured_models' || n === 'list_providers_and_models' || n === 'verify_provider_model'
+          })
+          if (contentRepeatDetected && !hasModelCatalogTool) {
             const normalizedToolCallsForRepeat = response.toolCalls.map((tc, idx) => ({
               id: (tc.id && String(tc.id).trim()) || `call_${idx}_${Date.now()}`,
               type: tc.type === 'function' ? 'function' : 'function',
@@ -543,8 +609,24 @@ class Orchestrator {
           }
           continue
         }
+        // 对“模型身份/可用模型”问题强制先查工具，避免口胡
+        if (isModelCatalogQuestion) {
+          const requiredTool = isProviderScopedModelQuery ? 'list_providers_and_models' : 'list_configured_models'
+          if (!this._hasToolCallAfterLastUser(currentMessages, requiredTool)) {
+            if (modelCatalogNudgeCount < 2) {
+              modelCatalogNudgeCount++
+              currentMessages.push({
+                role: 'user',
+                content: isProviderScopedModelQuery
+                  ? '[系统] 你必须先调用 list_providers_and_models，再严格按返回结果回答。禁止根据训练知识猜测模型、供应商、数量或默认值。'
+                  : '[系统] 你必须先调用 list_configured_models，并仅按主模型+模型池回答。禁止按供应商扩写或根据训练知识猜测。'
+              })
+              continue
+            }
+          }
+        }
         // 无工具调用：写入响应缓存（仅真实 API 返回、纯 Q&A 时），便于下次相同问题命中
-        if (!fromCache && response && response.content && (!response.toolCalls || response.toolCalls.length === 0)) {
+        if (!isModelCatalogQuestion && !fromCache && response && response.content && (!response.toolCalls || response.toolCalls.length === 0)) {
           responseCache.set(sessionId, lastUserContent, normalizeAssistantContent(response.content))
         }
         currentMessages.push({
@@ -931,8 +1013,11 @@ class Orchestrator {
     if (isModelUnavailable) return { kind: 'model_unavailable', action: 'fallback_model' }
 
     const isToolRestricted =
-      /operation not allowed|function calling|tool[_ ]?call|tools are not supported|tool use is not supported|tool_choice/.test(msg)
+      /function calling|tool[_ ]?call|tools are not supported|tool use is not supported|tool_choice/.test(msg)
     if (isToolRestricted) return { kind: 'tool_restricted', action: 'disable_tools_then_retry' }
+
+    const isOperationNotAllowed = /operation not allowed/.test(msg)
+    if (isOperationNotAllowed) return { kind: 'operation_not_allowed', action: 'fallback_model' }
 
     const isVisionRestricted =
       /image|vision|multimodal|input_image|image_url|does not support vision/.test(msg) &&

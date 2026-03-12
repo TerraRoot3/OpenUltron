@@ -48,6 +48,7 @@ function buildInboundDisplayText(text, attachments = []) {
   for (const a of attachments) {
     if (!a) continue
     if (a.type === 'image') lines.push(`[图片] ${a.name || ''}`.trim())
+    else if (a.type === 'audio') lines.push(`[语音] ${a.name || path.basename(a.path || '') || ''}`.trim())
     else if (a.type === 'file') lines.push(`[文件] ${a.name || path.basename(a.path || '') || ''}`.trim())
     if (a.path) lines.push(`local_path: ${a.path}`)
   }
@@ -313,7 +314,7 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
               size: dl.buffer.length,
               buffer: dl.buffer
             })
-          } else if (a.type === 'file' && a.file_key) {
+          } else if ((a.type === 'file' || a.type === 'audio') && a.file_key) {
             const dl = await feishuNotify.downloadFileByKey(a.file_key, { messageId })
             const fileSha = crypto.createHash('sha256').update(dl.buffer).digest('hex').slice(0, 16)
             appLogger?.info?.('[Feishu] 文件下载成功', {
@@ -353,7 +354,7 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
           rejected: ingestRes?.rejected?.length || 0
         })
         normalizedAttachments = (ingestRes.accepted || []).map(item => ({
-          type: item.kind === 'image' ? 'image' : 'file',
+          type: item.kind === 'image' ? 'image' : (item.kind === 'audio' ? 'audio' : 'file'),
           path: item.localPath,
           name: item.name || ''
         }))

@@ -3075,22 +3075,69 @@ registerChannel('get-gateway-ws-url', () => {
 })
 function getResolvedAIConfig() {
   const legacy = getAIConfigLegacy()
-  const baseUrl = (legacy.config && legacy.config.apiBaseUrl) || 'https://api.qnaigc.com/v1'
-  let defaultModel = (legacy.config && legacy.config.defaultModel) || 'deepseek-v3'
+  const configuredBaseUrl = (legacy.config && legacy.config.apiBaseUrl) || 'https://api.qnaigc.com/v1'
+  const bindings = legacy.raw?.modelBindings && typeof legacy.raw.modelBindings === 'object' ? legacy.raw.modelBindings : {}
+  let defaultModel = (legacy.raw && legacy.raw.defaultModel) || (legacy.config && legacy.config.defaultModel) || 'deepseek-v3'
+  const baseUrl = String(bindings[defaultModel] || configuredBaseUrl).trim() || configuredBaseUrl
+  const globalPool = Array.isArray(legacy.raw?.modelPool)
+    ? legacy.raw.modelPool.map(x => String(x || '').trim()).filter(Boolean)
+    : []
   const validatedByProvider = store.get('aiModelsValidatedByProvider', {})
   const validated = validatedByProvider[baseUrl]
-  const provider = legacy.raw?.providers?.find(p => p.baseUrl === baseUrl)
-  const providerDefault = provider?.defaultModel || 'deepseek-v3'
+  let fallbackModels = [...new Set(globalPool.filter(id => id !== defaultModel))]
   if (Array.isArray(validated) && validated.length > 0) {
-    const ids = new Set(validated.map(m => (m.id || m.name || '').trim()).filter(Boolean))
-    if (!ids.has(defaultModel)) {
-      defaultModel = ids.has(providerDefault) ? providerDefault : (validated[0].id || validated[0].name || providerDefault)
-    }
+    const ids = validated
+      .map(m => (m.id || m.name || '').trim())
+      .filter(Boolean)
+    // 仅在完全未配置模型时才回退到验证列表首项；避免被历史残留模型强行覆盖
+    if (!defaultModel && ids.length > 0) defaultModel = ids[0]
+    const extra = ids.filter(id => id !== defaultModel && !fallbackModels.includes(id))
+    fallbackModels = [...fallbackModels, ...extra]
   }
+  const providerMap = new Map((legacy.raw?.providers || []).filter(p => p && p.baseUrl).map(p => [p.baseUrl, p]))
+  const providerKeys = legacy.providerKeys || {}
+  const routeModels = [defaultModel, ...fallbackModels].filter(Boolean)
+  const fallbackRoutes = []
+  for (const m of routeModels) {
+    const routeProvider = String(bindings[m] || baseUrl || configuredBaseUrl).trim()
+    const p = providerMap.get(routeProvider)
+    const key = String((providerKeys[routeProvider] || p?.apiKey || '')).trim()
+    if (!key) continue
+    const route = {
+      model: m,
+      config: {
+        apiKey: key,
+        apiBaseUrl: routeProvider,
+        defaultModel: m,
+        temperature: (legacy.config && legacy.config.temperature) ?? 0,
+        maxTokens: (legacy.config && legacy.config.maxTokens) ?? 0,
+        maxToolIterations: (legacy.config && legacy.config.maxToolIterations) ?? 0
+      }
+    }
+    if (m !== defaultModel) fallbackRoutes.push(route)
+  }
+  const primaryApiKey = String(((legacy.providerKeys && legacy.providerKeys[baseUrl]) || providerMap.get(baseUrl)?.apiKey || '')).trim()
+  const primary = routeModels.length > 0
+    ? {
+        model: defaultModel,
+        config: fallbackRoutes.find(r => r.model === defaultModel)?.config || {
+          apiKey: primaryApiKey || ((legacy.providerKeys && legacy.config && legacy.providerKeys[configuredBaseUrl]) || (legacy.config && legacy.config.apiKey) || ''),
+          apiBaseUrl: baseUrl,
+          defaultModel,
+          temperature: (legacy.config && legacy.config.temperature) ?? 0,
+          maxTokens: (legacy.config && legacy.config.maxTokens) ?? 0,
+          maxToolIterations: (legacy.config && legacy.config.maxToolIterations) ?? 0
+        }
+      }
+    : null
   return {
-    apiKey: (legacy.providerKeys && legacy.config && legacy.providerKeys[legacy.config.apiBaseUrl]) || (legacy.config && legacy.config.apiKey) || '',
+    apiKey: primary?.config?.apiKey || ((legacy.providerKeys && legacy.config && legacy.providerKeys[legacy.config.apiBaseUrl]) || (legacy.config && legacy.config.apiKey) || ''),
     apiBaseUrl: baseUrl,
     defaultModel,
+    modelPool: [defaultModel, ...fallbackModels].filter(Boolean),
+    fallbackModels,
+    fallbackRoutes,
+    modelBindings: bindings,
     temperature: (legacy.config && legacy.config.temperature) ?? 0,
     maxTokens: (legacy.config && legacy.config.maxTokens) ?? 0,
     maxToolIterations: (legacy.config && legacy.config.maxToolIterations) ?? 0
@@ -3162,6 +3209,56 @@ async function verifyProviderModel(providerKey, modelId) {
   }
 }
 
+function getConfiguredProvidersWithKey() {
+  const legacy = getAIConfigLegacy()
+  const providers = Array.isArray(legacy?.raw?.providers) ? legacy.raw.providers : []
+  const providerKeys = legacy?.providerKeys || {}
+  return providers
+    .filter(p => p && p.baseUrl)
+    .map(p => ({
+      name: p.name || p.baseUrl,
+      baseUrl: p.baseUrl,
+      apiKey: String(providerKeys[p.baseUrl] || p.apiKey || '').trim()
+    }))
+    .filter(p => !!p.apiKey)
+}
+
+function orderProvidersForModel(modelId, providers) {
+  const id = String(modelId || '').toLowerCase()
+  const rank = (p) => {
+    const url = String(p.baseUrl || '').toLowerCase()
+    const name = String(p.name || '').toLowerCase()
+    if (id.startsWith('claude-')) {
+      if (url.includes('anthropic.com') || name.includes('anthropic') || name.includes('claude')) return 0
+    }
+    if (id.startsWith('gpt-') || id.startsWith('o1') || id.startsWith('o3')) {
+      if (url.includes('openai.com') || name.includes('openai')) return 0
+    }
+    return 10
+  }
+  return [...providers].sort((a, b) => rank(a) - rank(b))
+}
+
+// 校验当前默认供应商下模型是否可用（设置页/模型池选择用）
+registerChannel('ai-verify-model', async (event, { model, provider } = {}) => {
+  const modelId = String(model || '').trim()
+  if (!modelId) return { success: false, error: '未指定模型 ID' }
+  if (provider != null && String(provider).trim() !== '') {
+    const r = await verifyProviderModel(provider, modelId)
+    return { ...r, provider: String(provider).trim() }
+  }
+  const all = orderProvidersForModel(modelId, getConfiguredProvidersWithKey())
+  if (all.length === 0) return { success: false, error: '未配置任何可用供应商 API Key' }
+  let lastErr = ''
+  for (const p of all) {
+    // eslint-disable-next-line no-await-in-loop
+    const r = await verifyProviderModel(p.baseUrl, modelId)
+    if (r?.success) return { success: true, provider: p.baseUrl, providerName: p.name, model: modelId }
+    lastErr = r?.error || ''
+  }
+  return { success: false, error: lastErr || `模型 ${modelId} 在已配置供应商中不可用` }
+})
+
 /** 按供应商名称或 baseUrl 解析出该供应商的 config（用于子 Agent 指定供应商） */
 function getResolvedAIConfigForProvider(providerKey) {
   if (!providerKey || String(providerKey).trim() === '') return null
@@ -3176,10 +3273,44 @@ function getResolvedAIConfigForProvider(providerKey) {
   if (!p || !p.baseUrl) return null
   const apiKey = (legacy.providerKeys && legacy.providerKeys[p.baseUrl]) || p.apiKey || ''
   if (!apiKey || !String(apiKey).trim()) return null
+  const bindings = legacy.raw?.modelBindings && typeof legacy.raw.modelBindings === 'object' ? legacy.raw.modelBindings : {}
+  const globalPool = Array.isArray(legacy.raw?.modelPool)
+    ? legacy.raw.modelPool.map(x => String(x || '').trim()).filter(Boolean)
+    : []
+  const globalDefaultModel = String((legacy.raw && legacy.raw.defaultModel) || (legacy.config && legacy.config.defaultModel) || '').trim()
+  const defaultProvider = String(legacy.raw?.defaultProvider || '').trim()
+  // 当前供应商可用的“配置模型池”：全局模型池中绑定到该 provider 的模型
+  const providerPool = [...new Set(
+    globalPool.filter((m) => {
+      const bound = String(bindings[m] || defaultProvider).trim()
+      return bound === p.baseUrl
+    })
+  )]
+  const validatedByProvider = store.get('aiModelsValidatedByProvider', {})
+  const validated = validatedByProvider[p.baseUrl]
+  let defaultModel = providerPool[0] || ''
+  let fallbackModels = [...providerPool.slice(1)]
+  if (Array.isArray(validated) && validated.length > 0) {
+    const ids = validated
+      .map(m => (m.id || m.name || '').trim())
+      .filter(Boolean)
+    if (!defaultModel && ids.length > 0) defaultModel = ids[0]
+    const extra = ids.filter(id => id !== defaultModel && !fallbackModels.includes(id))
+    fallbackModels = [...fallbackModels, ...extra]
+  }
+  if (!defaultModel) {
+    // 兜底：若全局主模型本就绑定到当前 provider，则用它
+    const dmProvider = String(bindings[globalDefaultModel] || defaultProvider).trim()
+    if (globalDefaultModel && dmProvider === p.baseUrl) defaultModel = globalDefaultModel
+  }
+  if (!defaultModel) defaultModel = globalDefaultModel || 'deepseek-v3'
   return {
     apiKey: String(apiKey).trim(),
     apiBaseUrl: p.baseUrl,
-    defaultModel: p.defaultModel || (legacy.config && legacy.config.defaultModel) || 'deepseek-v3',
+    defaultModel,
+    modelPool: [defaultModel, ...fallbackModels].filter(Boolean),
+    fallbackModels,
+    modelBindings: bindings,
     temperature: (legacy.config && legacy.config.temperature) ?? 0,
     maxTokens: (legacy.config && legacy.config.maxTokens) ?? 0,
     maxToolIterations: (legacy.config && legacy.config.maxToolIterations) ?? 0
@@ -3209,6 +3340,21 @@ async function runSubChat(opts) {
     }
   }
   if (!resolvedConfig) resolvedConfig = getResolvedAIConfig()
+  if (model != null && String(model).trim() !== '') {
+    const pick = String(model).trim()
+    const pool = Array.isArray(resolvedConfig.modelPool)
+      ? resolvedConfig.modelPool.map(x => String(x || '').trim()).filter(Boolean)
+      : []
+    if (pool.length > 0 && !pool.includes(pick)) {
+      return { success: false, error: `模型 ${pick} 不在全局模型池中`, subSessionId }
+    }
+    if ((provider == null || String(provider).trim() === '') && resolvedConfig.modelBindings && resolvedConfig.modelBindings[pick]) {
+      const byModelProvider = getResolvedAIConfigForProvider(resolvedConfig.modelBindings[pick])
+      if (byModelProvider) {
+        resolvedConfig = { ...byModelProvider, defaultModel: pick }
+      }
+    }
+  }
   const toolDefs = getToolsForChat()
   try {
     const result = await aiOrchestrator.startChat({
@@ -3245,6 +3391,12 @@ try {
   aiToolRegistry.register('sessions_spawn', createSessionsSpawnTool(runSubChat))
 } catch (e) {
   console.warn('加载 sessions_spawn 工具失败:', e.message)
+}
+try {
+  const { createListConfiguredModelsTool } = require('./ai/tools/list-configured-models')
+  aiToolRegistry.register('list_configured_models', createListConfiguredModelsTool(getAIConfigLegacy))
+} catch (e) {
+  console.warn('加载 list_configured_models 工具失败:', e.message)
 }
 try {
   const { createListProvidersAndModelsTool } = require('./ai/tools/list-providers-models')
@@ -3506,7 +3658,7 @@ registerChannel('ai-get-config', async () => {
     const legacy = aiConfigFile.toLegacyConfig(data)
     return {
       success: true,
-      config: legacy.config,
+      config: { ...legacy.config, modelPool: Array.isArray(data.modelPool) ? data.modelPool : [] },
       providerKeys: legacy.providerKeys,
       raw: legacy.raw
     }
@@ -3639,6 +3791,32 @@ registerChannel('ai-get-billing', async (event, { type, baseUrl: providerBaseUrl
 // 保存 AI 配置（写入 openultron.json 的 ai 字段）
 registerChannel('ai-save-config', async (event, payload) => {
   try {
+    const normalizePool = (pool, defaultModel) => {
+      const list = Array.isArray(pool) ? pool.map(x => String(x || '').trim()).filter(Boolean) : []
+      const uniq = [...new Set(list)]
+      const dm = String(defaultModel || '').trim()
+      if (dm && !uniq.includes(dm)) uniq.unshift(dm)
+      return uniq
+    }
+    const normalizeBindings = (bindings, providers, pool, fallbackProvider) => {
+      const allow = new Set((providers || []).map(p => String(p?.baseUrl || '').trim()).filter(Boolean))
+      const out = {}
+      const src = bindings && typeof bindings === 'object' ? bindings : {}
+      for (const [k, v] of Object.entries(src)) {
+        const model = String(k || '').trim()
+        const provider = String(v || '').trim()
+        if (!model || !provider) continue
+        if (allow.size > 0 && !allow.has(provider)) continue
+        out[model] = provider
+      }
+      const fb = String(fallbackProvider || '').trim()
+      for (const m of pool || []) {
+        const model = String(m || '').trim()
+        if (!model) continue
+        if (!out[model] && fb) out[model] = fb
+      }
+      return out
+    }
     const data = aiConfigFile.readAIConfig(app, store)
     if (payload.raw !== undefined) {
       const raw = payload.raw
@@ -3646,6 +3824,8 @@ registerChannel('ai-save-config', async (event, payload) => {
         data.defaultProvider = String(raw.defaultProvider).trim()
       }
       if (raw.defaultModel !== undefined) data.defaultModel = raw.defaultModel ?? data.defaultModel
+      if (Array.isArray(raw.modelPool)) data.modelPool = raw.modelPool
+      if (raw.modelBindings && typeof raw.modelBindings === 'object') data.modelBindings = raw.modelBindings
       if (raw.temperature !== undefined) data.temperature = raw.temperature ?? data.temperature
       if (raw.maxTokens !== undefined) data.maxTokens = raw.maxTokens ?? data.maxTokens
       if (raw.maxToolIterations !== undefined) data.maxToolIterations = raw.maxToolIterations ?? data.maxToolIterations
@@ -3654,15 +3834,18 @@ registerChannel('ai-save-config', async (event, payload) => {
       const config = payload
       data.defaultProvider = config.apiBaseUrl || data.defaultProvider
       data.defaultModel = config.defaultModel ?? data.defaultModel
+      if (Array.isArray(config.modelPool)) data.modelPool = config.modelPool
+      if (config.modelBindings && typeof config.modelBindings === 'object') data.modelBindings = config.modelBindings
       data.temperature = config.temperature ?? data.temperature
       data.maxTokens = config.maxTokens ?? data.maxTokens
       data.maxToolIterations = config.maxToolIterations ?? data.maxToolIterations
       const provider = data.providers.find(p => p.baseUrl === (config.apiBaseUrl || data.defaultProvider))
       if (provider) {
         if (config.apiKey !== undefined) provider.apiKey = config.apiKey || ''
-        if (config.defaultModel !== undefined) provider.defaultModel = config.defaultModel || ''
       }
     }
+    data.modelPool = normalizePool(data.modelPool, data.defaultModel)
+    data.modelBindings = normalizeBindings(data.modelBindings, data.providers, data.modelPool, data.defaultProvider)
     aiConfigFile.writeAIConfig(app, data)
     const verify = aiConfigFile.readAIConfig(app, store)
     if (verify.defaultProvider !== data.defaultProvider) {

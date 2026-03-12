@@ -1243,10 +1243,11 @@ const handleSend = async () => {
       const assistantMsg = { role: 'assistant', content: '已归档当前会话并开启新会话。历史记忆将自动继承。' }
       messages.value = [...messages.value, userMsg, assistantMsg]
       if (summary) {
+        const summaryMessages = stripToolExecutionForSave(JSON.parse(JSON.stringify(messages.value)))
         await window.electronAPI.ai.saveSessionSummary({
           projectPath: historyProjectPath(),
           sessionId: currentSessionId.value,
-          messages: messages.value
+          messages: summaryMessages
         }).catch(() => {})
       }
       await persistSave()

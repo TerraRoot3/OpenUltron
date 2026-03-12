@@ -118,9 +118,9 @@ function parseMessageEvent(data) {
   if (attachments.length === 0 && contentObj && typeof contentObj === 'object') {
     if (messageType === 'image' && typeof contentObj.image_key === 'string' && contentObj.image_key.trim()) {
       attachments.push({ type: 'image', image_key: contentObj.image_key.trim() })
-    } else if (messageType === 'file' && typeof contentObj.file_key === 'string' && contentObj.file_key.trim()) {
+    } else if ((messageType === 'file' || messageType === 'audio') && typeof contentObj.file_key === 'string' && contentObj.file_key.trim()) {
       attachments.push({
-        type: 'file',
+        type: messageType === 'audio' ? 'audio' : 'file',
         file_key: contentObj.file_key.trim(),
         file_name: (typeof contentObj.file_name === 'string' && contentObj.file_name.trim()) ? contentObj.file_name.trim() : ''
       })
@@ -141,7 +141,7 @@ function parseMessageEvent(data) {
       if (!key) continue
       const fileNameMatch = rawContentStr.match(/"file_name"\s*:\s*"([^"]+)"/)
       const fileName = fileNameMatch && fileNameMatch[1] ? fileNameMatch[1].trim() : ''
-      attachments.push({ type: 'file', file_key: key, file_name: fileName })
+      attachments.push({ type: messageType === 'audio' ? 'audio' : 'file', file_key: key, file_name: fileName })
     }
   }
 
