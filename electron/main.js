@@ -5413,7 +5413,7 @@ function buildChannelProgressSummary(key) {
     const r = runs[i]
     const s = byId.get(r.runSessionId)
     const status = statusTextForUser(s?.status || 'running')
-    const progressPct = Number(s?.progress?.progress || 0)
+    const progressPct = computeDisplayProgress(s?.progress?.progress || 0, r.startTime, s?.status || 'running')
     const phase = s?.progress?.phase ? phaseTextForUser(String(s.progress.phase)) : ''
     const lastAction = s?.progress?.last_action ? String(s.progress.last_action) : ''
     const eta = s?.progress?.eta ? String(s.progress.eta) : ''
@@ -5440,6 +5440,16 @@ function buildChannelProgressSummary(key) {
   return lines.join('\n')
 }
 
+function computeDisplayProgress(rawProgress, startTime, status) {
+  const raw = Number(rawProgress || 0)
+  if (status === 'completed') return 100
+  if (status === 'error' || status === 'failed') return Math.max(0, Math.min(100, raw))
+  const elapsedSec = Math.max(0, Math.floor((Date.now() - Number(startTime || 0)) / 1000))
+  // 展示层“保守抬升”：长任务无新事件时也让用户看到在推进，最高不超过 92%
+  const timeBased = Math.min(92, 4 + Math.floor(elapsedSec / 30) * 4)
+  return Math.max(0, Math.min(100, Math.max(raw, timeBased)))
+}
+
 function buildSingleRunProgressSummary(key, runSessionId) {
   const runs = (channelCurrentRun.get(key) || [])
   const run = runs.find(r => r.runSessionId === runSessionId)
@@ -5448,7 +5458,7 @@ function buildSingleRunProgressSummary(key, runSessionId) {
   const s = snapshot.find(x => x.sessionId === runSessionId)
   if (!s) return ''
   const status = statusTextForUser(s?.status || 'running')
-  const progressPct = Number(s?.progress?.progress || 0)
+  const progressPct = computeDisplayProgress(s?.progress?.progress || 0, run.startTime, s?.status || 'running')
   const phase = s?.progress?.phase ? phaseTextForUser(String(s.progress.phase)) : ''
   const lastAction = s?.progress?.last_action ? humanizeLastAction(String(s.progress.last_action)) : ''
   const eta = s?.progress?.eta ? String(s.progress.eta) : ''
