@@ -20,7 +20,8 @@ class BrowserWindowManager {
         nodeIntegration: false,
         contextIsolation: true,
         sandbox: false,          // sandbox=false 才能执行 executeJavaScript
-        partition: 'persist:ai-browser'  // 独立 session，不影响主窗口
+        // 使用内存分区，避免 persist profile 污染导致的空白页/个人资料异常弹窗
+        partition: 'ai-browser'
       }
     })
 
