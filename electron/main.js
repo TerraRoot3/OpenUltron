@@ -5572,6 +5572,39 @@ function isProgressQueryText(text) {
   return false
 }
 
+function isScreenshotFollowupText(text) {
+  const t = String(text || '').trim()
+  if (!t) return false
+  if (/(截图|截个图|效果图|预览图|screen\s*shot)/i.test(t) && /(发|给|看|补|再来|重新|没收到|没有)/i.test(t)) return true
+  if (/(截图没发|没发截图|没有截图|图没发|发下截图)/i.test(t)) return true
+  return false
+}
+
+function collectRecentSessionArtifacts(projectPath, sessionId) {
+  const projectKey = conversationFile.hashProjectPath(projectPath)
+  const conv = conversationFile.loadConversation(projectKey, sessionId)
+  const messages = Array.isArray(conv?.messages) ? conv.messages : []
+  const lastAssistant = [...messages].reverse().find((m) => m && m.role === 'assistant' && getAssistantText(m).trim())
+  const text = lastAssistant ? getAssistantText(lastAssistant) : ''
+  const { filePaths: screenshotPaths } = extractLocalResourceScreenshots(text)
+  const filePaths = extractLocalFilesFromText(text)
+  const images = []
+  const files = []
+  const seen = new Set()
+  for (const p of screenshotPaths) {
+    if (!p || seen.has(p)) continue
+    seen.add(p)
+    images.push({ path: p })
+  }
+  for (const p of filePaths) {
+    if (!p || seen.has(p)) continue
+    seen.add(p)
+    if (isImageFilePath(p)) images.push({ path: p })
+    else files.push({ path: p })
+  }
+  return { images, files }
+}
+
 function formatRunningDuration(startTime) {
   const ms = Math.max(0, Date.now() - Number(startTime || 0))
   const sec = Math.floor(ms / 1000)
@@ -5763,6 +5796,30 @@ async function processMessageReplace(payload) {
       return
     }
   }
+  const projectPath = binding.channel === 'feishu'
+    ? FEISHU_PROJECT
+    : (binding.channel === 'telegram' ? TELEGRAM_PROJECT : DINGTALK_PROJECT)
+  const chatId = binding.remoteId
+  if (isScreenshotFollowupText(messageText)) {
+    const { images, files } = collectRecentSessionArtifacts(projectPath, mainSessionId)
+    const outBinding = { ...binding, sessionId: mainSessionId, projectPath, remoteId: chatId, ...(binding.channel === 'feishu' && { feishuChatId: chatId }) }
+    if (images.length > 0 || files.length > 0) {
+      eventBus.emit('chat.session.completed', {
+        binding: outBinding,
+        payload: {
+          text: images.length > 0 ? '已补发上次结果的截图。' : '已补发上次生成的文件（未找到可直接发送的截图）。',
+          images,
+          files
+        }
+      })
+      return
+    }
+    eventBus.emit('chat.session.completed', {
+      binding: outBinding,
+      payload: { text: '未找到上次任务的截图产物，这次先不重跑生成。请直接回复“按上次页面再截一张图”。' }
+    })
+    return
+  }
   // 同一会话收到新消息时，默认中止之前仍在运行的子任务，避免并发串话/错答
   const existingRuns = channelCurrentRun.get(key) || []
   for (const r of existingRuns) {
@@ -5779,10 +5836,6 @@ async function processMessageReplace(payload) {
     } catch (_) { /* 在用户消息上加「敲键盘」表情失败则忽略 */ }
   }
   if (!channelCurrentRun.has(key)) channelCurrentRun.set(key, [])
-  const projectPath = binding.channel === 'feishu'
-    ? FEISHU_PROJECT
-    : (binding.channel === 'telegram' ? TELEGRAM_PROJECT : DINGTALK_PROJECT)
-  const chatId = binding.remoteId
   const stopLongRunNotify = createLongRunNotifier({
     binding,
     mainSessionId,
