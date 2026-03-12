@@ -5832,16 +5832,49 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
       m && m.role === 'assistant' && Array.isArray(m.tool_calls) &&
       m.tool_calls.some(tc => tc && tc.function && delegatedTools.has(tc.function.name))
     )
-    const textToSend = (cleanedText && cleanedText.trim())
-      ? cleanedText.trim()
-      : (spawnResultText || (imageItems.length > 0 ? '截图已发至当前会话。' : null))
+    const hasSpawnCall = currentRound.some((m) =>
+      m && m.role === 'assistant' && Array.isArray(m.tool_calls) &&
+      m.tool_calls.some((tc) => tc?.function?.name === 'sessions_spawn')
+    )
+    let forcedSpawnText = ''
+    let forcedSpawnRuntime = ''
+    if (!aiAlreadySent && !hasSpawnCall && !spawnResultText) {
+      try {
+        appLogger?.warn?.('[SubAgentDispatch] 主Agent未触发 sessions_spawn，启用兜底派发', {
+          runSessionId,
+          messagePreview: String(message?.text || '').slice(0, 120)
+        })
+        const forced = await runSubChat({
+          task: String(message?.text || '').trim(),
+          roleName: '执行助手',
+          projectPath,
+          runtime: 'auto'
+        })
+        if (forced && forced.success) {
+          forcedSpawnText = String(forced.result || '').trim()
+          forcedSpawnRuntime = String(forced.runtime || '')
+        } else {
+          forcedSpawnText = `子 Agent 执行失败：${String((forced && forced.error) || '未知错误')}`
+        }
+      } catch (e) {
+        forcedSpawnText = `子 Agent 执行失败：${e.message || String(e)}`
+      }
+    }
+    const textToSend = forcedSpawnText
+      ? forcedSpawnText
+      : ((cleanedText && cleanedText.trim())
+        ? cleanedText.trim()
+        : (spawnResultText || (imageItems.length > 0 ? '截图已发至当前会话。' : null)))
     if (binding.channel === 'feishu' && userMessageId && typingReactionId) {
       await feishuNotify.deleteMessageReaction(userMessageId, typingReactionId).catch(() => {})
     }
     const mainConv = conversationFile.loadConversation(projectKey, mainSessionId)
     const baseMessages = (mainConv && mainConv.messages) ? mainConv.messages : []
     const insertAt = Math.min(originalConvLength, baseMessages.length)
-    const merged = [...baseMessages.slice(0, insertAt), ...delta, ...baseMessages.slice(insertAt)]
+    const forcedMsg = forcedSpawnText
+      ? [{ role: 'assistant', content: forcedSpawnText + (forcedSpawnRuntime ? `\n\n（执行引擎：${forcedSpawnRuntime}）` : '') }]
+      : []
+    const merged = [...baseMessages.slice(0, insertAt), ...delta, ...forcedMsg, ...baseMessages.slice(insertAt)]
     const messagesToSave = stripToolExecutionFromMessages(merged)
     const savePayload = { id: mainSessionId, messages: messagesToSave, projectPath }
     if (binding.channel === 'feishu') savePayload.feishuChatId = chatId
