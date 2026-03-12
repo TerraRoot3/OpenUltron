@@ -3323,7 +3323,7 @@ const EXTERNAL_SUBAGENT_SPECS = [
     command: 'codex',
     versionArgs: ['--version'],
     runArgBuilders: [
-      (prompt) => ['exec', '--skip-git-repo-check', prompt]
+      (prompt) => ['exec', '--skip-git-repo-check', '--sandbox', 'workspace-write', prompt]
     ]
   },
   {
@@ -3468,11 +3468,11 @@ function buildExternalPrompt({ task, systemPrompt, roleName, projectPath }) {
 }
 
 async function runByExternalSubAgent(spec, ctx, resolvedCommand = '', heartbeat = null) {
-  const prompt = buildExternalPrompt(ctx)
   const rawProjectPath = String(ctx.projectPath || '').trim()
   const cwd = (rawProjectPath && path.isAbsolute(rawProjectPath) && fs.existsSync(rawProjectPath))
     ? rawProjectPath
     : getWorkspaceRoot()
+  const prompt = buildExternalPrompt({ ...ctx, projectPath: cwd })
   const command = String(resolvedCommand || spec.command || '').trim() || spec.command
   const timeoutMs = 180000
   const attempts = []
@@ -3481,6 +3481,7 @@ async function runByExternalSubAgent(spec, ctx, resolvedCommand = '', heartbeat 
     const buildArgs = builders[idx]
     const args = buildArgs(prompt)
     console.log('[SubAgentDispatch] 外部子Agent执行尝试', `external:${spec.id}`, `attempt=${idx + 1}/${builders.length}`, `cmd=${command}`, `cwd=${cwd}`, `timeoutMs=${timeoutMs}`)
+    console.log('[SubAgentDispatch] 外部子Agent提示工作目录', `external:${spec.id}`, cwd)
     try {
       appLogger?.info?.('[SubAgentDispatch] 外部子Agent执行尝试', {
         runtime: `external:${spec.id}`,
