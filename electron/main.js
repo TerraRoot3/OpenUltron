@@ -5755,6 +5755,40 @@ function collectRecentSessionArtifacts(projectPath, sessionId) {
   return { images, files }
 }
 
+async function captureLocalHtmlScreenshot(htmlPath) {
+  const p = String(htmlPath || '').trim()
+  if (!p || !path.isAbsolute(p) || !fs.existsSync(p)) return null
+  const ext = path.extname(p).toLowerCase()
+  if (ext !== '.html' && ext !== '.htm') return null
+  let win = null
+  try {
+    win = new BrowserWindow({
+      show: false,
+      width: 1366,
+      height: 900,
+      webPreferences: {
+        sandbox: true,
+        contextIsolation: true
+      }
+    })
+    const targetUrl = `file://${p}`
+    await win.loadURL(targetUrl)
+    await new Promise((r) => setTimeout(r, 450))
+    const image = await win.webContents.capturePage()
+    const png = image.toPNG()
+    if (!png || png.length === 0) return null
+    const fileName = `capture-${Date.now()}.png`
+    const out = getAppRootPath('screenshots', fileName)
+    fs.writeFileSync(out, png)
+    return out
+  } catch (e) {
+    appLogger?.warn?.('[Feishu] 本地HTML截图失败', { path: p, error: e.message || String(e) })
+    return null
+  } finally {
+    try { if (win && !win.isDestroyed()) win.destroy() } catch (_) {}
+  }
+}
+
 function formatRunningDuration(startTime) {
   const ms = Math.max(0, Date.now() - Number(startTime || 0))
   const sec = Math.floor(ms / 1000)
@@ -5953,20 +5987,34 @@ async function processMessageReplace(payload) {
   if (isScreenshotFollowupText(messageText)) {
     const { images, files } = collectRecentSessionArtifacts(projectPath, mainSessionId)
     const outBinding = { ...binding, sessionId: mainSessionId, projectPath, remoteId: chatId, ...(binding.channel === 'feishu' && { feishuChatId: chatId }) }
-    if (images.length > 0 || files.length > 0) {
+    if (images.length > 0) {
       eventBus.emit('chat.session.completed', {
         binding: outBinding,
         payload: {
-          text: images.length > 0 ? '已补发上次结果的截图。' : '已补发上次生成的文件（未找到可直接发送的截图）。',
+          text: '已补发上次结果的截图。',
           images,
-          files
+          files: []
         }
       })
       return
     }
+    const latestHtml = (files || []).find((f) => {
+      const pp = String(f?.path || '').trim().toLowerCase()
+      return pp.endsWith('.html') || pp.endsWith('.htm')
+    })
+    if (latestHtml && latestHtml.path) {
+      const shot = await captureLocalHtmlScreenshot(latestHtml.path)
+      if (shot) {
+        eventBus.emit('chat.session.completed', {
+          binding: outBinding,
+          payload: { text: '已根据上次生成的页面重新截图并发送。', images: [{ path: shot }], files: [] }
+        })
+        return
+      }
+    }
     eventBus.emit('chat.session.completed', {
       binding: outBinding,
-      payload: { text: '未找到上次任务的截图产物，这次先不重跑生成。请直接回复“按上次页面再截一张图”。' }
+      payload: { text: '未找到可用截图产物，且无法从上次页面文件生成截图。请提供页面 URL 或文件路径。' }
     })
     return
   }
