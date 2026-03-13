@@ -55,6 +55,8 @@ const DEFAULT_FEISHU = {
   default_chat_id: '',
   notify_on_complete: false,
   receive_enabled: false,
+  // 是否在同一条消息中流式更新 AI 输出（支持思考/命令过程）
+  streaming_reply_enabled: true,
   // TTS：默认音色（可填 Edge shortName 或别名）
   tts_default_voice: '',
   // TTS：音色别名映射，key=别名，value=Edge shortName（如 zh-CN-XiaoyiNeural）
@@ -270,6 +272,7 @@ function setFeishu(partial) {
     default_chat_id: partial && partial.default_chat_id !== undefined ? String(partial.default_chat_id).trim() : cur.default_chat_id,
     notify_on_complete: partial && partial.notify_on_complete !== undefined ? !!partial.notify_on_complete : cur.notify_on_complete,
     receive_enabled: partial && partial.receive_enabled !== undefined ? !!partial.receive_enabled : cur.receive_enabled,
+    streaming_reply_enabled: partial && partial.streaming_reply_enabled !== undefined ? !!partial.streaming_reply_enabled : (cur.streaming_reply_enabled !== false),
     tts_default_voice: partial && partial.tts_default_voice !== undefined ? String(partial.tts_default_voice).trim() : String(cur.tts_default_voice || ''),
     tts_voice_aliases: partial && partial.tts_voice_aliases !== undefined
       ? (partial.tts_voice_aliases && typeof partial.tts_voice_aliases === 'object' ? partial.tts_voice_aliases : {})

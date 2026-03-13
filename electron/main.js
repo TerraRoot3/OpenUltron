@@ -3516,15 +3516,11 @@ function getChannelSendToolByProjectPath(projectPath = '') {
 }
 
 function buildSubAgentDeliveryPrompt(projectPath = '') {
-  const tool = getChannelSendToolByProjectPath(projectPath)
-  const toolHint = tool
-    ? `当前渠道可用发送工具：${tool}。`
-    : '若存在 *_send_message 渠道发送工具，优先调用它发送产物。'
   return [
     '[产物回传规则]',
-    toolHint,
-    '当任务产出图片/截图/文件，且用户诉求是“发给我/发送给我/把图给我/把文件给我”时，必须优先直接调用发送工具发送，不要只回复“已保存/已发送”。',
-    '发送成功后，文本里只做简短确认；发送失败时，明确失败原因并附本地绝对路径。'
+    '子 Agent 只负责执行与产出，不直接向外部渠道发送消息。',
+    '当任务产出图片/截图/文件时，返回：产物绝对路径 + 简洁执行结论。',
+    '是否对外发送由主 Agent 统一处理。'
   ].join('\n')
 }
 
@@ -3755,7 +3751,7 @@ async function runByInternalSubAgent({ task, systemPrompt, roleName, model, proj
     sessionId: subSessionId,
     messages,
     model: model && String(model).trim() ? String(model).trim() : undefined,
-    tools: getToolsForChat(),
+    tools: getToolsForSubChat(),
     sender: eventSink || null,
     config: resolvedConfig,
     projectPath: projectPath || '__main_chat__',
@@ -4191,9 +4187,11 @@ const aiGateway = createGateway({
     }
     const { cleanedText: cleanedRaw, filePaths: pathsFromText } = extractLocalResourceScreenshots(lastText)
     const spawnResultText = extractLatestSessionsSpawnResult(data.messages || [])
+    const latestVisibleText = String(extractLatestVisibleText(data.messages || []) || '').trim()
     const { cleanedText: spawnCleanedRaw, filePaths: spawnPathsFromText } = extractLocalResourceScreenshots(spawnResultText || '')
     const cleanedFeishu = (stripFeishuScreenshotMisfireText(cleanedRaw) || '').trim()
     const cleanedSpawn = (stripFeishuScreenshotMisfireText(spawnCleanedRaw) || '').trim()
+    const fileResolveBase = getWorkspaceRoot()
     let imageItems = []
     let fileItems = []
     const seenPath = new Set()
@@ -4209,7 +4207,7 @@ const aiGateway = createGateway({
     for (const p of spawnPathsFromText) {
       if (!seenPath.has(p)) { seenPath.add(p); imageItems.push({ path: p }) }
     }
-    for (const p of extractLocalFilesFromText(cleanedRaw)) {
+    for (const p of extractLocalFilesFromText(cleanedRaw, fileResolveBase)) {
       if (isImageFilePath(p)) {
         if (!seenPath.has(p)) {
           seenPath.add(p)
@@ -4220,7 +4218,7 @@ const aiGateway = createGateway({
         fileItems.push({ path: p })
       }
     }
-    for (const p of extractLocalFilesFromText(cleanedSpawn)) {
+    for (const p of extractLocalFilesFromText(cleanedSpawn, fileResolveBase)) {
       if (isImageFilePath(p)) {
         if (!seenPath.has(p)) {
           seenPath.add(p)
@@ -4237,12 +4235,13 @@ const aiGateway = createGateway({
       m.tool_calls.some(tc => tc && tc.function && delegatedToolNames.has(tc.function.name))
     )
     if (aiAlreadySentFeishu && !cleanedFeishu && !cleanedSpawn && imageItems.length === 0 && fileItems.length === 0) return
-    const rawTextToSend = cleanedFeishu || cleanedSpawn || (
+    const rawTextToSend = cleanedFeishu || cleanedSpawn || latestVisibleText || (
       imageItems.length > 0
         ? '截图已发至当前会话。'
         : (fileItems.length > 0 ? '文件已发至当前会话。' : '任务已执行完成，但未生成可展示的文本结果。')
     )
-    const textToSend = stripFalseDeliveredClaims(rawTextToSend, {
+    const safeRawTextToSend = stripToolProtocolAndJsonNoise(rawTextToSend, { dropJsonEnvelope: true })
+    const textToSend = stripFalseDeliveredClaims(safeRawTextToSend, {
       hasImages: imageItems.length > 0,
       hasFiles: fileItems.length > 0,
       channel: 'feishu'
@@ -4257,7 +4256,7 @@ const aiGateway = createGateway({
       sessionId: String(sessionId || ''),
       chatId: String(chatId || ''),
       textLen: String(textToSend || '').length,
-      textPreview: String(textToSend || '').slice(0, 200),
+      textPreview: redactSensitiveText(String(textToSend || '').slice(0, 200)),
       imageCount: imageItems.length,
       fileCount: fileItems.length,
       imagePaths: imageItems.map((x) => (x && x.path) ? String(x.path) : '').filter(Boolean).slice(0, 8),
@@ -4957,6 +4956,7 @@ registerChannel('ai-get-models', async (event, providerBaseUrl) => {
 
 // 统一「对话用工具列表」：builtin + MCP，chrome-devtools 排最前（与主会话一致，飞书/Webhook 等入口共用）
 const CHROME_DEVTOOLS_TOOL_PREFIX = 'mcp__chrome_devtools__'
+const CHANNEL_SEND_TOOL_REGEX = /^(feishu_send_message|telegram_send_message|dingtalk_send_message)$/
 function getToolsForChat() {
   const builtinTools = aiToolRegistry.getToolDefinitions()
   const mcpTools = aiMcpManager.getAllToolDefinitions()
@@ -4964,6 +4964,13 @@ function getToolsForChat() {
   const chromeDevtools = all.filter(t => (t.function?.name || '').startsWith(CHROME_DEVTOOLS_TOOL_PREFIX))
   const rest = all.filter(t => !(t.function?.name || '').startsWith(CHROME_DEVTOOLS_TOOL_PREFIX))
   return [...chromeDevtools, ...rest]
+}
+
+function getToolsForSubChat() {
+  return getToolsForChat().filter((t) => {
+    const name = String(t?.function?.name || '').trim()
+    return !CHANNEL_SEND_TOOL_REGEX.test(name)
+  })
 }
 
 const COORDINATOR_TOOL_ALLOWLIST = new Set([
@@ -5608,36 +5615,54 @@ function extractLocalResourceScreenshots(text) {
   return { cleanedText, filePaths }
 }
 
-function extractLocalFilesFromText(text) {
+function extractLocalFilesFromText(text, baseDir = '') {
   const src = String(text || '')
   if (!src.trim()) return []
   const out = []
   const seen = new Set()
+  const base = String(baseDir || '').trim()
+  const absBase = base && path.isAbsolute(base) ? base : ''
   const addIfValid = (p) => {
     if (!p || typeof p !== 'string') return
-    const full = p.trim()
-    if (!full.startsWith('/')) return
-    if (seen.has(full)) return
-    try {
-      if (!fs.existsSync(full)) return
-      const st = fs.statSync(full)
-      if (!st.isFile()) return
-      seen.add(full)
-      out.push(full)
-    } catch (_) {}
+    const raw = p.trim().replace(/^['"`]|['"`]$/g, '')
+    if (!raw) return
+    if (/^(https?:|local-resource:)/i.test(raw)) return
+    const candidates = []
+    if (raw.startsWith('/')) {
+      candidates.push(raw)
+    } else if (absBase) {
+      candidates.push(path.resolve(absBase, raw.replace(/^\.\//, '')))
+    } else {
+      return
+    }
+    for (const full of candidates) {
+      if (seen.has(full)) continue
+      try {
+        if (!fs.existsSync(full)) continue
+        const st = fs.statSync(full)
+        if (!st.isFile()) continue
+        seen.add(full)
+        out.push(full)
+      } catch (_) {}
+    }
   }
 
-  // 1) 文件路径：`/abs/path/file.ext`
-  const codePathRe = /`(\/[^`\n]+)`/g
+  // 1) 文件路径：`/abs/path/file.ext` 或 `./rel/path/file.ext`
+  const codePathRe = /`([^`\n]+)`/g
   let m
-  while ((m = codePathRe.exec(src)) !== null) addIfValid(m[1])
+  while ((m = codePathRe.exec(src)) !== null) {
+    const candidate = String(m[1] || '').trim()
+    if (!candidate) continue
+    if (!/[\\/]/.test(candidate) && !/\.[a-z0-9]{1,8}$/i.test(candidate)) continue
+    addIfValid(candidate)
+  }
 
-  // 2) markdown 链接：( /abs/path/file.ext )
-  const linkPathRe = /\]\((\/[^)\n]+)\)/g
+  // 2) markdown 链接：( /abs/path/file.ext ) 或 ( ./rel/path/file.ext )
+  const linkPathRe = /\]\(([^)\n]+)\)/g
   while ((m = linkPathRe.exec(src)) !== null) addIfValid(m[1])
 
-  // 3) 行内显式写法：file_path:/abs/path 或 local_path:/abs/path
-  const namedPathRe = /(file_path|local_path|path)\s*[:：]\s*(\/\S+)/gi
+  // 3) 行内显式写法：file_path:/abs/path 或 local_path:./rel/path
+  const namedPathRe = /(file_path|local_path|path)\s*[:：]\s*([^\s]+)/gi
   while ((m = namedPathRe.exec(src)) !== null) addIfValid(m[2])
 
   return out
@@ -5807,10 +5832,69 @@ function stripRawToolCallXml(text) {
   return s.trim()
 }
 
+function redactSensitiveText(text) {
+  if (!text || typeof text !== 'string') return text
+  let s = String(text)
+  // Authorization / Bearer
+  s = s.replace(/(Bearer\s+)[A-Za-z0-9._\-]{8,}/gi, '$1[REDACTED]')
+  // 常见 key/token/secret/password 形态（JSON 与命令行）
+  s = s.replace(/("?(?:api[_-]?key|app[_-]?secret|access[_-]?token|refresh[_-]?token|secret|password|passwd|token)"?\s*:\s*")([^"]+)(")/gi, '$1[REDACTED]$3')
+  s = s.replace(/((?:api[_-]?key|app[_-]?secret|access[_-]?token|refresh[_-]?token|secret|password|passwd|token)\s*=\s*)([^\s"'`,;}{]{4,})/gi, '$1[REDACTED]')
+  s = s.replace(/((?:x-api-key|authorization)\s*[:=]\s*)([^\s"'`,;}{]{4,})/gi, '$1[REDACTED]')
+  // OpenAI / 通用 sk- 前缀密钥
+  s = s.replace(/\bsk-[A-Za-z0-9]{8,}\b/g, 'sk-[REDACTED]')
+  // URL query 中的 key/token
+  s = s.replace(/([?&](?:api[_-]?key|access[_-]?token|token|secret|password)=)([^&\s]+)/gi, '$1[REDACTED]')
+  return s
+}
+
+function stripToolProtocolAndJsonNoise(text, { dropJsonEnvelope = true } = {}) {
+  if (!text || typeof text !== 'string') return text
+  let s = redactSensitiveText(String(text))
+  s = stripRawToolCallXml(s)
+  // 去掉常见协议标签残片（含部分流式半截）
+  s = s.replace(/^\s*<\/?(tool_call|function|parameter)\b[^>]*>\s*$/gim, '')
+  s = s.replace(/^\s*<function=[^>]*>\s*$/gim, '')
+  s = s.replace(/^\s*<parameter=[^>]*>\s*$/gim, '')
+  s = s.replace(/^\s*<\/(function|parameter|tool_call)>\s*$/gim, '')
+  // 去掉工具事件/协议行
+  s = s.replace(/^\s*\[(tool_call|tool_result|meta|token)\][^\n]*$/gim, '')
+
+  const trimmed = s.trim()
+  if (dropJsonEnvelope && trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    try {
+      const obj = JSON.parse(trimmed)
+      if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+        const keys = Object.keys(obj)
+        const hasToolEnvelope =
+          keys.includes('success') ||
+          keys.includes('content') ||
+          keys.includes('stdout') ||
+          keys.includes('stderr') ||
+          keys.includes('result') ||
+          keys.includes('meta') ||
+          keys.includes('tool_call_id') ||
+          keys.includes('tool_calls')
+        const hasVersionMeta = obj.meta && typeof obj.meta === 'object' && (
+          Object.prototype.hasOwnProperty.call(obj.meta, 'lastTouchedVersion') ||
+          Object.prototype.hasOwnProperty.call(obj.meta, 'lastTouchedAt')
+        )
+        if (hasToolEnvelope || hasVersionMeta) {
+          return ''
+        }
+      }
+    } catch (_) {}
+  }
+
+  // 行内明显工具回包 JSON 也去掉（避免直接把 {"success":true,...} 回给飞书）
+  s = s.replace(/^\s*\{"success"\s*:\s*(true|false)[\s\S]*\}\s*$/gim, '')
+  return redactSensitiveText(s.replace(/\n{3,}/g, '\n\n').trim())
+}
+
 // 已通过飞书发出截图时，去掉回复里「需要配置 chat_id」「请提供会话 ID」「截图文件路径」等误导性文案
 function stripFeishuScreenshotMisfireText(text) {
   if (!text || typeof text !== 'string') return text
-  let s = stripRawToolCallXml(text)
+  let s = stripToolProtocolAndJsonNoise(text)
   // 整段：从「由于飞书通知需要配置」到「我就可以把截图发给你了」整句
   s = s.replace(/由于飞书通知需要配置[^。]*chat_id[^。]*。[^\n]*请提供[^。]*。[^\n]*我就可以把截图发给你了[^。]*。?/g, '')
   s = s.replace(/由于飞书通知需要配置[^\n]+/g, '')
@@ -5841,16 +5925,15 @@ function stripFalseDeliveredClaims(text, { hasImages = false, hasFiles = false, 
 function getAssistantText(message) {
   if (!message || message.role !== 'assistant') return ''
   const c = message.content
-  if (typeof c === 'string') return stripRawToolCallXml(c)
+  if (typeof c === 'string') return stripToolProtocolAndJsonNoise(c, { dropJsonEnvelope: false })
   if (Array.isArray(c)) {
-    return stripRawToolCallXml(c
+    return stripToolProtocolAndJsonNoise(c
       .map((part) => {
         if (!part) return ''
         if (typeof part === 'string') return part
         if (typeof part.text === 'string') return part.text
         return ''
-      })
-      .join(''))
+      }).join(''), { dropJsonEnvelope: false })
   }
   return ''
 }
@@ -5916,6 +5999,118 @@ function compactSpawnResultText(text = '') {
   const useful = lines.filter((x) => !/^\[(meta|tool_call|token)\]/i.test(x))
   const picked = useful.length > 0 ? useful[useful.length - 1] : lines[lines.length - 1]
   return picked.replace(/^\[[^\]]+\]\s*/, '').trim()
+}
+
+function looksLikeGenericGreeting(text = '') {
+  const s = String(text || '').replace(/\s+/g, ' ').trim()
+  if (!s) return false
+  if (s.length > 260) return false
+  const patterns = [
+    /你好|您好|嗨|哈喽/,
+    /我是.+(助理|助手|Agent|智能体)/i,
+    /随时待命|今天想做什么|有什么可以帮/,
+    /很高兴为你服务|我来帮你/
+  ]
+  return patterns.some((re) => re.test(s))
+}
+
+function extractLatestVisibleText(messages = []) {
+  if (!Array.isArray(messages) || messages.length === 0) return ''
+  const pickText = (content) => {
+    if (typeof content === 'string') return content.trim()
+    if (Array.isArray(content)) {
+      return content
+        .map((x) => {
+          if (!x) return ''
+          if (typeof x === 'string') return x
+          if (typeof x.text === 'string') return x.text
+          return ''
+        })
+        .join('')
+        .trim()
+    }
+    return ''
+  }
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (!m || m.role === 'user' || m.role === 'system') continue
+    if (m.role === 'assistant') {
+      const t = String(getAssistantText(m) || '').trim()
+      if (t) return t
+      continue
+    }
+    if (m.role === 'tool') {
+      const raw = pickText(m.content)
+      if (!raw) continue
+      let t = raw
+      try {
+        const obj = JSON.parse(raw)
+        const candidates = [
+          obj && obj.result != null ? String(obj.result).trim() : '',
+          obj && obj.message != null ? String(obj.message).trim() : '',
+          obj && obj.summary != null ? String(obj.summary).trim() : '',
+          obj && obj.content != null ? String(obj.content).trim() : ''
+        ].filter(Boolean)
+        if (candidates.length > 0) t = candidates[0]
+      } catch (_) {}
+      t = stripToolProtocolAndJsonNoise(t, { dropJsonEnvelope: true }).trim()
+      if (!t || /^\[(meta|tool_call|token)\]/i.test(t)) continue
+      return t
+    }
+    const t = stripToolProtocolAndJsonNoise(pickText(m.content), { dropJsonEnvelope: true }).trim()
+    if (t) return t
+  }
+  return ''
+}
+
+function overwriteLatestAssistantText(messages = [], text = '') {
+  if (!Array.isArray(messages) || messages.length === 0) return messages
+  const next = [...messages]
+  for (let i = next.length - 1; i >= 0; i--) {
+    const m = next[i]
+    if (!m || m.role !== 'assistant') continue
+    const old = getAssistantText(m)
+    if (!String(old || '').trim()) continue
+    next[i] = { ...m, content: String(text || '').trim() }
+    return next
+  }
+  return next
+}
+
+async function refineReplyByMasterAgent({
+  userText = '',
+  draftText = '',
+  spawnText = '',
+  hasImages = false,
+  hasFiles = false,
+  channel = ''
+} = {}) {
+  const baseDraft = String(draftText || '').trim()
+  if (!baseDraft) return ''
+  const shouldRefine =
+    looksLikeGenericGreeting(baseDraft) ||
+    !!String(spawnText || '').trim() ||
+    baseDraft.length > 220
+  if (!shouldRefine) return baseDraft
+  try {
+    const channelName = channel === 'feishu' ? '飞书' : (channel === 'telegram' ? 'Telegram' : (channel === 'dingtalk' ? '钉钉' : '当前渠道'))
+    const prompt = [
+      `用户问题：${String(userText || '').trim()}`,
+      `子Agent结果：${String(spawnText || '').trim() || '（无）'}`,
+      `当前草稿：${baseDraft}`,
+      `产物：图片=${hasImages ? '有' : '无'}，文件=${hasFiles ? '有' : '无'}，渠道=${channelName}`,
+      '请输出最终回复（中文，60~220字）：',
+      '1) 先给执行结论；2) 再给关键结果；3) 如有产物说明已发送；4) 禁止自我介绍和寒暄；5) 禁止编造未完成内容。'
+    ].join('\n')
+    const refined = await aiOrchestrator.generateText({
+      prompt,
+      systemPrompt: '你是主Agent最终回复整理器，只做结果归纳，不使用工具，不输出Markdown代码块。'
+    })
+    const cleaned = stripToolProtocolAndJsonNoise(refined || '', { dropJsonEnvelope: true })
+    return String(cleaned || '').trim() || baseDraft
+  } catch (_) {
+    return baseDraft
+  }
 }
 
 // 主 Agent + 子 Agent：新消息到达时派生子 Agent，不直接停前一个；子 Agent 可调 stop_previous_task 停掉前边，或 wait_for_previous_run 等待前边完成再继续
@@ -6164,7 +6359,8 @@ function findRecentHtmlArtifact(projectPath, sessionId) {
       if (ext === '.html' || ext === '.htm') return p
     }
     const txt = getAssistantText(m)
-    for (const p of extractLocalFilesFromText(txt)) {
+    const fileResolveBase = (projectPath && path.isAbsolute(projectPath)) ? projectPath : getWorkspaceRoot()
+    for (const p of extractLocalFilesFromText(txt, fileResolveBase)) {
       const ext = path.extname(String(p || '')).toLowerCase()
       if ((ext === '.html' || ext === '.htm') && fs.existsSync(p)) return p
     }
@@ -6255,7 +6451,7 @@ function collectRecentSessionArtifacts(projectPath, sessionId) {
     .slice(-20)
   for (const text of assistantTexts.reverse()) {
     const { filePaths: screenshotPaths } = extractLocalResourceScreenshots(text)
-    const filePaths = extractLocalFilesFromText(text)
+    const filePaths = extractLocalFilesFromText(text, getWorkspaceRoot())
     for (const p of screenshotPaths) {
       if (!p || seen.has(p)) continue
       seen.add(p)
@@ -6689,6 +6885,16 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
   if (binding.channel !== 'feishu' && binding.channel !== 'telegram' && binding.channel !== 'dingtalk') return
   const typingReactionId = payload.typingReactionId || null
   const userMessageId = message.messageId || null
+  const feishuStreamEnabled = (() => {
+    if (binding.channel !== 'feishu') return false
+    try {
+      const cfg = require('./openultron-config').getFeishu()
+      // 仅在显式开启 card 流式模式时启用；文本消息 update 在部分环境会返回 NOT a card
+      return !!(cfg && cfg.streaming_reply_enabled !== false && cfg.streaming_reply_mode === 'card')
+    } catch (_) {
+      return false
+    }
+  })()
   const chatId = binding.remoteId
   const projectPath = binding.channel === 'feishu'
     ? FEISHU_PROJECT
@@ -6797,6 +7003,116 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
     return
   }
   const collectedScreenshots = []
+  const streamState = {
+    enabled: feishuStreamEnabled,
+    messageId: '',
+    thinkingText: '',
+    commandLines: [],
+    lastSentText: '',
+    flushTimer: null
+  }
+  const appendCommandLine = (line) => {
+    if (!streamState.enabled) return
+    const t = redactSensitiveText(String(line || '')).replace(/\r/g, '').trim()
+    if (!t) return
+    const wasEmpty = streamState.commandLines.length === 0
+    streamState.commandLines.push(t)
+    if (streamState.commandLines.length > 120) streamState.commandLines.splice(0, streamState.commandLines.length - 120)
+    if (wasEmpty) {
+      flushStream(false).catch((e) => {
+        appLogger?.warn?.('[FeishuStream] 首次命令刷新失败', { runSessionId, error: e?.message || String(e) })
+      })
+    }
+  }
+  const formatCommandFromToolCall = (tc) => {
+    try {
+      const name = String(tc?.name || '').trim() || 'unknown'
+      const args = parseToolCallArgs(tc?.arguments)
+      const readStr = (v) => (typeof v === 'string' ? v.trim() : '')
+      if (name === 'execute_command') {
+        const cmd = readStr(args?.command || args?.cmd || args?.script)
+        return cmd ? `- ${cmd}` : `- 调用 ${name}`
+      }
+      if (name === 'file_operation') {
+        const action = readStr(args?.action) || 'run'
+        const target = readStr(args?.path || args?.target || '')
+        return target ? `- file_operation ${action} ${target}` : `- file_operation ${action}`
+      }
+      if (name.startsWith('mcp__')) {
+        return `- ${name}`
+      }
+      if (name === 'sessions_spawn') {
+        const runtime = readStr(args?.runtime)
+        const role = readStr(args?.role_name)
+        if (runtime || role) return `- sessions_spawn${runtime ? ` runtime=${runtime}` : ''}${role ? ` role=${role}` : ''}`
+        return '- sessions_spawn'
+      }
+      return `- ${name}`
+    } catch (_) {
+      return '- 调用工具'
+    }
+  }
+  const buildStreamText = () => {
+    if (!streamState.enabled) return ''
+    const parts = []
+    const safeThinking = stripToolProtocolAndJsonNoise(String(streamState.thinkingText || ''), { dropJsonEnvelope: true })
+    if (safeThinking && safeThinking.trim()) {
+      const clippedThinking = String(safeThinking).slice(-1800)
+      parts.push(clippedThinking)
+    } else {
+      parts.push('思考中...')
+    }
+    if (streamState.commandLines.length > 0) {
+      parts.push('')
+      parts.push('执行命令：')
+      parts.push(...streamState.commandLines.slice(-18))
+    }
+    return parts.join('\n').slice(0, 3800)
+  }
+  const shouldStartStreamMessage = () => {
+    if (!streamState.enabled) return false
+    if (streamState.messageId) return true
+    // 仅当子 Agent 已返回可展示的命令过程时才启动流式（避免“你好”这类秒回触发）
+    return streamState.commandLines.length > 0
+  }
+  const ensureStreamMessage = async () => {
+    if (!streamState.enabled || streamState.messageId) return
+    if (!shouldStartStreamMessage()) return
+    const created = await feishuNotify.sendMessage({
+      chat_id: chatId,
+      text: '思考中...'
+    }).catch(() => null)
+    if (created && created.success && created.message_id) {
+      streamState.messageId = String(created.message_id)
+      streamState.lastSentText = '思考中...'
+    }
+  }
+  const flushStream = async (force = false) => {
+    if (!streamState.enabled) return
+    const nextText = buildStreamText()
+    if (!nextText) return
+    if (!force && nextText === streamState.lastSentText) return
+    await ensureStreamMessage()
+    if (!streamState.messageId) return
+    const updated = await feishuNotify.updateTextMessage(streamState.messageId, nextText).catch(() => null)
+    if (updated && updated.success) {
+      streamState.lastSentText = nextText
+    } else {
+      appLogger?.warn?.('[FeishuStream] 流式消息更新失败', {
+        runSessionId,
+        hasMessageId: !!streamState.messageId,
+        reason: (updated && updated.message) || 'unknown'
+      })
+    }
+  }
+  const scheduleStreamFlush = () => {
+    if (!streamState.enabled) return
+    if (streamState.flushTimer) return
+    streamState.flushTimer = setTimeout(async () => {
+      streamState.flushTimer = null
+      await flushStream(false)
+    }, 1200)
+  }
   const completePromise = new Promise((resolve, reject) => {
     const fakeSender = {
       send: (channel, data) => {
@@ -6806,6 +7122,11 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
         if (channel === 'ai-chat-error') reject(new Error((data && data.error) || 'AI 出错'))
         if (channel === 'ai-chat-tool-call' && data && data.toolCall) {
           const tc = data.toolCall
+          // 仅展示与子 Agent 执行相关的命令过程
+          if (String(tc.name || '').trim() === 'sessions_spawn') {
+            appendCommandLine(formatCommandFromToolCall(tc))
+            scheduleStreamFlush()
+          }
           if (tc.name === 'sessions_spawn') {
             const args = parseToolCallArgs(tc.arguments)
             const delegatedTask = summarizeTaskText(args && args.task ? args.task : '')
@@ -6832,7 +7153,25 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
               appLogger?.info?.('[Feishu] 从 tool 结果收集到截图', { name: data.name, count: items.length })
             }
             for (const item of items) collectedScreenshots.push(item)
+            // 子 Agent 流式日志里仅提取“执行了什么命令”，不展示执行结果
+            if (String(data.name || '').trim() === 'sessions_spawn') {
+              try {
+                const obj = JSON.parse(raw)
+                const lines = Array.isArray(obj?.log_lines) ? obj.log_lines : []
+                for (const line of lines.slice(-60)) {
+                  const s = String(line || '').trim()
+                  const m = s.match(/^\[tool_call\]\s+(.+)$/i)
+                  if (m && m[1]) appendCommandLine(`- ${m[1].trim()}`)
+                }
+              } catch (_) {}
+            }
+            if (!skipParse) scheduleStreamFlush()
           }
+        }
+        if (channel === 'ai-chat-token' && data && typeof data.token === 'string') {
+          streamState.thinkingText += data.token
+          if (streamState.thinkingText.length > 4000) streamState.thinkingText = streamState.thinkingText.slice(-4000)
+          scheduleStreamFlush()
         }
         if (binding.channel === 'feishu' && mainWindow && mainWindow.webContents && data) {
           const p = { ...data, sessionId: mainSessionId }
@@ -6853,26 +7192,6 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
     aiGateway.runChat(runChatPayload, fakeSender).catch(reject)
   })
   try {
-    const sendFeishuToolCallEvent = (toolCall) => {
-      if (binding.channel !== 'feishu' || !mainWindow || !mainWindow.webContents || !toolCall) return
-      try {
-        mainWindow.webContents.send('ai-chat-tool-call', {
-          sessionId: mainSessionId,
-          toolCall
-        })
-      } catch (_) {}
-    }
-    const sendFeishuToolResultEvent = (toolCallId, name, resultObj) => {
-      if (binding.channel !== 'feishu' || !mainWindow || !mainWindow.webContents || !toolCallId) return
-      try {
-        mainWindow.webContents.send('ai-chat-tool-result', {
-          sessionId: mainSessionId,
-          toolCallId,
-          name: name || 'sessions_spawn',
-          result: typeof resultObj === 'string' ? resultObj : JSON.stringify(resultObj || {})
-        })
-      } catch (_) {}
-    }
     const finalMessages = await completePromise
     const wasAborted = abortedRunSessionIds.has(runSessionId)
     if (wasAborted) {
@@ -6935,16 +7254,17 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
     }
     const cleanedText = stripFeishuScreenshotMisfireText(cleanedRaw)
     const cleanedSpawnText = stripFeishuScreenshotMisfireText(spawnCleanedRaw)
+    const fileResolveBase = (projectPath && path.isAbsolute(projectPath)) ? projectPath : getWorkspaceRoot()
     let fileItems = []
     const seenFilePath = new Set()
-    for (const p of extractLocalFilesFromText(cleanedText)) {
+    for (const p of extractLocalFilesFromText(cleanedText, fileResolveBase)) {
       if (isImageFilePath(p)) {
         if (!seenPath.has(p)) { seenPath.add(p); imageItems.push({ path: p }) }
       } else {
         if (!seenFilePath.has(p)) { seenFilePath.add(p); fileItems.push({ path: p }) }
       }
     }
-    for (const p of extractLocalFilesFromText(cleanedSpawnText)) {
+    for (const p of extractLocalFilesFromText(cleanedSpawnText, fileResolveBase)) {
       if (isImageFilePath(p)) {
         if (!seenPath.has(p)) {
           seenPath.add(p)
@@ -6994,111 +7314,52 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
       m && m.role === 'assistant' && Array.isArray(m.tool_calls) &&
       m.tool_calls.some((tc) => tc?.function?.name === 'sessions_spawn')
     )
-    let forcedSpawnText = ''
-    let forcedSpawnRuntime = ''
-    let forcedSpawnLogs = ''
-    if (!aiAlreadySent && !hasSpawnCall && !spawnResultText) {
-      try {
-        const forcedRoute = resolveCapabilityRoute({ text: String(message?.text || ''), runtime: 'auto' })
-        appLogger?.warn?.('[SubAgentDispatch] 主Agent未触发 sessions_spawn，启用兜底派发', {
-          runSessionId,
-          messagePreview: String(message?.text || '').slice(0, 120),
-          capability: forcedRoute.capability || 'general',
-          deliveryPolicy: forcedRoute.deliveryPolicy || 'defer'
-        })
-        const forcedToolCallId = `forced_spawn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-        sendFeishuToolCallEvent({
-          id: forcedToolCallId,
-          name: 'sessions_spawn',
-          arguments: JSON.stringify({
-            task: String(message?.text || '').trim(),
-            role_name: '执行助手',
-            runtime: forcedRoute.executionMode || 'internal'
-          })
-        })
-        sendFeishuToolResultEvent(forcedToolCallId, 'sessions_spawn', {
-          running: true,
-          partial: true,
-          stdout: '[meta] fallback sessions_spawn started',
-          log_lines: ['[meta] fallback sessions_spawn started']
-        })
-        const forced = await runSubChat({
-          task: String(message?.text || '').trim(),
-          roleName: '执行助手',
-          projectPath,
-          parentSessionId: mainSessionId,
-          feishuChatId: binding.channel === 'feishu' ? chatId : '',
-          runtime: forcedRoute.executionMode || 'internal',
-          stream: {
-            sendToolResult: (obj) => sendFeishuToolResultEvent(forcedToolCallId, 'sessions_spawn', obj)
-          }
-        })
-        if (forced && forced.success) {
-          forcedSpawnText = String(forced.result || '').trim()
-          forcedSpawnRuntime = String(forced.runtime || '')
-          forcedSpawnLogs = Array.isArray(forced.commandLogs) ? forced.commandLogs.join('\n') : ''
-          if (!forcedSpawnText && Array.isArray(forced.messages)) {
-            const last = [...forced.messages].reverse().find((m) => m && m.role === 'assistant')
-            forcedSpawnText = String(getAssistantText(last) || '').trim()
-          }
-          if (!forcedSpawnText && Array.isArray(forced.commandLogs)) {
-            const line = [...forced.commandLogs]
-              .reverse()
-              .find((x) => x && !/^\[(meta|tool_call|token)\]/i.test(String(x).trim()))
-            if (line) forcedSpawnText = String(line).replace(/^\[[^\]]+\]\s*/, '').trim()
-          }
-          if (!forcedSpawnText) forcedSpawnText = '子 Agent 已执行完成。'
-          sendFeishuToolResultEvent(forcedToolCallId, 'sessions_spawn', {
-            running: false,
-            partial: false,
-            success: true,
-            stdout: forcedSpawnLogs,
-            result: forcedSpawnText
-          })
-        } else {
-          forcedSpawnText = `子 Agent 执行失败：${String((forced && forced.error) || '未知错误')}`
-          forcedSpawnLogs = Array.isArray(forced?.commandLogs) ? forced.commandLogs.join('\n') : ''
-          sendFeishuToolResultEvent(forcedToolCallId, 'sessions_spawn', {
-            running: false,
-            partial: false,
-            success: false,
-            error: String((forced && forced.error) || '未知错误'),
-            stdout: forcedSpawnLogs
-          })
-        }
-      } catch (e) {
-        forcedSpawnText = `子 Agent 执行失败：${e.message || String(e)}`
-      }
-    }
+    const latestVisibleText = String(extractLatestVisibleText(currentRound) || '').trim()
+    // 单次判定策略：不再进行额外的“兜底强制派发”二次模型请求。
     const rawFallbackText = (toSend && String(toSend).trim())
       ? String(toSend).trim()
-      : ((spawnResultText && String(spawnResultText).trim()) ? String(spawnResultText).trim() : '')
-    const baseTextToSend = forcedSpawnText
-      ? forcedSpawnText
-      : ((cleanedText && cleanedText.trim())
-        ? cleanedText.trim()
-        : ((cleanedSpawnText && cleanedSpawnText.trim())
-            ? cleanedSpawnText.trim()
-            : (rawFallbackText || (imageItems.length > 0 ? '截图已发至当前会话。' : null))))
-    const textToSend = stripFalseDeliveredClaims(baseTextToSend, {
+      : ((spawnResultText && String(spawnResultText).trim())
+          ? String(spawnResultText).trim()
+          : ((latestVisibleText && String(latestVisibleText).trim()) ? String(latestVisibleText).trim() : ''))
+    const safeRawFallbackText = stripToolProtocolAndJsonNoise(rawFallbackText, { dropJsonEnvelope: true })
+    const cleanedTextTrim = String(cleanedText || '').trim()
+    const cleanedSpawnTrim = String(cleanedSpawnText || '').trim()
+    const preferSpawnText = !!cleanedSpawnTrim && (
+      !!hasSpawnCall ||
+      !cleanedTextTrim ||
+      looksLikeGenericGreeting(cleanedTextTrim)
+    )
+    const baseTextToSend = preferSpawnText
+      ? cleanedSpawnTrim
+      : (cleanedTextTrim || cleanedSpawnTrim || (rawFallbackText || (imageItems.length > 0 ? '截图已发至当前会话。' : null)))
+    const safeBaseTextToSend = stripToolProtocolAndJsonNoise(baseTextToSend, { dropJsonEnvelope: true })
+    let textToSend = stripFalseDeliveredClaims(safeBaseTextToSend, {
       hasImages: imageItems.length > 0,
       hasFiles: fileItems.length > 0,
       channel: binding.channel
-    }) || (rawFallbackText || (imageItems.length > 0
+    }) || (safeRawFallbackText || (imageItems.length > 0
       ? '截图已发至当前会话。'
       : '任务已执行完成，但未生成可展示的文本结果。'))
-    if (binding.channel === 'feishu' && userMessageId && typingReactionId) {
-      await feishuNotify.deleteMessageReaction(userMessageId, typingReactionId).catch(() => {})
+    if (hasSpawnCall && !cleanedSpawnTrim && looksLikeGenericGreeting(textToSend)) {
+      const delegated = summarizeTaskText(String(message?.text || ''), 60)
+      textToSend = delegated
+        ? `已派发子 Agent 执行：${delegated}\n当前正在处理中，完成后会回传结果。`
+        : '已派发子 Agent 执行，当前正在处理中，完成后会回传结果。'
+    }
+    // 暂停主 Agent 二次改写：保留主流程原始结果，避免风格/语义偏移
+    if (streamState.enabled) {
+      streamState.thinkingText = textToSend || streamState.thinkingText
+      appendCommandLine('- 任务完成，正在汇总结果')
+      await flushStream(true)
     }
     const mainConv = conversationFile.loadConversation(projectKey, mainSessionId)
     const baseMessages = (mainConv && mainConv.messages) ? mainConv.messages : []
     const insertAt = Math.min(originalConvLength, baseMessages.length)
-    const forcedMsg = forcedSpawnText
-      ? [{ role: 'assistant', content: forcedSpawnText + (forcedSpawnRuntime ? `\n\n（执行引擎：${forcedSpawnRuntime}）` : '') }]
-      : []
+    const forcedMsg = []
     const artifacts = normalizeArtifactsFromItems(imageItems, fileItems)
     const mergedRaw = [...baseMessages.slice(0, insertAt), ...delta, ...forcedMsg, ...baseMessages.slice(insertAt)]
-    const merged = attachArtifactsToLatestAssistant(mergedRaw, artifacts)
+    const normalizedMerged = overwriteLatestAssistantText(mergedRaw, textToSend)
+    const merged = attachArtifactsToLatestAssistant(normalizedMerged, artifacts)
     const messagesToSave = stripToolExecutionFromMessages(merged)
     const savePayload = { id: mainSessionId, messages: messagesToSave, projectPath }
     if (binding.channel === 'feishu') savePayload.feishuChatId = chatId
@@ -7107,12 +7368,15 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
       mainWindow.webContents.send('feishu-session-updated', { sessionId: mainSessionId })
     }
     // AI 已主动发消息且没有额外文本/图片要补发，跳过自动回复
-    if (aiAlreadySent && !textToSend && imageItems.length === 0 && fileItems.length === 0) return
+    if (aiAlreadySent && !textToSend && imageItems.length === 0 && fileItems.length === 0) {
+      return
+    }
     const outBinding = { ...binding, sessionId: mainSessionId, projectPath, remoteId: chatId, ...(binding.channel === 'feishu' && { feishuChatId: chatId }) }
     const outPayload = {
       text: textToSend || (imageItems.length > 0 ? '截图已发至当前会话。' : '任务已执行完成，但未生成可展示的文本结果。'),
       images: imageItems,
-      files: fileItems
+      files: fileItems,
+      ...(streamState.enabled && streamState.messageId ? { stream_message_id: streamState.messageId } : {})
     }
     if (binding.channel === 'telegram') {
       try {
@@ -7130,14 +7394,28 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
       appLogger?.info?.(`[${binding.channel}] 会话完成，带图回发`, { imageCount: imageItems.length })
     }
     eventBus.emit('chat.session.completed', { binding: outBinding, payload: outPayload })
+    if (binding.channel === 'feishu' && userMessageId && typingReactionId) {
+      // 不阻塞最终回复发送，异步移除“敲键盘”表情
+      feishuNotify.deleteMessageReaction(userMessageId, typingReactionId).catch(() => {})
+    }
   } catch (e) {
     completedRunSessionIds.add(runSessionId)
     console.error(`[${binding.channel}] 处理或回复失败:`, e.message)
+    if (streamState.enabled) {
+      streamState.thinkingText = `处理失败：${e.message || String(e)}`
+      appendCommandLine('- 任务失败')
+      await flushStream(true).catch(() => {})
+    }
     if (binding.channel === 'feishu' && userMessageId && typingReactionId) {
       await feishuNotify.deleteMessageReaction(userMessageId, typingReactionId).catch(() => {})
     }
     const errBinding = { ...binding, sessionId: mainSessionId, projectPath, remoteId: chatId, ...(binding.channel === 'feishu' && { feishuChatId: chatId }) }
     eventBus.emit('chat.session.completed', { binding: errBinding, payload: { text: `处理出错: ${e.message}` } })
+  } finally {
+    if (streamState.flushTimer) {
+      try { clearTimeout(streamState.flushTimer) } catch (_) {}
+      streamState.flushTimer = null
+    }
   }
 }
 

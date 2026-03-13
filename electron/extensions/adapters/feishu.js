@@ -15,8 +15,10 @@ const confirmationManager = require('../../ai/confirmation-manager')
 const memoryStore = require('../../ai/memory-store')
 const { ingestRoundAttachments } = require('../../ai/attachment-ingest')
 const { createInboundMessage, createSessionBinding } = require('../../core/message-model')
+const { redactSensitiveText } = require('../../core/sensitive-text')
 
 const FEISHU_PROJECT = '__feishu__'
+
 const FEISHU_DEDUP_MAX = 500
 const feishuRepliedMessageIds = new Set()
 const HISTORY_CMD_RE = /^\s*\/(history|memory)\s*$/i
@@ -450,7 +452,7 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
     },
     /**
      * @param {{ channel: string; remoteId: string }} binding
-     * @param {{ text?: string; images?: Array<{ path?: string; base64?: string; filename?: string }>; files?: Array<{ path?: string; name?: string }> }} payload
+     * @param {{ text?: string; images?: Array<{ path?: string; base64?: string; filename?: string }>; files?: Array<{ path?: string; name?: string }>; stream_message_id?: string; stream_allow_update?: boolean }} payload
      */
     async send(binding, payload) {
       const chatId = binding.remoteId
@@ -461,11 +463,11 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
       for (const p of screenshotPathsFromText) mergedImages.push({ path: p })
       const imageCount = mergedImages.length
       const fileCount = Array.isArray(payload.files) ? payload.files.length : 0
-      const text = textRaw.replace(/!\[[^\]]*\]\(local-resource:\/\/screenshots\/[^)]+\)/g, '【截图】')
+      const text = redactSensitiveText(textRaw.replace(/!\[[^\]]*\]\(local-resource:\/\/screenshots\/[^)]+\)/g, '【截图】'))
       appLogger?.info?.('[Feishu] 出站消息请求', {
         chatId: chatId || '',
         textLen: text.length,
-        textPreview: text.slice(0, 200),
+        textPreview: redactSensitiveText(text.slice(0, 200)),
         imageCount,
         fileCount,
         imagePathsFromText: screenshotPathsFromText.slice(0, 8)
@@ -474,6 +476,8 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
       let imageFailed = 0
       let fileSent = 0
       let fileFailed = 0
+      const streamMessageId = String(payload.stream_message_id || '').trim()
+      const allowStreamUpdate = payload && payload.stream_allow_update === true
       if (mergedImages.length > 0) {
         for (const img of mergedImages) {
           let imageBase64 = null
@@ -588,7 +592,20 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
           }
         }
       }
-      const textResult = await feishuNotify.sendMessage({ chat_id: chatId, text })
+      let textResult = null
+      if (streamMessageId && allowStreamUpdate) {
+        textResult = await feishuNotify.updateTextMessage(streamMessageId, text)
+        if (!textResult || !textResult.success) {
+          appLogger?.warn?.('[Feishu] 流式消息更新失败，回退发送新消息', {
+            chatId: chatId || '',
+            streamMessageId,
+            reason: (textResult && textResult.message) || '未知'
+          })
+          textResult = await feishuNotify.sendMessage({ chat_id: chatId, text })
+        }
+      } else {
+        textResult = await feishuNotify.sendMessage({ chat_id: chatId, text })
+      }
       appLogger?.info?.('[Feishu] 出站消息结果', {
         chatId: chatId || '',
         textSuccess: !!(textResult && textResult.success),

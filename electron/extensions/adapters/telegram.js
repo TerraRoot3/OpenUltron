@@ -10,6 +10,7 @@ const telegramSessionState = require('../../ai/telegram-session-state')
 const telegramNotify = require('../../ai/telegram-notify')
 const { ingestRoundAttachments } = require('../../ai/attachment-ingest')
 const { logger: appLogger } = require('../../app-logger')
+const { redactSensitiveText } = require('../../core/sensitive-text')
 
 const TELEGRAM_PROJECT = '__telegram__'
 const API_BASE = 'api.telegram.org'
@@ -328,13 +329,13 @@ function createTelegramAdapter(eventBus, getChannelConfig) {
     },
     async send(binding, payload) {
       const chatId = binding.remoteId
-      const text = (payload.text && payload.text.trim()) ? payload.text.trim() : '（无回复内容）'
+      const text = (payload.text && payload.text.trim()) ? redactSensitiveText(payload.text).trim() : '（无回复内容）'
       const maybeAudioText = payload && (payload.audio_text || payload.audioText)
       if (maybeAudioText && String(maybeAudioText).trim()) {
         const res = await telegramNotify.sendMessage({
           chat_id: chatId,
           text,
-          audio_text: String(maybeAudioText).trim()
+          audio_text: redactSensitiveText(String(maybeAudioText)).trim()
         })
         if (!res?.success) {
           await apiRequest('sendMessage', { chat_id: chatId, text: `${text}\n\n[语音发送失败: ${(res && res.message) || 'unknown'}]` }).catch(() => {})

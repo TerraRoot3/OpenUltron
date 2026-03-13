@@ -10,6 +10,7 @@ const crypto = require('crypto')
 const { execFile } = require('child_process')
 const { promisify } = require('util')
 const openultronConfig = require('../openultron-config')
+const { redactSensitiveText } = require('../core/sensitive-text')
 
 const CONFIG_PATH = openultronConfig.getPath()
 
@@ -470,6 +471,38 @@ function httpsDelete(host, pathName, token) {
   })
 }
 
+function httpsPatch(host, pathName, body, token) {
+  return new Promise((resolve, reject) => {
+    const data = Buffer.from(JSON.stringify(body || {}))
+    const opts = {
+      host,
+      path: pathName,
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': data.length
+      }
+    }
+    if (token) opts.headers.Authorization = `Bearer ${token}`
+    const req = https.request(opts, (res) => {
+      let buf = ''
+      res.on('data', (ch) => { buf += ch })
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(buf || '{}')
+          if (res.statusCode >= 200 && res.statusCode < 300) resolve(json)
+          else reject(new Error(json.msg || json.error_description || buf || `HTTP ${res.statusCode}`))
+        } catch (e) {
+          reject(new Error(buf || e.message))
+        }
+      })
+    })
+    req.on('error', reject)
+    req.write(data)
+    req.end()
+  })
+}
+
 /** multipart/form-data POST（用于上传图片） */
 function httpsPostMultipart(host, pathName, formParts, token) {
   return new Promise((resolve, reject) => {
@@ -914,7 +947,7 @@ async function sendMessage(options = {}) {
       const res = await sendFile(receiveId, key, name, receiveIdType)
       return { success: true, message_id: res.data && res.data.message_id, message: '文件发送成功' }
     }
-    const content = text != null ? String(text) : ''
+    const content = text != null ? redactSensitiveText(String(text)) : ''
     if (!content) {
       return { success: false, message: '请提供 text、image_key/image_base64、file_key/file_path、post、audio_* 或 media_* 之一' }
     }
@@ -941,6 +974,27 @@ async function deleteMessage(messageId) {
     return { success: true, message: '已撤回' }
   } catch (e) {
     return { success: false, message: e.message || '撤回失败' }
+  }
+}
+
+async function updateTextMessage(messageId, text) {
+  if (!messageId || !String(messageId).trim()) {
+    return { success: false, message: '缺少 message_id' }
+  }
+  const id = String(messageId).trim()
+  const content = redactSensitiveText(String(text || '')).slice(0, 40000)
+  if (!content) return { success: false, message: '更新文本不能为空' }
+  try {
+    const token = await getTenantAccessToken()
+    const pathName = `${MESSAGE_PATH}/${encodeURIComponent(id)}`
+    const body = {
+      msg_type: 'text',
+      content: JSON.stringify({ text: content })
+    }
+    const res = await httpsPatch(AUTH_URL, pathName, body, token)
+    return { success: true, message: '更新成功', message_id: (res && res.data && res.data.message_id) || id }
+  } catch (e) {
+    return { success: false, message: e.message || '更新失败' }
   }
 }
 
@@ -1012,6 +1066,7 @@ module.exports = {
   downloadFileByKey,
   sendFile,
   sendMessage,
+  updateTextMessage,
   deleteMessage,
   addMessageReaction,
   deleteMessageReaction,

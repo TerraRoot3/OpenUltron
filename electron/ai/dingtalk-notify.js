@@ -9,6 +9,7 @@ const { promisify } = require('util')
 const openultronConfig = require('../openultron-config')
 const feishuNotify = require('./feishu-notify')
 const { resolveFfmpegPath } = feishuNotify
+const { redactSensitiveText } = require('../core/sensitive-text')
 
 const execFileAsync = promisify(execFile)
 
@@ -229,7 +230,7 @@ function buildSessionWebhookTextPayload(text) {
   return {
     msgtype: 'text',
     text: {
-      content: String(text || '').trim().slice(0, 4000)
+      content: redactSensitiveText(String(text || '')).trim().slice(0, 4000)
     }
   }
 }
@@ -250,15 +251,16 @@ async function sendMessage(options = {}) {
     let audioRes = null
 
     if (text && String(text).trim()) {
+      const safeText = redactSensitiveText(String(text))
       if (webhook) {
-        textRes = await sendBySessionWebhook(webhook, buildSessionWebhookTextPayload(text))
+        textRes = await sendBySessionWebhook(webhook, buildSessionWebhookTextPayload(safeText))
       } else if (openConversationId && robotCode) {
         const token = await getAccessToken()
         textRes = await sendRobotGroupMessage(token, {
           openConversationId,
           robotCode,
           msgKey: 'sampleText',
-          msgParam: { content: String(text).trim().slice(0, 4000) }
+          msgParam: { content: safeText.trim().slice(0, 4000) }
         })
       } else {
         throw new Error('发送钉钉文本需提供 session_webhook 或 (open_conversation_id + robot_code)')
@@ -267,7 +269,8 @@ async function sendMessage(options = {}) {
 
     let voicePath = audio_file_path ? String(audio_file_path).trim() : ''
     if (!voicePath && audio_text && String(audio_text).trim()) {
-      voicePath = await synthesizeToVoiceFile(String(audio_text).trim(), {
+      const safeAudioText = redactSensitiveText(String(audio_text)).trim()
+      voicePath = await synthesizeToVoiceFile(safeAudioText, {
         voice: audio_voice,
         lang: audio_lang,
         rate: audio_rate,
@@ -314,4 +317,3 @@ module.exports = {
   sendMessage,
   getAccessToken
 }
-

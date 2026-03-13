@@ -9,6 +9,7 @@ const { promisify } = require('util')
 const openultronConfig = require('../openultron-config')
 const feishuNotify = require('./feishu-notify')
 const { resolveFfmpegPath } = feishuNotify
+const { redactSensitiveText } = require('../core/sensitive-text')
 
 const execFileAsync = promisify(execFile)
 const API_BASE = 'api.telegram.org'
@@ -173,14 +174,14 @@ async function sendMessage(options = {}) {
 
   const out = { text_message_id: '', audio_message_id: '' }
   try {
-    const text = options.text != null ? String(options.text).trim() : ''
+    const text = options.text != null ? redactSensitiveText(String(options.text)).trim() : ''
     if (text) {
       const r = await apiRequest(token, 'sendMessage', { chat_id: chatId, text })
       out.text_message_id = String(r?.message_id || '')
     }
 
     let audioPath = options.audio_file_path ? String(options.audio_file_path).trim() : ''
-    const audioText = options.audio_text != null ? String(options.audio_text).trim() : ''
+    const audioText = options.audio_text != null ? redactSensitiveText(String(options.audio_text)).trim() : ''
     if (!audioPath && audioText) {
       const mp3Path = makeTmpFile('.mp3')
       const oggPath = makeTmpFile('.ogg')
@@ -220,4 +221,3 @@ module.exports = {
   getConfig,
   sendMessage
 }
-

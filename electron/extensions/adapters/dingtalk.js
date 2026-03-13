@@ -11,6 +11,7 @@ const { ingestRoundAttachments } = require('../../ai/attachment-ingest')
 const http = require('http')
 const https = require('https')
 const path = require('path')
+const { redactSensitiveText } = require('../../core/sensitive-text')
 
 const DINGTALK_PROJECT = '__dingtalk__'
 const HISTORY_CMD_RE = /^\s*\/(history|memory)\s*$/i
@@ -357,10 +358,10 @@ function createDingtalkAdapter(eventBus, getChannelConfig) {
       }
     },
     async send(binding, payload) {
-      const text = compactText(payload?.text || '') || '（无回复内容）'
+      const text = compactText(redactSensitiveText(payload?.text || '')) || '（无回复内容）'
       const options = {
         text,
-        audio_text: payload?.audio_text || payload?.audioText || '',
+        audio_text: redactSensitiveText(payload?.audio_text || payload?.audioText || ''),
         audio_voice: payload?.audio_voice,
         audio_lang: payload?.audio_lang,
         audio_rate: payload?.audio_rate,

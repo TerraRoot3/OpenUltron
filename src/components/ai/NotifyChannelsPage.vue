@@ -76,6 +76,12 @@
         </div>
         <div class="feishu-row feishu-row-check">
           <label class="feishu-check-label">
+            <input v-model="streamingReplyEnabled" type="checkbox" @change="saveConfigDebounced" />
+            <span>{{ t('notify.streamingReplyEnabled') }}</span>
+          </label>
+        </div>
+        <div class="feishu-row feishu-row-check">
+          <label class="feishu-check-label">
             <input v-model="receiveEnabled" type="checkbox" @change="saveConfigDebounced" />
             <span>{{ t('notify.receiveFeishu') }}</span>
           </label>
@@ -255,6 +261,7 @@ const appId = ref('')
 const appSecret = ref('')
 const defaultChatId = ref('')
 const notifyOnComplete = ref(false)
+const streamingReplyEnabled = ref(true)
 const receiveEnabled = ref(false)
 const receiveRunning = ref(false)
 const receiveStarting = ref(false)
@@ -299,6 +306,7 @@ async function loadConfig() {
     appSecret.value = res.app_secret || ''
     defaultChatId.value = res.default_chat_id || ''
     notifyOnComplete.value = res.notify_on_complete === true
+    streamingReplyEnabled.value = res.streaming_reply_enabled !== false
     receiveEnabled.value = res.receive_enabled === true
   }
   const status = await api()?.receiveStatus?.()
@@ -406,6 +414,7 @@ async function saveConfig() {
       app_secret: appSecret.value?.trim() || '',
       default_chat_id: defaultChatIdTrimmed.value,
       notify_on_complete: notifyOnComplete.value,
+      streaming_reply_enabled: streamingReplyEnabled.value,
       receive_enabled: receiveEnabled.value
     })
     if (res?.success) {
