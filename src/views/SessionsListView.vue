@@ -1,8 +1,10 @@
 <template>
   <div class="sessions-list-view">
-    <div class="sl-header">
-      <MessageSquare :size="16" />
-      <span>{{ t('sessions.title') }}</span>
+    <div class="sl-header-outer">
+      <div class="sl-header-inner">
+        <MessageSquare :size="16" />
+        <span>{{ t('sessions.title') }}</span>
+      </div>
     </div>
     <div class="sl-list" v-if="sessions.length">
       <div
@@ -115,10 +117,14 @@ onMounted(() => {
   flex-direction: column;
   background: var(--ou-bg-main);
   min-height: 0;
-  padding: 20px 24px 0;
+  padding: 0;
 }
-.sl-header {
+.sl-header-outer {
   flex-shrink: 0;
+  padding: 20px 24px 0;
+  background: var(--ou-bg-main);
+}
+.sl-header-inner {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -131,7 +137,7 @@ onMounted(() => {
 .sl-list {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 0 0;
+  padding: 16px 24px 0;
 }
 .sl-item {
   display: flex;

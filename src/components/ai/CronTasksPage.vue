@@ -1,9 +1,11 @@
 <template>
   <div class="cron-page">
-    <div class="cron-header">
-      <Clock :size="16" />
-      <span>{{ t('cron.title') }}</span>
-      <button class="cron-refresh-btn" :title="t('cron.refreshTitle')" @click="loadTasks">{{ t('common.refresh') }}</button>
+    <div class="cron-header-outer">
+      <div class="cron-header-inner">
+        <Clock :size="16" />
+        <span>{{ t('cron.title') }}</span>
+        <button class="cron-refresh-btn" :title="t('cron.refreshTitle')" @click="loadTasks">{{ t('common.refresh') }}</button>
+      </div>
     </div>
     <p class="cron-desc">{{ t('cron.desc') }}</p>
 
@@ -142,11 +144,17 @@ onUnmounted(() => {
   overflow-y: auto;
   background: var(--ou-bg-main);
   color: var(--ou-text);
-  padding: 20px 24px;
+  padding: 0 24px 24px;
   gap: 24px;
 }
 
-.cron-header {
+.cron-header-outer {
+  flex-shrink: 0;
+  padding: 20px 24px 0;
+  margin: 0 -24px 0 -24px;
+  background: var(--ou-bg-main);
+}
+.cron-header-inner {
   display: flex;
   align-items: center;
   gap: 8px;

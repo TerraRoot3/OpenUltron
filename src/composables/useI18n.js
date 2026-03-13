@@ -48,6 +48,7 @@ const messages = {
       sourceFeishu: '飞书',
       sourceDingtalk: '钉钉',
       sourceMain: '主',
+      switchSession: '切换会话',
       deleteConfirm: '确定删除会话「{title}」？',
     },
     logs: {
@@ -357,6 +358,7 @@ const messages = {
       sourceFeishu: 'Feishu',
       sourceDingtalk: 'DingTalk',
       sourceMain: 'Main',
+      switchSession: 'Switch session',
       deleteConfirm: 'Delete session "{title}"?',
     },
     logs: {

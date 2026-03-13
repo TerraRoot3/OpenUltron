@@ -1,8 +1,10 @@
 <template>
   <div class="settings-logs-view">
-    <div class="page-header">
-      <FileText :size="16" />
-      <span>{{ t('logs.title') }}</span>
+    <div class="page-header-outer">
+      <div class="page-header-inner">
+        <FileText :size="16" />
+        <span>{{ t('logs.title') }}</span>
+      </div>
     </div>
     <p class="page-desc">{{ t('logs.desc') }}</p>
 
@@ -97,12 +99,18 @@ onMounted(async () => {
 
 <style scoped>
 .settings-logs-view {
-  padding: 20px 24px 24px;
+  padding: 0 24px 24px;
   color: var(--ou-text);
   height: 100%;
   overflow-y: auto;
 }
-.page-header {
+.page-header-outer {
+  flex-shrink: 0;
+  padding: 20px 24px 0;
+  margin: 0 -24px 0 -24px;
+  background: var(--ou-bg-main);
+}
+.page-header-inner {
   display: flex;
   align-items: center;
   gap: 8px;

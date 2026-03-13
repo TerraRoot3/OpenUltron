@@ -351,13 +351,16 @@ class StdioMcpConnection {
     if (this.name === 'chrome-devtools' && originalName === 'take_screenshot') {
       await this._ensureChromePageReadyForScreenshot()
     }
+    // 截图可能较慢（大页面或 CDP 延迟），使用更长超时
+    const screenshotTimeout = (this.name === 'chrome-devtools' && originalName === 'take_screenshot') ? 60000 : 30000
     const result = await this._sendRequest('tools/call', {
       name: originalName,
       arguments: args || {}
-    })
+    }, screenshotTimeout)
     // MCP tools/call 返回 { content: [...], isError? }；content 可为 text 或 image（base64）
     if (result?.isError) {
       const errText = result.content?.map(c => c.text || '').join('\n') || '工具执行失败'
+      console.warn(`[MCP:${this.name}] 工具 ${originalName} 失败:`, errText.slice(0, 200))
       return { error: errText }
     }
     const content = result?.content || []
@@ -369,13 +372,31 @@ class StdioMcpConnection {
       out = text ? { result: text } : {}
     }
     // 若有 image 部分（如 chrome-devtools take_screenshot 返回的 base64），并入同一对象供飞书发图等使用
-    for (const c of content) {
-      if (c.type === 'image' && c.data) {
-        out.image_base64 = c.data
-        break
+    const imageBase64 = this._extractImageBase64FromContent(content)
+    if (imageBase64) out.image_base64 = imageBase64
+    // 截图工具成功返回但无图片时，给出明确错误便于重试或改用 filePath
+    if (this.name === 'chrome-devtools' && originalName === 'take_screenshot' && !imageBase64) {
+      console.warn(`[MCP:${this.name}] take_screenshot 返回成功但无 image 内容，可能 CDP 超时或页面异常`)
+      return {
+        error: 'chrome-devtools 截图未返回图片数据（可能页面过大或 CDP 超时）。可尝试：1) 先 navigate_page 到目标页再截图；2) 使用 filePath 参数将截图保存到本地文件。',
+        ...out
       }
     }
     return Object.keys(out).length ? out : { result: text || '(空)' }
+  }
+
+  /** 从 MCP content 数组中提取第一张图片的 base64（支持 data URL 或纯 base64） */
+  _extractImageBase64FromContent(content) {
+    for (const c of content || []) {
+      if (c.type !== 'image') continue
+      let raw = c.data || c.source || ''
+      if (typeof raw !== 'string' || !raw.length) continue
+      // 兼容 data URL：data:image/png;base64,xxx
+      const dataUrlMatch = raw.match(/^data:([^;,]+(;[^;,]+)?);base64,(.+)$/i)
+      if (dataUrlMatch) raw = dataUrlMatch[3]
+      if (raw.length > 0) return raw
+    }
+    return null
   }
 
   async _callToolAndParse(originalName, args) {
@@ -395,12 +416,8 @@ class StdioMcpConnection {
     } catch {
       out = text ? { result: text } : {}
     }
-    for (const c of content) {
-      if (c.type === 'image' && c.data) {
-        out.image_base64 = c.data
-        break
-      }
-    }
+    const imageBase64 = this._extractImageBase64FromContent(content)
+    if (imageBase64) out.image_base64 = imageBase64
     return Object.keys(out).length ? out : { result: text || '(空)' }
   }
 
@@ -427,28 +444,42 @@ class StdioMcpConnection {
         this._chromeLastNavigatedUrl = href
       }
       if (invalidPage) {
+        const preferredUrl = String(this._chromeLastNavigatedUrl || '').trim()
+        if (preferredUrl) {
+          console.warn(`[MCP:${this.name}] 当前页为 ${href || 'about:blank'}，将尝试切换到最近导航页: ${preferredUrl.slice(0, 80)}`)
+        }
         if (!this._chromeRecoverAttempted) {
           this._chromeRecoverAttempted = true
           try {
-            const switched = await this._trySelectNonBlankPage()
+            // 优先切换到与最近导航 URL 匹配的页签（用户已看到小红书加载，说明目标页在别的 tab）
+            const switched = await this._trySelectNonBlankPage(preferredUrl || undefined)
             if (switched) {
               await new Promise((r) => setTimeout(r, 700))
               continue
             }
-          } catch (_) {}
+          } catch (e) {
+            console.warn(`[MCP:${this.name}] 切换页签失败:`, e.message || String(e))
+          }
         }
-        const fallbackUrl = String(this._chromeLastNavigatedUrl || '').trim()
-        if (!this._chromeFallbackNavigateAttempted && fallbackUrl && fallbackUrl !== 'about:blank' && !fallbackUrl.startsWith('chrome-error://')) {
+        if (!this._chromeFallbackNavigateAttempted && preferredUrl && preferredUrl !== 'about:blank' && !preferredUrl.startsWith('chrome-error://')) {
           this._chromeFallbackNavigateAttempted = true
           try {
-            await this._callToolAndParse('navigate_page', { type: 'url', url: fallbackUrl, timeout: 15000 })
+            await this._callToolAndParse('navigate_page', { type: 'url', url: preferredUrl, timeout: 15000 })
             await new Promise((r) => setTimeout(r, 900))
             continue
           } catch (e) {
             console.warn(`[MCP:${this.name}] 无法从 about:blank 恢复到最近页面:`, e.message || String(e))
           }
         }
-        await this._restartChromeSession('invalid_page_before_screenshot')
+        // 再试一次：可能 list_pages 刚返回时目标页还未列出来，此时再切一次
+        try {
+          const switched = await this._trySelectNonBlankPage(preferredUrl || undefined)
+          if (switched) {
+            await new Promise((r) => setTimeout(r, 700))
+            continue
+          }
+        } catch (_) {}
+        // 不重启会话：保持 Chrome MCP 与浏览器窗口运行，供用户后续继续操作（导航、截图等）
         const err = new Error(`chrome-devtools 当前页不可截图: ${href || 'about:blank'}。请先导航到目标页面后再截图。`)
         err.code = 'SCREENSHOT_INVALID_PAGE'
         err.nonRetryable = true
@@ -464,6 +495,9 @@ class StdioMcpConnection {
     return
   }
 
+  /**
+   * 仅用于严重异常时恢复（如 CDP 完全断开）。平时不调用，以保持 Chrome 与 MCP 进程常驻，供用户后续继续使用。
+   */
   async _restartChromeSession(reason = 'unknown') {
     if (this._restarting) return
     this._restarting = true
@@ -478,21 +512,69 @@ class StdioMcpConnection {
     }
   }
 
-  async _trySelectNonBlankPage() {
-    const pages = await this._callToolAndParse('list_pages', {})
-    const raw = String((pages && (pages.result || pages.text || pages.content)) || '')
-    if (!raw) return false
-    const lines = raw.split('\n')
+  /**
+   * 从 list_pages 的文本中解析出页签列表。格式示例：
+   *   "## Pages\n1: https://example.com/ [selected]\n2: about:blank"
+   */
+  _parseListPagesRaw(raw) {
+    const entries = []
+    const lines = String(raw || '').split('\n')
     for (const line of lines) {
       const m = line.match(/^\s*(\d+):\s*(.+)$/)
       if (!m) continue
       const pageId = Number(m[1])
-      const desc = String(m[2] || '').trim()
+      let desc = String(m[2] || '').trim()
       if (!Number.isFinite(pageId)) continue
-      const lower = desc.toLowerCase()
+      // 去掉 [selected] 后缀，得到 URL 或 "URL title"
+      const url = desc.replace(/\s*\[selected\]\s*$/i, '').trim().split(/\s+/)[0].trim()
+      entries.push({ pageId, url, desc })
+    }
+    return entries
+  }
+
+  /**
+   * 尝试切换到非空白页。若传入 preferredUrl（最近导航的 URL），优先切换到包含该 URL 的页签。
+   * @param {string} [preferredUrl] - 优先匹配的 URL（如小红书），用于在多个 tab 时选对页
+   */
+  async _trySelectNonBlankPage(preferredUrl) {
+    const pages = await this._callToolAndParse('list_pages', {})
+    const raw = String((pages && (pages.result || pages.text || pages.content)) || '')
+    if (!raw) {
+      console.warn(`[MCP:${this.name}] list_pages 返回为空`)
+      return false
+    }
+    const entries = this._parseListPagesRaw(raw)
+    if (entries.length === 0) {
+      console.warn(`[MCP:${this.name}] list_pages 无法解析，原始:`, raw.slice(0, 200))
+      return false
+    }
+    const preferred = (preferredUrl || '').trim()
+    let preferDomain = ''
+    try {
+      if (preferred && (preferred.startsWith('http://') || preferred.startsWith('https://'))) {
+        preferDomain = new URL(preferred).hostname.replace(/^www\./, '')
+      }
+    } catch (_) {}
+    // 优先选择 URL 与 preferredUrl 匹配的页（同一域名或 URL 包含）
+    if (preferDomain) {
+      for (const { pageId, url, desc } of entries) {
+        if (!url || url === 'about:blank' || url.startsWith('chrome-error://')) continue
+        try {
+          const pageHost = new URL(url).hostname.replace(/^www\./, '')
+          if (pageHost === preferDomain || url === preferred || url.indexOf(preferred) !== -1 || preferred.indexOf(url) !== -1) {
+            await this._callToolAndParse('select_page', { pageId, bringToFront: true })
+            this._chromeLastNavigatedUrl = url
+            console.warn(`[MCP:${this.name}] 截图前已切换到目标页签: ${desc}`)
+            return true
+          }
+        } catch (_) { /* url 可能不合法 */ }
+      }
+    }
+    // 否则选第一个非空白页
+    for (const { pageId, url, desc } of entries) {
+      const lower = (url || '').toLowerCase()
       if (lower.startsWith('about:blank') || lower.startsWith('chrome-error://')) continue
       await this._callToolAndParse('select_page', { pageId, bringToFront: true })
-      const url = desc.split(' ')[0].trim()
       if (url && url !== 'about:blank' && !url.startsWith('chrome-error://')) {
         this._chromeLastNavigatedUrl = url
       }
@@ -537,24 +619,35 @@ class StdioMcpConnection {
     // 忽略通知（notifications）
   }
 
-  _sendRequest(method, params) {
+  _sendRequest(method, params, timeoutMs = 30000) {
     return new Promise((resolve, reject) => {
       const id = nextId()
-      this.pending.set(id, { resolve, reject })
-      const msg = JSON.stringify({ jsonrpc: '2.0', id, method, params })
-      try {
-        this.process.stdin.write(msg + '\n')
-      } catch (e) {
-        this.pending.delete(id)
-        reject(e)
-      }
-      // 超时保护
-      setTimeout(() => {
+      let settled = false
+      const timer = setTimeout(() => {
+        if (settled) return
+        settled = true
         if (this.pending.has(id)) {
           this.pending.delete(id)
           reject(new Error(`MCP "${this.name}" 请求超时: ${method}`))
         }
-      }, 30000)
+      }, timeoutMs)
+      const done = (fn, arg) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        this.pending.delete(id)
+        fn(arg)
+      }
+      this.pending.set(id, {
+        resolve: (v) => done(resolve, v),
+        reject: (e) => done(reject, e)
+      })
+      const msg = JSON.stringify({ jsonrpc: '2.0', id, method, params })
+      try {
+        this.process.stdin.write(msg + '\n')
+      } catch (e) {
+        done(reject, e)
+      }
     })
   }
 
@@ -644,8 +737,25 @@ class SseMcpConnection {
     if (result?.isError) {
       return { error: result.content?.map(c => c.text || '').join('\n') || '工具执行失败' }
     }
-    const text = (result?.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n')
-    try { return JSON.parse(text) } catch { return { result: text } }
+    const content = result?.content || []
+    const text = content.filter(c => c.type === 'text').map(c => c.text).join('\n')
+    let out
+    try { out = text ? JSON.parse(text) : {} } catch { out = text ? { result: text } : {} }
+    const imageBase64 = this._extractImageBase64FromContent(content)
+    if (imageBase64) out.image_base64 = imageBase64
+    return Object.keys(out).length ? out : { result: text || '(空)' }
+  }
+
+  _extractImageBase64FromContent(content) {
+    for (const c of content || []) {
+      if (c.type !== 'image') continue
+      let raw = c.data || c.source || ''
+      if (typeof raw !== 'string' || !raw.length) continue
+      const dataUrlMatch = raw.match(/^data:([^;,]+(;[^;,]+)?);base64,(.+)$/i)
+      if (dataUrlMatch) raw = dataUrlMatch[3]
+      if (raw.length > 0) return raw
+    }
+    return null
   }
 
   stop() {
