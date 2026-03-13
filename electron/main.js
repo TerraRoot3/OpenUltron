@@ -3003,11 +3003,20 @@ const pendingEditorFilesRequests = new Map()
 
 const aiMcpManager = new McpManager()
 
+function getChromeDevtoolsPersistentProfileDir() {
+  try {
+    return getAppRootPath('chrome-devtools-profile')
+  } catch (_) {
+    const home = process.env.HOME || os.homedir()
+    return path.join(home || '', '.openultron', 'chrome-devtools-profile')
+  }
+}
+
 // 内置 chrome-devtools MCP：与 webview_control 互补，优先使用；失败或不可用时用 webview
 const BUILTIN_CHROME_DEVTOOLS_MCP = {
   'chrome-devtools': {
     command: 'npx',
-    args: ['-y', 'chrome-devtools-mcp@latest', '--headless=false', '--isolated=true']
+    args: ['-y', 'chrome-devtools-mcp@latest', '--headless=false', `--userDataDir=${getChromeDevtoolsPersistentProfileDir()}`]
   }
 }
 
@@ -3025,7 +3034,13 @@ function parseMcpJsonConfig(jsonStr, disabledServers = []) {
         const strArgs = rawArgs.map((x) => String(x))
         args = strArgs.filter((x) => !x.startsWith('--headless'))
         args.push('--headless=false')
-        if (!args.some((x) => x.startsWith('--isolated'))) args.push('--isolated=true')
+        // chrome-devtools-mcp: userDataDir 与 isolated 互斥。这里强制持久 profile，移除 isolated。
+        args = args.filter((x) => !/^--isolated(?:=|$)/i.test(String(x || '').trim()))
+        // 统一只保留一份 userDataDir 参数，防止重复注入
+        args = args.filter((x) => !/^--user-?data-?dir(?:=|$)/i.test(String(x || '').trim()))
+        if (!args.some((x) => /^--user-?data-?dir(?:=|$)/i.test(String(x || '').trim()))) {
+          args.push(`--userDataDir=${getChromeDevtoolsPersistentProfileDir()}`)
+        }
       }
       return ({
       name,
@@ -6100,6 +6115,10 @@ function stripFalseDeliveredClaims(text, { hasImages = false, hasFiles = false, 
     s = s.replace(/并通过系统自动发送到当前飞书会话。?/g, '')
     s = s.replace(/截图已发至当前会话。?/g, '')
     s = s.replace(/已自动发送到当前飞书会话。?/g, '')
+    s = s.replace(/截图已获取[！!。.]?/g, '')
+    s = s.replace(/截图已发送[！!。.]?/g, '')
+    s = s.replace(/截图如下[：:]?/g, '')
+    s = s.replace(/已按[^。\n]*截图[^。\n]*发送[！!。.]?/g, '')
   }
   return s.replace(/\n{3,}/g, '\n\n').trim()
 }
@@ -6825,6 +6844,12 @@ function isScreenshotFollowupText(text) {
   return false
 }
 
+function hasScreenshotClaimText(text) {
+  const t = String(text || '').trim()
+  if (!t) return false
+  return /(截图已获取|已截图|已完成截图|截图并发送|截图已发送|截图如下|已按.+截图)/i.test(t)
+}
+
 function hasPageEditIntentText(text) {
   const t = String(text || '').trim()
   if (!t) return false
@@ -7296,11 +7321,14 @@ async function processMessageReplace(payload) {
       })
       return
     }
-    eventBus.emit('chat.session.completed', {
-      binding: outBinding,
-      payload: { text: '未找到可用截图产物，且当前浏览器页签无法截图。请提供页面 URL 或文件路径。' }
-    })
-    return
+    try {
+      appLogger?.info?.('[ScreenshotShortcut] 快捷截图未命中，回退主流程', {
+        sessionId: mainSessionId,
+        messageId: payload?.message?.messageId || '',
+        textPreview: summarizeTaskText(messageText, 120)
+      })
+    } catch (_) {}
+    // 不再使用写死文案；回退到常规主 Agent 流程，由 AI 结合上下文继续处理。
   }
   // 平铺并发策略：同一会话新消息直接派生新 run，不自动中止已有 run。
   // 若需中止/等待，由模型显式调用 stop_previous_task / wait_for_previous_run。
@@ -7859,16 +7887,63 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
       : (cleanedTextTrim || cleanedSpawnTrim || (rawFallbackText || (imageItems.length > 0 ? '截图已发至当前会话。' : null)))
     const safeBaseTextToSend = stripToolProtocolAndJsonNoise(baseTextToSend, { dropJsonEnvelope: true })
     let rescuedMainText = ''
+    let directRetryAddedArtifacts = false
     const shouldRescueByMain = !hasSpawnCall &&
       imageItems.length === 0 && fileItems.length === 0 &&
       (!safeBaseTextToSend || looksLikeNoResultPlaceholderText(safeBaseTextToSend))
     if (shouldRescueByMain) {
-      rescuedMainText = await rescueReplyByMasterAgent({
-        userText: String(message?.text || ''),
-        channel: binding.channel,
-        hintText: String(seedFallbackText || '')
+      appendCommandLine('- 主Agent无结果，触发直执行重试')
+      scheduleStreamFlush()
+      const directRetry = await runMainAgentDirectRetry({
+        aiGateway,
+        baseRunSessionId: runSessionId,
+        messages,
+        projectPath,
+        binding,
+        chatId,
+        appendCommandLine,
+        scheduleStreamFlush
       })
-      if (looksLikeNoResultPlaceholderText(rescuedMainText)) rescuedMainText = ''
+      if (directRetry && directRetry.success) {
+        const retryText = String(directRetry.text || '').trim()
+        if (retryText) {
+          const retryClean = stripToolProtocolAndJsonNoise(retryText, { dropJsonEnvelope: true })
+          if (retryClean && !looksLikeNoResultPlaceholderText(retryClean)) {
+            rescuedMainText = retryClean
+          }
+        }
+        const seenImagePath = new Set(imageItems.map((x) => String(x?.path || '')).filter(Boolean))
+        const seenFilePath = new Set(fileItems.map((x) => String(x?.path || '')).filter(Boolean))
+        for (const it of (Array.isArray(directRetry.images) ? directRetry.images : [])) {
+          if (!it) continue
+          if (it.path) {
+            const p = String(it.path)
+            if (!p || seenImagePath.has(p)) continue
+            seenImagePath.add(p)
+            imageItems.push({ path: p })
+            directRetryAddedArtifacts = true
+          } else if (it.base64) {
+            imageItems.push({ base64: String(it.base64) })
+            directRetryAddedArtifacts = true
+          }
+        }
+        for (const it of (Array.isArray(directRetry.files) ? directRetry.files : [])) {
+          if (!it || !it.path) continue
+          const p = String(it.path)
+          if (!p || seenFilePath.has(p)) continue
+          seenFilePath.add(p)
+          fileItems.push({ path: p })
+          directRetryAddedArtifacts = true
+        }
+      }
+      if (!rescuedMainText && !directRetryAddedArtifacts) {
+        rescuedMainText = await rescueReplyByMasterAgent({
+          userText: String(message?.text || ''),
+          channel: binding.channel,
+          hintText: String(seedFallbackText || '')
+        })
+        if (looksLikeNoResultPlaceholderText(rescuedMainText)) rescuedMainText = ''
+      }
       if (rescuedMainText) {
         try {
           appLogger?.info?.('[MainAgent] 主Agent兜底生成成功', {
@@ -7886,7 +7961,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
     }) || (rescuedMainText || safeRawFallbackText || (imageItems.length > 0
       ? '截图已发至当前会话。'
       : '任务已执行完成，但未生成可展示的文本结果。'))
-    let directRetryAddedArtifacts = false
+    
     const noArtifacts = imageItems.length === 0 && fileItems.length === 0
     const visibleResultText = String(cleanedSpawnTrim || cleanedTextTrim || safeRawFallbackText || '').trim()
     const noUsefulResult = !hasUsefulVisibleResult(visibleResultText)
@@ -7978,6 +8053,38 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
         : '任务已开始处理，完成后会第一时间回传结果。'
     }
     textToSend = stripDispatchBoilerplateText(textToSend)
+    // 若回复声称“已截图”但本轮未附带图片，发送前强制补抓一张，避免用户侧只收到文本
+    const userAskedScreenshot = isScreenshotFollowupText(String(message?.text || ''))
+    const replyClaimsScreenshot = hasScreenshotClaimText(textToSend)
+    if (imageItems.length === 0 && (userAskedScreenshot || replyClaimsScreenshot)) {
+      let shotPath = ''
+      const pageTarget = findRecentPageTarget(projectPath, mainSessionId)
+      if (pageTarget.kind === 'file' && pageTarget.value) {
+        shotPath = await captureLocalHtmlScreenshot(pageTarget.value)
+      } else if (pageTarget.kind === 'url' && pageTarget.value) {
+        shotPath = await captureUrlScreenshot(pageTarget.value)
+      }
+      if (!shotPath) shotPath = await captureAiBrowserCurrentScreenshot()
+      if (shotPath && fs.existsSync(shotPath)) {
+        imageItems.push({ path: shotPath })
+        if (!textToSend || !String(textToSend).trim()) {
+          textToSend = '已补发截图，请查收。'
+        }
+        appLogger?.info?.('[ScreenshotFallback] 文本宣称有截图但无附件，已自动补抓并附带发送', {
+          sessionId: mainSessionId,
+          runSessionId,
+          messageId: userMessageId || '',
+          path: shotPath
+        })
+      } else {
+        // 没有补抓成功时，去掉“已发送截图”等误导文案
+        textToSend = stripFalseDeliveredClaims(textToSend, {
+          hasImages: false,
+          hasFiles: fileItems.length > 0,
+          channel: binding.channel
+        })
+      }
+    }
     // 暂停主 Agent 二次改写：保留主流程原始结果，避免风格/语义偏移
     if (streamState.enabled) {
       streamState.thinkingText = textToSend || streamState.thinkingText

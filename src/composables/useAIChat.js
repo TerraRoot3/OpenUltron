@@ -28,6 +28,21 @@ export function useAIChat() {
       .replace(/[ \t]+/g, ' ')
       .replace(/\n{3,}/g, '\n\n')
       .trim()
+  const genUiKey = () => `m-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const normalizeToolCall = (tc) => {
+    if (!tc || typeof tc !== 'object') return null
+    const id = tc.id || `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    return {
+      id,
+      name: tc.name || tc.function?.name || '',
+      function: tc.function || undefined,
+      result: tc.result ?? null,
+      arguments: tc.arguments ?? tc.function?.arguments ?? '{}',
+      _startedAt: tc._startedAt || Date.now(),
+      _endedAt: tc._endedAt || null,
+      _expanded: !!tc._expanded
+    }
+  }
 
   // 生成唯一会话 ID
   const genSessionId = () => `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -57,15 +72,8 @@ export function useAIChat() {
       const last = messages.value[messages.value.length - 1]
       if (last && last.role === 'assistant') {
         if (!last.toolCalls) last.toolCalls = []
-        last.toolCalls.push({
-          id: data.toolCall.id,
-          name: data.toolCall.name,
-          arguments: data.toolCall.arguments,
-          result: null,
-          _startedAt: Date.now(),
-          _endedAt: null,
-          _expanded: false
-        })
+        const normalized = normalizeToolCall(data?.toolCall)
+        if (normalized) last.toolCalls.push(normalized)
       }
     })
 
@@ -173,7 +181,7 @@ export function useAIChat() {
     error.value = ''
 
     // 添加用户消息（展示用 displayContent，发给 AI 用 content）
-    messages.value.push({ role: 'user', content: displayContent || content })
+    messages.value.push({ role: 'user', content: displayContent || content, _uiKey: genUiKey() })
 
     // 构建请求消息列表：含 tool_calls / role:tool，多轮对话时 API 才能正确续写
     const reqMessages = []
@@ -217,7 +225,7 @@ export function useAIChat() {
     }
 
     // 创建空的 assistant 消息占位
-    messages.value.push({ role: 'assistant', content: '', toolCalls: [] })
+    messages.value.push({ role: 'assistant', content: '', toolCalls: [], _uiKey: genUiKey() })
 
     // 使用传入的 sessionId（URL/已加载会话）或已有 currentSessionId，否则才生成新 id
     if (passedSessionId != null && String(passedSessionId).trim() !== '') {
@@ -256,15 +264,8 @@ export function useAIChat() {
             const last = messages.value[messages.value.length - 1]
             if (last && last.role === 'assistant') {
               if (!last.toolCalls) last.toolCalls = []
-              last.toolCalls.push({
-                id: toolCall.id,
-                name: toolCall.name,
-                arguments: toolCall.arguments,
-                result: null,
-                _startedAt: Date.now(),
-                _endedAt: null,
-                _expanded: false
-              })
+              const normalized = normalizeToolCall(toolCall)
+              if (normalized) last.toolCalls.push(normalized)
             }
           },
           onToolResult: (toolCallId, result) => {
@@ -425,18 +426,13 @@ export function useAIChat() {
     if (!savedMessages || savedMessages.length === 0) return
     const raw = savedMessages.map((m) => {
       const list = m.toolCalls || m.tool_calls || []
-      const toolCalls = list.map((tc) => ({
-        id: tc.id,
-        name: tc.function?.name,
-        function: tc.function,
-        result: tc.result,
-        arguments: tc.function?.arguments
-      }))
+      const toolCalls = list.map((tc) => normalizeToolCall(tc)).filter(Boolean)
       return {
         role: m.role,
         content: m.content ?? '',
         tool_call_id: m.tool_call_id,
-        toolCalls: toolCalls.length ? toolCalls : []
+        toolCalls: toolCalls.length ? toolCalls : [],
+        _uiKey: m._uiKey || genUiKey()
       }
     })
     // 把紧随 assistant 的 role:'tool' 消息的 content 合并到对应 toolCall.result
@@ -491,7 +487,7 @@ export function useAIChat() {
       isStreaming.value = true
       return
     }
-    messages.value.push({ role: 'assistant', content: '', toolCalls: [] })
+    messages.value.push({ role: 'assistant', content: '', toolCalls: [], _uiKey: genUiKey() })
     currentStreamContent.value = ''
     isStreaming.value = true
   }

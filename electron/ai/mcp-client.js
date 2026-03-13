@@ -791,18 +791,23 @@ class SseMcpConnection {
 function clearChromeDevtoolsProfileLock() {
   const home = process.env.HOME || os.homedir()
   if (!home) return
-  const profileDir = path.join(home, '.cache', 'chrome-devtools-mcp', 'chrome-profile')
+  const profileDirs = [
+    path.join(home, '.openultron', 'chrome-devtools-profile'),
+    path.join(home, '.cache', 'chrome-devtools-mcp', 'chrome-profile') // 兼容旧路径
+  ]
   try {
-    if (!fs.existsSync(profileDir)) return
-    const names = fs.readdirSync(profileDir)
-    for (const n of names) {
-      if (n.startsWith('Singleton')) {
-        const fp = path.join(profileDir, n)
-        try {
-          fs.unlinkSync(fp)
-          console.log('[MCP] 已清除 chrome-devtools 锁文件:', fp)
-        } catch (e) {
-          console.warn('[MCP] 清除锁文件失败:', fp, e.message)
+    for (const profileDir of profileDirs) {
+      if (!fs.existsSync(profileDir)) continue
+      const names = fs.readdirSync(profileDir)
+      for (const n of names) {
+        if (n.startsWith('Singleton')) {
+          const fp = path.join(profileDir, n)
+          try {
+            fs.unlinkSync(fp)
+            console.log('[MCP] 已清除 chrome-devtools 锁文件:', fp)
+          } catch (e) {
+            console.warn('[MCP] 清除锁文件失败:', fp, e.message)
+          }
         }
       }
     }
@@ -816,7 +821,10 @@ function cleanupChromeDevtoolsOrphans() {
   if (process.platform === 'win32') return
   const home = process.env.HOME || os.homedir()
   if (!home) return
-  const marker = path.join(home, '.cache', 'chrome-devtools-mcp', 'chrome-profile')
+  const markers = [
+    path.join(home, '.openultron', 'chrome-devtools-profile'),
+    path.join(home, '.cache', 'chrome-devtools-mcp', 'chrome-profile') // 兼容旧路径
+  ]
   try {
     const out = execSync('ps -axo pid=,command=', { encoding: 'utf8', timeout: 2500 })
     const lines = String(out || '').split('\n')
@@ -827,7 +835,7 @@ function cleanupChromeDevtoolsOrphans() {
       const pid = Number(m[1])
       const cmd = String(m[2] || '')
       if (!Number.isFinite(pid) || pid <= 1 || pid === process.pid) continue
-      if (!cmd.includes(marker)) continue
+      if (!markers.some((marker) => cmd.includes(marker))) continue
       if (!/(chrome|chromium|headless)/i.test(cmd)) continue
       try {
         process.kill(pid, 'SIGKILL')
@@ -876,6 +884,12 @@ class McpManager {
     this.errors.delete(cfg.name)
     // chrome-devtools-mcp 常因上次进程未正常退出留下 Singleton 锁，导致「被占用」无法启动；启动前清除锁
     if (cfg.name === 'chrome-devtools') {
+      try {
+        console.log('[MCP] chrome-devtools 启动参数:', {
+          command: cfg.command,
+          args: Array.isArray(cfg.args) ? cfg.args : []
+        })
+      } catch (_) {}
       cleanupChromeDevtoolsOrphans()
       clearChromeDevtoolsProfileLock()
     }

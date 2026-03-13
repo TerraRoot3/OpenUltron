@@ -29,7 +29,7 @@
           class="tool-card"
           :class="tcStatus(tc)"
         >
-          <div class="tc-header" @click="tc._expanded = !tc._expanded">
+          <div class="tc-header" @click="toggleExpanded(tc)">
             <div class="tc-left">
               <div class="tc-status-dot"></div>
               <component :is="toolIcon(tc.name)" :size="12" class="tc-type-icon" />
@@ -238,7 +238,16 @@ const splitContent = computed(() => {
 const thinkContent = computed(() => splitContent.value.thinkContent)
 const mainContent = computed(() => splitContent.value.mainContent)
 
-const toolCallsAll = computed(() => props.message.toolCalls || [])
+const toolCallsAll = computed(() => {
+  const list = Array.isArray(props.message?.toolCalls) ? props.message.toolCalls : []
+  return list
+    .map((tc) => {
+      if (!tc || typeof tc !== 'object') return null
+      if (tc._expanded === undefined) tc._expanded = false
+      return tc
+    })
+    .filter(Boolean)
+})
 
 const showAllToolCalls = ref(false)
 
@@ -254,6 +263,11 @@ const hiddenToolCallCount = computed(() => {
   if (showAllToolCalls.value || list.length <= MAX_VISIBLE_TOOL_CALLS) return 0
   return list.length - MAX_VISIBLE_TOOL_CALLS
 })
+
+const toggleExpanded = (tc) => {
+  if (!tc || typeof tc !== 'object') return
+  tc._expanded = !tc._expanded
+}
 
 const toolIcon = (name) => {
   const map = { execute_command: Terminal, git_operation: GitBranch, file_operation: FileText, analyze_project: Search, user_confirmation: Shield }

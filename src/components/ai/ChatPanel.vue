@@ -18,7 +18,7 @@
       </div>
       <ChatMessage
         v-for="(msg, idx) in displayMessages"
-        :key="idx"
+        :key="messageRenderKey(msg, idx)"
         :message="msg"
         :agent-display-name="agentDisplayName"
       />
@@ -251,6 +251,20 @@ const lastAssistantHasActivity = computed(() => {
 const displayMessages = computed(() =>
   messages.value.filter(m => m.role === 'user' || m.role === 'assistant')
 )
+
+const messageRenderKey = (msg, idx) => {
+  if (!msg || typeof msg !== 'object') return `msg-${idx}`
+  if (msg._uiKey) return msg._uiKey
+  const base = [
+    msg.role || 'msg',
+    msg.messageId || msg.msgId || '',
+    msg.tool_call_id || '',
+    typeof msg.content === 'string' ? msg.content.slice(0, 32) : ''
+  ].join('|')
+  const key = `${base}|${Date.now()}|${Math.random().toString(36).slice(2, 7)}`
+  msg._uiKey = key
+  return key
+}
 
 // 被压缩过的会话：从 system 消息里取出「对话摘要」内容，供无 user/assistant 时展示
 const compressionSummaryText = computed(() => {
