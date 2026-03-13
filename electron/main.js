@@ -3353,6 +3353,8 @@ const EXTERNAL_SUBAGENT_SPECS = [
     command: 'openclaw',
     versionArgs: ['--version'],
     runArgBuilders: [
+      (prompt) => ['agent', '--local', '--json', '--message', prompt],
+      (prompt) => ['agent', '--json', '--message', prompt],
       (prompt) => ['run', prompt],
       (prompt) => ['exec', prompt]
     ]
@@ -4229,6 +4231,17 @@ const aiGateway = createGateway({
         fileItems.push({ path: p })
       }
     }
+    const feishuDocHost = String((conv && conv.feishuDocHost) || '').trim()
+    registerReferenceArtifactsFromMessages(data.messages || [], {
+      source: 'feishu_assistant',
+      channel: 'feishu',
+      sessionId: String(sessionId || ''),
+      runSessionId: '',
+      messageId: '',
+      chatId: String(chatId || ''),
+      docHost: feishuDocHost,
+      role: 'assistant'
+    })
     const delegatedToolNames = new Set(['feishu_send_message'])
     const aiAlreadySentFeishu = Array.isArray(data.messages) && data.messages.some(m =>
       m && m.role === 'assistant' && Array.isArray(m.tool_calls) &&
@@ -5996,9 +6009,13 @@ function compactSpawnResultText(text = '') {
     .map((x) => x.trim())
     .filter(Boolean)
   if (lines.length === 0) return ''
-  const useful = lines.filter((x) => !/^\[(meta|tool_call|token)\]/i.test(x))
-  const picked = useful.length > 0 ? useful[useful.length - 1] : lines[lines.length - 1]
-  return picked.replace(/^\[[^\]]+\]\s*/, '').trim()
+  const useful = lines
+    .filter((x) => !/^\[(meta|tool_call|token)\]/i.test(x))
+    .map((x) => x.replace(/^\[[^\]]+\]\s*/, '').trim())
+    .filter(Boolean)
+  const out = (useful.length > 0 ? useful : lines).join('\n').trim()
+  // 保留完整结论，避免“只发送最后一行”；同时限制最大长度防止刷屏。
+  return out.length > 3800 ? `${out.slice(0, 3800)}\n...(已截断)` : out
 }
 
 function looksLikeGenericGreeting(text = '') {
@@ -6267,6 +6284,143 @@ function registerArtifactsFromItems({ images = [], files = [], context = {} } = 
     else if (f?.path || f?.base64) registeredFiles.push(f)
   }
   return { images: registeredImages, files: registeredFiles, refs }
+}
+
+function extractFeishuReferenceCandidatesFromText(text = '', options = {}) {
+  const src = String(text || '')
+  if (!src.trim()) return []
+  const docHost = String(options.docHost || '').trim().toLowerCase()
+  const hasDocHost = /^[a-z0-9.-]+\.(?:feishu\.cn|larksuite\.com)$/i.test(docHost)
+  const buildDocUrl = (id) => hasDocHost ? `https://${docHost}/docx/${id}` : `feishu://docx/${id}`
+  const out = []
+  const seen = new Set()
+  const sanitizeUrl = (raw) => {
+    let u = String(raw || '').trim()
+    while (/[*),.;:!?'"`]+$/.test(u)) u = u.slice(0, -1)
+    return u
+  }
+  const isInvalidFeishuReferenceUrl = (url) => {
+    const u = String(url || '')
+    if (!u) return true
+    if (/applink\.feishu\.cn\/client\/mini_app/i.test(u)) return true
+    if (/accounts\.feishu\.cn\/login/i.test(u)) return true
+    if (/feishu\.cn\/docs\/?$/i.test(u)) return true
+    return false
+  }
+  const push = (item) => {
+    if (!item || !item.url) return
+    if (isInvalidFeishuReferenceUrl(item.url)) return
+    const key = `${item.kind}|${item.url}|${item.refKey || ''}`
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push(item)
+  }
+
+  const urlRe = /https?:\/\/[^\s)\]>"']+/gi
+  let m
+  while ((m = urlRe.exec(src)) !== null) {
+    const url = sanitizeUrl(m[0])
+    if (!/(feishu\.cn|larksuite\.com)/i.test(url)) continue
+    if (/\/document\/client-docs\/docs\//i.test(url) || /\/docx\//i.test(url)) {
+      const id = (url.match(/\/docs\/([A-Za-z0-9]+)/i) || url.match(/\/docx\/([A-Za-z0-9]+)/i) || [])[1] || ''
+      push({ kind: 'feishu_doc', url, refKey: id, title: id ? `doc:${id}` : 'feishu_doc' })
+      continue
+    }
+    if (/\/base\//i.test(url)) {
+      const token = (url.match(/\/base\/([A-Za-z0-9]+)/i) || [])[1] || ''
+      push({ kind: 'feishu_bitable', url, refKey: token, title: token ? `bitable:${token}` : 'feishu_bitable' })
+      continue
+    }
+    if (/\/sheets?\//i.test(url)) {
+      const token = (url.match(/\/sheets?\/([A-Za-z0-9]+)/i) || [])[1] || ''
+      push({ kind: 'feishu_sheet', url, refKey: token, title: token ? `sheet:${token}` : 'feishu_sheet' })
+      continue
+    }
+    if (/\/wiki\//i.test(url)) {
+      const token = (url.match(/\/wiki\/([A-Za-z0-9]+)/i) || [])[1] || ''
+      push({ kind: 'feishu_wiki', url, refKey: token, title: token ? `wiki:${token}` : 'feishu_wiki' })
+      continue
+    }
+    push({ kind: 'feishu_link', url, refKey: '', title: 'feishu_link' })
+  }
+
+  const docIdRe = /(?:document_id|doc(?:ument)?_id)\s*["':= ]+\s*([A-Za-z0-9]{10,})/gi
+  while ((m = docIdRe.exec(src)) !== null) {
+    const id = String(m[1] || '').trim()
+    if (!id) continue
+    push({
+      kind: 'feishu_doc',
+      url: buildDocUrl(id),
+      refKey: id,
+      title: `doc:${id}`
+    })
+  }
+
+  const sheetTokenRe = /spreadsheet_token\s*["':= ]+\s*([A-Za-z0-9]{8,})/gi
+  while ((m = sheetTokenRe.exec(src)) !== null) {
+    const token = String(m[1] || '').trim()
+    if (!token) continue
+    push({
+      kind: 'feishu_sheet',
+      url: `feishu://sheet/${token}`,
+      refKey: token,
+      title: `sheet:${token}`
+    })
+  }
+
+  const bitableTokenRe = /app_token\s*["':= ]+\s*([A-Za-z0-9]{8,})/gi
+  while ((m = bitableTokenRe.exec(src)) !== null) {
+    const token = String(m[1] || '').trim()
+    if (!token) continue
+    push({
+      kind: 'feishu_bitable',
+      url: `feishu://bitable/${token}`,
+      refKey: token,
+      title: `bitable:${token}`
+    })
+  }
+
+  return out
+}
+
+function registerReferenceArtifactsFromMessages(messages = [], context = {}) {
+  if (!Array.isArray(messages) || messages.length === 0) return []
+  const refs = []
+  const seen = new Set()
+  const push = (rec) => {
+    if (!rec || !rec.artifactId) return
+    const key = String(rec.artifactId)
+    if (seen.has(key)) return
+    seen.add(key)
+    refs.push(rec)
+  }
+  const pickText = (content) => {
+    if (typeof content === 'string') return content
+    if (Array.isArray(content)) return content.map((x) => (typeof x === 'string' ? x : (x && x.text) || '')).join('')
+    return ''
+  }
+  for (const m of messages) {
+    if (!m || (m.role !== 'assistant' && m.role !== 'tool')) continue
+    const text = m.role === 'assistant' ? getAssistantText(m) : pickText(m.content)
+    const candidates = extractFeishuReferenceCandidatesFromText(text, { docHost: context.docHost || '' })
+    for (const c of candidates) {
+      const rec = artifactRegistry.registerReferenceArtifact({
+        kind: c.kind,
+        url: c.url,
+        refKey: c.refKey || '',
+        title: c.title || '',
+        source: context.source || 'unknown',
+        channel: context.channel || '',
+        sessionId: context.sessionId || '',
+        runSessionId: context.runSessionId || '',
+        messageId: context.messageId || '',
+        chatId: context.chatId || '',
+        role: context.role || ''
+      })
+      if (rec) push(rec)
+    }
+  }
+  return refs
 }
 
 function attachArtifactsToLatestAssistant(messages = [], artifacts = []) {
@@ -7188,7 +7342,13 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
       tools: getToolsForCoordinatorChat(),
       projectPath
     }
-    if (binding.channel === 'feishu') runChatPayload.feishuChatId = chatId
+    if (binding.channel === 'feishu') {
+      runChatPayload.feishuChatId = chatId
+      const tenantKey = String(binding.feishuTenantKey || message?.metadata?.tenantKey || '').trim()
+      if (tenantKey) runChatPayload.feishuTenantKey = tenantKey
+      const docHost = String(binding.feishuDocHost || message?.metadata?.feishuDocHost || '').trim()
+      if (docHost) runChatPayload.feishuDocHost = docHost
+    }
     aiGateway.runChat(runChatPayload, fakeSender).catch(reject)
   })
   try {
@@ -7290,13 +7450,30 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
     })
     imageItems = regResult.images
     fileItems = regResult.files
-    if (userMessageId && regResult.refs.length > 0) {
+    const refArtifacts = registerReferenceArtifactsFromMessages(currentRound, {
+      source: `${binding.channel}_assistant`,
+      channel: binding.channel,
+      sessionId: mainSessionId,
+      runSessionId,
+      messageId: userMessageId || '',
+      chatId: chatId || '',
+      docHost: String(binding?.feishuDocHost || '').trim(),
+      role: 'assistant'
+    }).map((x) => ({
+      artifactId: x.artifactId,
+      kind: x.kind,
+      path: x.path,
+      name: x.filename || '',
+      ts: x.createdAt || new Date().toISOString()
+    }))
+    const allRefs = [...regResult.refs, ...refArtifacts]
+    if (userMessageId && allRefs.length > 0) {
       try {
         artifactRegistry.bindArtifactsToMessage({
           sessionId: mainSessionId,
           messageId: userMessageId,
           role: 'assistant',
-          artifactIds: regResult.refs.map((x) => x.artifactId).filter(Boolean)
+          artifactIds: allRefs.map((x) => x.artifactId).filter(Boolean)
         })
       } catch (e) {
         appLogger?.warn?.('[ArtifactRegistry] bind assistant message failed', { error: e.message || String(e) })
@@ -7356,7 +7533,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
     const baseMessages = (mainConv && mainConv.messages) ? mainConv.messages : []
     const insertAt = Math.min(originalConvLength, baseMessages.length)
     const forcedMsg = []
-    const artifacts = normalizeArtifactsFromItems(imageItems, fileItems)
+    const artifacts = [...normalizeArtifactsFromItems(imageItems, fileItems), ...allRefs]
     const mergedRaw = [...baseMessages.slice(0, insertAt), ...delta, ...forcedMsg, ...baseMessages.slice(insertAt)]
     const normalizedMerged = overwriteLatestAssistantText(mergedRaw, textToSend)
     const merged = attachArtifactsToLatestAssistant(normalizedMerged, artifacts)

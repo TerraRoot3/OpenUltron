@@ -95,7 +95,7 @@ class Orchestrator {
   }
 
   // ---------- 启动 Agent 对话循环 ----------
-  async startChat({ sessionId, messages, model, tools, sender, config: externalConfig, projectPath, panelId, feishuChatId }) {
+  async startChat({ sessionId, messages, model, tools, sender, config: externalConfig, projectPath, panelId, feishuChatId, feishuTenantKey, feishuDocHost }) {
     const config = externalConfig || this.getConfig()
     if (!config.apiKey || !String(config.apiKey).trim()) {
       const baseUrl = (config.apiBaseUrl || '').trim()
@@ -108,7 +108,13 @@ class Orchestrator {
     }
 
     const abortController = new AbortController()
-    this.activeSessions.set(sessionId, { abortController, projectPath: projectPath || '', feishuChatId: feishuChatId || '' })
+    this.activeSessions.set(sessionId, {
+      abortController,
+      projectPath: projectPath || '',
+      feishuChatId: feishuChatId || '',
+      feishuTenantKey: feishuTenantKey || '',
+      feishuDocHost: feishuDocHost || ''
+    })
 
     // 用 panelId 操作 session-registry（panelId 在页面生命周期内稳定）
     // 没有 panelId 时回退到 sessionId（Heartbeat 等后台场景）
@@ -1598,7 +1604,9 @@ class Orchestrator {
       toolCallId,
       channel: session?.feishuChatId ? 'feishu' : 'main',
       remoteId: session?.feishuChatId || '',
-      feishuChatId: session?.feishuChatId || ''
+      feishuChatId: session?.feishuChatId || '',
+      feishuTenantKey: session?.feishuTenantKey || '',
+      feishuDocHost: session?.feishuDocHost || ''
     })
   }
 }

@@ -22,15 +22,52 @@ const FEISHU_PROJECT = '__feishu__'
 const FEISHU_DEDUP_MAX = 500
 const feishuRepliedMessageIds = new Set()
 const HISTORY_CMD_RE = /^\s*\/(history|memory)\s*$/i
+const chatDocHostByChatId = new Map()
 
 function compactText(s) {
   return String(s || '').replace(/\s+/g, ' ').trim()
+}
+
+function normalizeFeishuOutboundText(raw = '') {
+  let s = String(raw || '')
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '$1: $2')
+  s = s.replace(/\*\*(https?:\/\/[^\s*]+)\*\*/g, '$1')
+  return s
+}
+
+function normalizeFeishuDocLinks(raw = '', preferredHost = '') {
+  const src = String(raw || '')
+  if (!src) return ''
+  const host = String(preferredHost || '').trim().toLowerCase()
+  const hasPreferred = /^[a-z0-9.-]+\.(?:feishu\.cn|larksuite\.com)$/i.test(host)
+  return src.replace(/https?:\/\/[^\s)\]>"']+/gi, (u) => {
+    let parsed = null
+    try { parsed = new URL(u) } catch (_) { return u }
+    const h = String(parsed.hostname || '').toLowerCase()
+    if (!/(feishu\.cn|larksuite\.com)$/.test(h)) return u
+    const docId = (
+      (parsed.pathname.match(/\/docx\/([A-Za-z0-9]+)/i) || [])[1] ||
+      (parsed.pathname.match(/\/docs\/([A-Za-z0-9]+)/i) || [])[1] ||
+      (parsed.pathname.match(/\/document\/client-docs\/docs\/([A-Za-z0-9]+)/i) || [])[1] ||
+      ''
+    )
+    if (!docId) return u
+    if (hasPreferred) return `https://${host}/docx/${docId}`
+    return `https://${h}/docx/${docId}`
+  })
 }
 
 function compactError(err) {
   if (!err) return 'unknown'
   if (err instanceof Error) return compactText(err.message || String(err))
   return compactText(String(err))
+}
+
+function extractFeishuDocHost(text = '') {
+  const src = String(text || '')
+  if (!src) return ''
+  const m = src.match(/https?:\/\/([a-z0-9.-]+\.(?:feishu\.cn|larksuite\.com))\/(?:docx|docs|wiki)\//i)
+  return m && m[1] ? String(m[1]).trim().toLowerCase() : ''
 }
 
 function parseConfirmDecision(text) {
@@ -197,7 +234,11 @@ function isAllowed(allowFrom, remoteId) {
 function createFeishuAdapter(eventBus, getChannelConfig) {
   async function handleIncomingMessage(inbound) {
     const chatId = inbound && inbound.chatId
+    const tenantKey = String((inbound && inbound.tenantKey) || '').trim()
     const text = (inbound && inbound.text) || ''
+    const textHost = extractFeishuDocHost(text)
+    if (chatId && textHost) chatDocHostByChatId.set(String(chatId), textHost)
+    const docHost = (chatId && chatDocHostByChatId.get(String(chatId))) || ''
     const messageId = inbound && inbound.messageId
     const chatType = String((inbound && inbound.chatType) || '').toLowerCase()
     const requireMention = !!(inbound && inbound.requireMention)
@@ -212,6 +253,8 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
     }))
     appLogger?.info?.('[Feishu] 入站消息', {
       chatId: chatId || '',
+      tenantKey: tenantKey || '',
+      docHost: docHost || '',
       messageId: messageId || '',
       chatType,
       requireMention,
@@ -428,9 +471,13 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
     const displayText = buildInboundDisplayText(text, normalizedAttachments)
     message.metadata = {
       displayText,
-      attachments: normalizedAttachments
+      attachments: normalizedAttachments,
+      tenantKey,
+      feishuDocHost: docHost
     }
     const binding = createSessionBinding(sessionId, FEISHU_PROJECT, 'feishu', chatId, chatId)
+    if (tenantKey) binding.feishuTenantKey = tenantKey
+    if (docHost) binding.feishuDocHost = docHost
     eventBus.emit('chat.message.received', { message, binding })
   }
 
@@ -456,8 +503,12 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
      */
     async send(binding, payload) {
       const chatId = binding.remoteId
+      const preferredDocHost = (chatId && chatDocHostByChatId.get(String(chatId))) || ''
       const FEISHU_IMAGE_MAX_BYTES = 4 * 1024 * 1024
-      const textRaw = (payload.text && payload.text.trim()) ? payload.text.trim() : '（无回复内容）'
+      const textRaw = normalizeFeishuDocLinks(
+        normalizeFeishuOutboundText((payload.text && payload.text.trim()) ? payload.text.trim() : '（无回复内容）'),
+        preferredDocHost
+      )
       const screenshotPathsFromText = extractScreenshotPathsFromText(textRaw)
       const mergedImages = Array.isArray(payload.images) ? [...payload.images] : []
       for (const p of screenshotPathsFromText) mergedImages.push({ path: p })

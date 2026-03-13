@@ -181,6 +181,13 @@ function createDefaultRegistry(options = {}) {
     console.warn('加载 web_search 工具失败:', e.message)
   }
 
+  // 产物库检索：支持 AI 查询本地文件 + 云文档引用，减少找错
+  try {
+    registry.register('artifact_search', require('./tools/artifact-search'))
+  } catch (e) {
+    console.warn('加载 artifact_search 工具失败:', e.message)
+  }
+
   // 定时任务 Cron：list / add / update / delete / run_now
   try {
     registry.register('cron_task', require('./tools/cron-task'))

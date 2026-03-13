@@ -131,12 +131,12 @@ function createGateway(opts) {
 
   /**
    * 统一聊天入口：WebSocket、IPC、HTTP、飞书、Heartbeat 都走这里，便于后续接入不同 API 供应商。
-   * @param {object} params - sessionId, projectPath, messages, model, tools, panelId?, feishuChatId?
+   * @param {object} params - sessionId, projectPath, messages, model, tools, panelId?, feishuChatId?, feishuTenantKey?, feishuDocHost?
    * @param {object} sender - { send(channel, data) } 如 IPC 的 event.sender 或 WebSocket 包装
    * @returns {Promise<{ messages?: object[] }>}
    */
   function runChat(params, sender) {
-    const { sessionId, projectPath, messages: rawMessages, model, tools, panelId, feishuChatId, fromAppWindow } = params
+    const { sessionId, projectPath, messages: rawMessages, model, tools, panelId, feishuChatId, feishuTenantKey, feishuDocHost, fromAppWindow } = params
     const orchestrator = getOrchestrator()
     const resolvedConfig = getResolvedConfig()
     const toolDefs = typeof getToolDefinitions === 'function' ? getToolDefinitions() : []
@@ -200,7 +200,9 @@ function createGateway(opts) {
       config: resolvedConfig,
       projectPath: projectPath || getWorkspaceRoot(),
       panelId: panelId || undefined,
-      feishuChatId: feishuChatId || undefined
+      feishuChatId: feishuChatId || undefined,
+      feishuTenantKey: feishuTenantKey || undefined,
+      feishuDocHost: feishuDocHost || undefined
     }).then(() => ({}))
   }
 

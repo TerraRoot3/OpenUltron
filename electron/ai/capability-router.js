@@ -1,10 +1,11 @@
 function detectRequestedExternalRuntime(text = '') {
   const t = String(text || '').toLowerCase()
   if (!t) return ''
-  if (/\bcodex\b|用codex|走codex|指定codex/.test(t)) return 'external:codex'
-  if (/\bclaude\b|用claude|走claude|指定claude/.test(t)) return 'external:claude'
-  if (/\bopenclaw\b|用openclaw|走openclaw|指定openclaw/.test(t)) return 'external:openclaw'
-  if (/\bopencode\b|用opencode|走opencode|指定opencode/.test(t)) return 'external:opencode'
+  // 仅在“明确指定执行引擎”时触发外派，避免把任务正文里的产品名误判为 runtime 指令
+  if (/(?:用|走|指定|切到|改用|让|调用)\s*codex|use\s+codex|with\s+codex|runtime\s*[:=]\s*external:codex/.test(t)) return 'external:codex'
+  if (/(?:用|走|指定|切到|改用|让|调用)\s*claude|use\s+claude|with\s+claude|runtime\s*[:=]\s*external:claude/.test(t)) return 'external:claude'
+  if (/(?:用|走|指定|切到|改用|让|调用)\s*openclaw|use\s+openclaw|with\s+openclaw|runtime\s*[:=]\s*external:openclaw/.test(t)) return 'external:openclaw'
+  if (/(?:用|走|指定|切到|改用|让|调用)\s*opencode|use\s+opencode|with\s+opencode|runtime\s*[:=]\s*external:opencode/.test(t)) return 'external:opencode'
   return ''
 }
 
@@ -45,4 +46,3 @@ module.exports = {
   detectCapability,
   resolveCapabilityRoute
 }
-

@@ -160,7 +160,7 @@ const copyContent = async () => {
   } catch { /* ignore */ }
 }
 
-// 点击消息中的链接时在新标签页打开（应用内 BrowserTab）
+// 点击消息中的链接时在系统浏览器打开
 function onBubbleLinkClick(e) {
   // 点击截图：在 Finder 中显示文件
   const img = e.target?.closest?.('img.chat-image')
@@ -180,7 +180,8 @@ function onBubbleLinkClick(e) {
   const url = a.getAttribute('href') || a.href
   if (url && url.startsWith('http')) {
     try {
-      window.electronAPI?.openUrlInNewTab?.(url)
+      if (window.electronAPI?.openExternal) window.electronAPI.openExternal(url)
+      else window.electronAPI?.openUrlInNewTab?.(url)
     } catch { /* ignore */ }
   }
 }

@@ -203,6 +203,73 @@ function registerBase64Artifact(input = {}) {
   })
 }
 
+function registerReferenceArtifact(input = {}) {
+  const ref = String(input.url || input.ref || '').trim()
+  const refKey = String(input.refKey || '').trim()
+  if (!ref && !refKey) return null
+  const artifactId = crypto.randomUUID()
+  const createdAt = new Date().toISOString()
+  const kind = String(input.kind || 'reference').trim().toLowerCase() || 'reference'
+  const source = String(input.source || 'unknown')
+  const channel = String(input.channel || '')
+  const sessionId = String(input.sessionId || '')
+  const runSessionId = String(input.runSessionId || '')
+  const messageId = String(input.messageId || '')
+  const chatId = String(input.chatId || '')
+  const role = String(input.role || '')
+  const pathValue = ref || `ref:${kind}:${refKey}`
+  const originalPath = refKey || ''
+  const filename = String(input.filename || input.title || refKey || pathValue).slice(0, 255)
+  const mime = String(input.mime || 'application/x-reference')
+  const size = Number.isFinite(Number(input.size)) ? Number(input.size) : 0
+  const sha256 = crypto.createHash('sha256').update(`${kind}|${pathValue}|${originalPath}`).digest('hex')
+
+  const database = ensureDb()
+  const stmt = database.prepare(`
+    INSERT INTO artifacts (
+      id, kind, source, channel, session_id, run_session_id, message_id, chat_id, role,
+      path, original_path, filename, mime, size, sha256, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  stmt.run(
+    artifactId,
+    kind,
+    source,
+    channel,
+    sessionId,
+    runSessionId,
+    messageId,
+    chatId,
+    role,
+    pathValue,
+    originalPath,
+    filename,
+    mime,
+    size,
+    sha256,
+    createdAt
+  )
+  appLogger?.info?.('[ArtifactRegistry] register reference', {
+    id: artifactId,
+    kind,
+    source,
+    sessionId,
+    messageId,
+    path: pathValue
+  })
+  return {
+    artifactId,
+    kind,
+    path: pathValue,
+    originalPath,
+    filename,
+    mime,
+    size,
+    sha256,
+    createdAt
+  }
+}
+
 function bindArtifactsToMessage({ sessionId, messageId, role = '', artifactIds = [] } = {}) {
   const sid = String(sessionId || '').trim()
   const mid = String(messageId || '').trim()
@@ -263,10 +330,60 @@ function listArtifactsByMessage(sessionId, messageId) {
   return rows
 }
 
+function searchArtifacts({ sessionId = '', chatId = '', kinds = [], query = '', limit = 20 } = {}) {
+  const sid = String(sessionId || '').trim()
+  const cid = String(chatId || '').trim()
+  const q = String(query || '').trim()
+  const lim = Math.max(1, Math.min(Number(limit) || 20, 100))
+  const kindList = Array.isArray(kinds) ? kinds.map((x) => String(x || '').trim()).filter(Boolean) : []
+  const database = ensureDb()
+  const where = []
+  const args = []
+
+  if (sid) {
+    where.push('session_id = ?')
+    args.push(sid)
+  } else if (cid) {
+    where.push('chat_id = ?')
+    args.push(cid)
+  }
+
+  if (kindList.length > 0) {
+    where.push(`kind IN (${kindList.map(() => '?').join(',')})`)
+    args.push(...kindList)
+  }
+
+  if (q) {
+    where.push('(filename LIKE ? OR path LIKE ? OR original_path LIKE ?)')
+    const like = `%${q}%`
+    args.push(like, like, like)
+  }
+
+  const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
+  const rows = database.prepare(`
+    SELECT * FROM artifacts
+    ${whereSql}
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(...args, lim)
+
+  appLogger?.info?.('[ArtifactRegistry] search', {
+    sessionId: sid,
+    chatId: cid,
+    kinds: kindList.join(','),
+    query: q.slice(0, 80),
+    limit: lim,
+    hit: rows.length
+  })
+  return rows
+}
+
 module.exports = {
   registerFileArtifact,
   registerBase64Artifact,
+  registerReferenceArtifact,
   bindArtifactsToMessage,
   listRecentArtifactsBySession,
-  listArtifactsByMessage
+  listArtifactsByMessage,
+  searchArtifacts
 }
