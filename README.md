@@ -2,68 +2,40 @@
 
 中文 | [English](./README.en.md)
 
-OpenUltron 是一个基于 **Electron + Vue 3 + Vite** 的 AI 桌面应用，定位为可本地运行、可扩展工具链的智能工作台。
+OpenUltron 是一款面向效率场景的 AI 桌面助手。  
+你可以把它理解为「一个会执行任务、会调用工具、会持续记住上下文」的本地工作台。
 
-项目融合了会话式 AI、Skills、MCP、定时任务、通知通道与本地持久化，核心目标是让 AI 可以在桌面端稳定地执行工程化任务。
+不只是聊天，而是让 AI 真正帮你做事。
 
-## 核心能力
+## 为什么值得用
 
-- 多模型/多供应商 AI 接入（OpenAI 兼容接口 + Anthropic）
-- 会话管理（聊天、会话列表、历史加载、流式输出）
-- 工具调用体系（内置工具 + MCP 工具）
-- Skills 管理（本地技能、远程技能源、安装与校验）
-- 定时任务（Cron）
-- 通知与消息通道（飞书、Telegram、钉钉、Webhook）
-- 飞书语音消息（内置 TTS，支持音色列表、别名、默认音色记忆）
-- 本地数据备份与恢复（配置、会话、技能、记忆）
-- 内置日志与诊断页面
+- 更像“执行型助理”，不是只会回答问题的聊天机器人
+- 一个窗口里就能完成：提需求、执行、产出、回传
+- 本地运行 + 可控配置，适合长期日常工作
 
-## 技术栈
+## 你能用它做什么
 
-- 前端：Vue 3、Vue Router、Vite
-- 桌面：Electron
-- 后端能力（主进程）：Node.js、Express、IPC、自定义协议
-- 终端能力：node-pty
+- 让 AI 帮你生成网页、文档、脚本、报告
+- 自动处理截图、文件、链接等任务产物
+- 对接飞书 / Telegram / 钉钉，把结果直接发到会话里
+- 用 Skills 和 MCP 扩展能力，接入你自己的工作流
+- 管理多会话历史，持续追踪上下文与任务进度
 
-## 项目结构
+## 亮点能力
 
-```text
-.
-├── src/                    # 渲染进程（Vue UI）
-│   ├── components/ai/      # AI 聊天、配置、技能、MCP 等核心组件
-│   ├── views/              # 页面：Chat / Sessions / Skills / Settings / Cron
-│   ├── router/             # 路由定义
-│   └── composables/        # 组合式逻辑（主题、会话、健康检查等）
-├── electron/               # 主进程
-│   ├── ai/                 # 编排器、工具注册、会话与记忆系统
-│   ├── ai/tools/           # 内置工具实现
-│   ├── api/                # IPC / HTTP invoke 桥接
-│   ├── extensions/         # 扩展与执行器
-│   └── main.js             # Electron 入口
-├── mcp-server/             # 内置 MCP Server（stdio JSON-RPC）
-├── scripts/                # 开发/打包/清理脚本
-├── public/                 # 静态资源
-└── icons/                  # 应用图标资源
-```
+- 多模型接入：可配置不同 AI 服务与模型
+- 子 Agent 执行：复杂任务可分发、可回传
+- 工具调用体系：内置工具 + MCP 工具生态
+- 会话记忆与持久化：任务上下文不断档
+- 定时任务：周期性执行自动化工作
+- 数据备份与恢复：迁移和重装更安心
 
-## 本地数据目录
+## 典型场景
 
-应用运行时数据存放于：`~/.openultron/`
-
-典型内容：
-
-- `openultron.json`：统一配置（AI + 通知等）
-- `logs/app.log`：应用日志
-- `conversations/`：会话历史
-- `skills/`：本地技能
-- `memory/` 与 `MEMORY.md`：记忆数据
-- `IDENTITY.md` / `SOUL.md` / `USER.md` / `BOOT.md`：身份与行为配置
-
-## 开发环境要求
-
-- Node.js 20+
-- npm 10+
-- macOS/Linux（Windows 可开发，但当前脚本对 Unix 环境更友好）
+- 运营：批量写活动文案、整理日报、自动发渠道
+- 开发：生成页面原型、改代码、导出结果文件
+- 团队协作：把 AI 产出直接同步到群聊/文档
+- 个人效率：把重复性任务交给 AI 持续执行
 
 ## 快速开始
 
@@ -72,21 +44,21 @@ npm install
 npm run electron:dev
 ```
 
-`electron:dev` 会同时启动 Vite 与 Electron 开发环境。
+启动后你可以直接在应用内配置模型与通知渠道，然后开始派发任务。
 
 ## 常用命令
 
 ```bash
-# 仅前端开发（Vite）
+# 前端开发
 npm run dev
 
 # 构建前端
 npm run build
 
-# 以 Electron 启动（若 dist 不存在会先构建）
+# 启动 Electron
 npm run electron
 
-# 开发联调（推荐）
+# 联合调试（推荐）
 npm run electron:dev
 
 # 构建桌面应用
@@ -95,21 +67,25 @@ npm run electron:build:mac
 npm run electron:build:win
 npm run electron:build:linux
 
-# 发布脚本（项目内封装）
+# 发布脚本
 npm run release
 npm run release:x64
 npm run release:all
-
-# 清理 Electron / builder 缓存
-npm run electron:clean-cache
 ```
 
-## 打包说明
+## 数据与目录
 
-- Electron 打包输出目录：`dist-electron/`
-- 前端构建输出目录：`dist/`
-- 项目提供了 `scripts/build-release*.sh` 脚本用于 macOS 下的构建与签名流程
+- 应用数据目录：`~/.openultron/`
+- 会话历史：`conversations/`
+- 本地技能：`skills/`
+- 日志文件：`logs/app.log`
 
-## 备注
+## 技术栈（简要）
 
-- 若遇到打包缓存损坏，可先执行：`npm run electron:clean-cache` 再重试。
+- Electron + Vue 3 + Vite
+- Node.js 主进程能力
+- 可扩展工具协议（MCP）
+
+---
+
+如果你希望 AI 不只是“会说”，而是“能交付”，OpenUltron 就是为这个目标设计的。

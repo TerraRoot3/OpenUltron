@@ -2,68 +2,39 @@
 
 [中文](./README.md) | English
 
-OpenUltron is an AI-first desktop app built with **Electron + Vue 3 + Vite**. It is designed as a local, extensible workstation for engineering-focused AI workflows.
+OpenUltron is an AI desktop assistant built for real execution, not just chat.
 
-The project combines conversational AI, Skills, MCP, cron tasks, notification channels, and local persistence, aiming to make desktop AI execution stable and practical.
+Think of it as a local AI workspace that can understand tasks, run tools, produce deliverables, and send results back to your channels.
 
-## Key Capabilities
+## Why OpenUltron
 
-- Multi-model / multi-provider AI access (OpenAI-compatible APIs + Anthropic)
-- Session management (chat, session list, history loading, streaming output)
-- Tooling system (built-in tools + MCP tools)
-- Skills management (local skills, remote sources, install and validation)
-- Cron task scheduling
-- Notification channels (Feishu, Telegram, DingTalk, Webhook)
-- Feishu voice messages (built-in TTS with voice list, aliases, and default voice memory)
-- Local backup and restore (config, sessions, skills, memories)
-- Built-in logs and diagnostics pages
+- Execution-first experience, not a plain chatbot
+- One workspace for request -> execution -> output -> delivery
+- Local-first and configurable, suitable for daily long-term use
 
-## Tech Stack
+## What You Can Do
 
-- Frontend: Vue 3, Vue Router, Vite
-- Desktop: Electron
-- Backend capability (main process): Node.js, Express, IPC, custom protocols
-- Terminal capability: node-pty
+- Generate webpages, docs, scripts, and reports
+- Handle screenshots, files, and links as task artifacts
+- Send results directly to Feishu / Telegram / DingTalk
+- Extend capabilities with Skills and MCP tools
+- Keep multi-session context and progress history
 
-## Project Structure
+## Key Features
 
-```text
-.
-├── src/                    # Renderer process (Vue UI)
-│   ├── components/ai/      # Core AI components: chat/config/skills/MCP
-│   ├── views/              # Pages: Chat / Sessions / Skills / Settings / Cron
-│   ├── router/             # Route definitions
-│   └── composables/        # Reusable logic (theme/session/health checks)
-├── electron/               # Main process
-│   ├── ai/                 # Orchestrator, tools, sessions, memory system
-│   ├── ai/tools/           # Built-in tool implementations
-│   ├── api/                # IPC / HTTP invoke bridge
-│   ├── extensions/         # Extensions and executors
-│   └── main.js             # Electron entrypoint
-├── mcp-server/             # Built-in MCP server (stdio JSON-RPC)
-├── scripts/                # Dev/build/cleanup scripts
-├── public/                 # Static assets
-└── icons/                  # App icon assets
-```
+- Multi-model support with flexible provider config
+- Sub-agent execution for complex tasks
+- Built-in + MCP tool calling system
+- Persistent conversation memory
+- Cron-based scheduled tasks
+- Backup and restore for local data
 
-## Local Data Directory
+## Typical Use Cases
 
-Runtime data is stored under: `~/.openultron/`
-
-Typical content:
-
-- `openultron.json`: unified config (AI + notifications, etc.)
-- `logs/app.log`: app logs
-- `conversations/`: chat history
-- `skills/`: local skills
-- `memory/` and `MEMORY.md`: memory data
-- `IDENTITY.md` / `SOUL.md` / `USER.md` / `BOOT.md`: identity and behavior configs
-
-## Development Requirements
-
-- Node.js 20+
-- npm 10+
-- macOS/Linux (Windows development is possible, but current scripts are Unix-oriented)
+- Operations: campaign copy, daily summaries, channel delivery
+- Development: quick page generation, code tasks, packaged outputs
+- Team collaboration: AI outputs synced to chat and docs
+- Personal productivity: automate repetitive workflows
 
 ## Quick Start
 
@@ -72,44 +43,48 @@ npm install
 npm run electron:dev
 ```
 
-`electron:dev` starts both Vite and Electron for integrated development.
+After launch, configure your model and notification channels in-app, then start dispatching tasks.
 
 ## Common Commands
 
 ```bash
-# Frontend only (Vite)
+# Frontend dev
 npm run dev
 
 # Build frontend
 npm run build
 
-# Start with Electron (builds dist first if missing)
+# Start Electron
 npm run electron
 
 # Integrated dev mode (recommended)
 npm run electron:dev
 
-# Build desktop app
+# Build desktop apps
 npm run electron:build
 npm run electron:build:mac
 npm run electron:build:win
 npm run electron:build:linux
 
-# Release scripts (project wrappers)
+# Release scripts
 npm run release
 npm run release:x64
 npm run release:all
-
-# Clear Electron / builder caches
-npm run electron:clean-cache
 ```
 
-## Packaging Notes
+## Data & Paths
 
-- Electron output directory: `dist-electron/`
-- Frontend output directory: `dist/`
-- `scripts/build-release*.sh` are provided for macOS build/sign flows
+- App data: `~/.openultron/`
+- Conversations: `conversations/`
+- Local skills: `skills/`
+- Logs: `logs/app.log`
 
-## Notes
+## Stack (Brief)
 
-- If packaging cache is corrupted, run `npm run electron:clean-cache` and retry.
+- Electron + Vue 3 + Vite
+- Node.js main-process capabilities
+- MCP-based tool extensibility
+
+---
+
+If you want AI that delivers outcomes instead of just responses, OpenUltron is built for that.
