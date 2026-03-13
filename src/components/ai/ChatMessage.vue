@@ -10,7 +10,7 @@
     </div>
   </div>
 
-  <!-- assistant：统一为机器人气泡（头像 + 命令卡 + 文本结果） -->
+  <!-- assistant：左侧头像，右侧昵称+命令卡片+正文（命令与昵称对齐） -->
   <template v-else-if="message.role === 'assistant'">
     <div v-if="toolCallsToRender.length || message.content?.trim()" class="chat-bubble assistant">
       <div class="bubble-avatar ai-avatar"><img :src="logoUrl" :alt="agentDisplayName || 'Ultron'" class="avatar-logo" /></div>
@@ -23,87 +23,83 @@
           </button>
         </div>
 
-        <div
-          v-for="(tc, idx) in toolCallsToRender"
-          :key="tc?.id || `tc-${idx}`"
-          class="tool-card"
-          :class="tcStatus(tc)"
-        >
-          <div class="tc-header" @click="toggleExpanded(tc)">
-            <div class="tc-left">
-              <div class="tc-status-dot"></div>
-              <component :is="toolIcon(tc.name)" :size="12" class="tc-type-icon" />
-              <div class="tc-texts">
-                <div class="tc-topline">
-                  <span class="tc-name">{{ toolLabel(tc.name) }}</span>
-                  <!-- 执行命令时始终在标题行显示命令内容，执行过程中也能看到 -->
-                  <span v-if="tc.name === 'execute_command' && (commandOf(tc) || cwdOf(tc))" class="tc-summary-text tc-command-inline">
-                    <code v-if="commandOf(tc)" class="tc-cmd-inline">{{ commandOf(tc) }}</code>
-                    <span v-if="cwdOf(tc)" class="tc-cwd-inline"> ({{ cwdOf(tc) }})</span>
-                  </span>
-                  <span v-else class="tc-summary-text">{{ toolSummary(tc) }}</span>
+        <!-- 命令/工具卡片：与昵称同列，左对齐 -->
+        <template v-for="(tc, idx) in toolCallsToRender" :key="tc?.id || `tc-${idx}`">
+          <div
+            class="tool-card"
+            :class="tcStatus(tc)"
+          >
+            <div class="tc-header" @click="toggleExpanded(tc)">
+              <div class="tc-left">
+                <div class="tc-status-dot"></div>
+                <component :is="toolIcon(tc.name)" :size="12" class="tc-type-icon" />
+                <div class="tc-texts">
+                  <div class="tc-topline">
+                    <span class="tc-name">{{ toolLabel(tc.name) }}</span>
+                    <span v-if="tc.name === 'execute_command' && (commandOf(tc) || cwdOf(tc))" class="tc-summary-text tc-command-inline">
+                      <code v-if="commandOf(tc)" class="tc-cmd-inline">{{ commandOf(tc) }}</code>
+                      <span v-if="cwdOf(tc)" class="tc-cwd-inline"> ({{ cwdOf(tc) }})</span>
+                    </span>
+                    <span v-else class="tc-summary-text">{{ toolSummary(tc) }}</span>
+                  </div>
+                  <div v-if="runningSubtitle(tc)" class="tc-subtitle">{{ runningSubtitle(tc) }}</div>
+                  <div v-else-if="resultPreview(tc)" class="tc-subtitle tc-subtitle-result">{{ resultPreview(tc) }}</div>
                 </div>
-                <div v-if="runningSubtitle(tc)" class="tc-subtitle">{{ runningSubtitle(tc) }}</div>
-                <div v-else-if="resultPreview(tc)" class="tc-subtitle tc-subtitle-result">{{ resultPreview(tc) }}</div>
+              </div>
+              <div class="tc-right">
+                <span v-if="tc.name === 'execute_command'" class="tc-metrics-compact">
+                  {{ elapsedSecondsOf(tc) }}s / {{ timeoutSecondsOf(tc) }}s
+                </span>
+                <span v-if="isToolRunning(tc)" class="tc-spinner"></span>
+                <template v-else>
+                  <span class="tc-result-badge" :class="tcResultClass(tc)">{{ tcResultText(tc) }}</span>
+                  <ChevronRight :size="11" class="tc-chevron" :class="{ rotated: tc._expanded }" />
+                </template>
               </div>
             </div>
-            <div class="tc-right">
-              <span v-if="tc.name === 'execute_command'" class="tc-metrics-compact">
-                {{ elapsedSecondsOf(tc) }}s / {{ timeoutSecondsOf(tc) }}s
-              </span>
-              <span v-if="isToolRunning(tc)" class="tc-spinner"></span>
-              <template v-else>
-                <span class="tc-result-badge" :class="tcResultClass(tc)">{{ tcResultText(tc) }}</span>
-                <ChevronRight :size="11" class="tc-chevron" :class="{ rotated: tc._expanded }" />
+            <div v-if="tc && tc._expanded && (tc.result || tc.name === 'execute_command')" class="tc-detail">
+              <template v-if="tc.result && screenshotFromResult(tc.result)">
+                <img
+                  v-if="screenshotFromResult(tc.result).url"
+                  class="chat-image tc-screenshot"
+                  :src="screenshotFromResult(tc.result).url"
+                  :alt="t('chatMessage.screenshot')"
+                />
+                <img
+                  v-else-if="screenshotFromResult(tc.result).base64"
+                  class="chat-image tc-screenshot"
+                  :src="'data:image/png;base64,' + screenshotFromResult(tc.result).base64"
+                  :alt="t('chatMessage.screenshot')"
+                />
               </template>
+              <div v-if="tc.name === 'execute_command'" class="tc-command-meta">
+                <div class="tc-command-line" v-if="commandOf(tc)">
+                  <span class="tc-command-label">{{ t('chatMessage.command') }}</span>
+                  <code class="tc-command-code">{{ commandOf(tc) }}</code>
+                </div>
+                <div class="tc-command-line" v-if="cwdOf(tc)">
+                  <span class="tc-command-label">{{ t('chatMessage.cwd') }}</span>
+                  <code class="tc-command-code">{{ cwdOf(tc) }}</code>
+                </div>
+                <div class="tc-command-line">
+                  <span class="tc-command-label">{{ t('chatMessage.timeout') }}</span>
+                  <code class="tc-command-code">{{ timeoutSecondsOf(tc) }}s</code>
+                </div>
+                <div class="tc-command-line">
+                  <span class="tc-command-label">{{ t('chatMessage.elapsed') }}</span>
+                  <code class="tc-command-code">{{ elapsedSecondsOf(tc) }}s</code>
+                </div>
+              </div>
+              <template v-if="tc.name === 'execute_command'">
+                <pre v-if="tc.result" class="tc-pre">{{ formatResult(tc.result, tc.name) }}</pre>
+                <pre v-else class="tc-pre tc-running">{{ t('chatMessage.running') }}</pre>
+              </template>
+              <pre v-else-if="tc.result" class="tc-pre">{{ formatResult(tc.result, tc.name) }}</pre>
             </div>
-          </div>
-        </div>
-
-        <!-- 展开详情：执行中也可展开看命令；有 result 时显示截图或输出 -->
-        <template v-for="(tc, idx) in toolCallsToRender" :key="`d-${tc?.id || idx}`">
-          <div v-if="tc && tc._expanded && (tc.result || tc.name === 'execute_command')" class="tc-detail">
-            <template v-if="tc.result && screenshotFromResult(tc.result)">
-              <img
-                v-if="screenshotFromResult(tc.result).url"
-                class="chat-image tc-screenshot"
-                :src="screenshotFromResult(tc.result).url"
-                :alt="t('chatMessage.screenshot')"
-              />
-              <img
-                v-else-if="screenshotFromResult(tc.result).base64"
-                class="chat-image tc-screenshot"
-                :src="'data:image/png;base64,' + screenshotFromResult(tc.result).base64"
-                :alt="t('chatMessage.screenshot')"
-              />
-            </template>
-            <div v-if="tc.name === 'execute_command'" class="tc-command-meta">
-              <div class="tc-command-line" v-if="commandOf(tc)">
-                <span class="tc-command-label">{{ t('chatMessage.command') }}</span>
-                <code class="tc-command-code">{{ commandOf(tc) }}</code>
-              </div>
-              <div class="tc-command-line" v-if="cwdOf(tc)">
-                <span class="tc-command-label">{{ t('chatMessage.cwd') }}</span>
-                <code class="tc-command-code">{{ cwdOf(tc) }}</code>
-              </div>
-              <div class="tc-command-line">
-                <span class="tc-command-label">{{ t('chatMessage.timeout') }}</span>
-                <code class="tc-command-code">{{ timeoutSecondsOf(tc) }}s</code>
-              </div>
-              <div class="tc-command-line">
-                <span class="tc-command-label">{{ t('chatMessage.elapsed') }}</span>
-                <code class="tc-command-code">{{ elapsedSecondsOf(tc) }}s</code>
-              </div>
-            </div>
-            <template v-if="tc.name === 'execute_command'">
-              <pre v-if="tc.result" class="tc-pre">{{ formatResult(tc.result, tc.name) }}</pre>
-              <pre v-else class="tc-pre tc-running">{{ t('chatMessage.running') }}</pre>
-            </template>
-            <pre v-else-if="tc.result" class="tc-pre">{{ formatResult(tc.result, tc.name) }}</pre>
           </div>
         </template>
 
-        <!-- 本条消息中的截图直接展示在列表里（不依赖展开） -->
+        <!-- 本条消息中的截图/图片直接展示在列表里（含保存后从 metadata.artifacts 还原的） -->
         <div v-if="screenshotsInMessage.length" class="message-screenshots">
           <img
             v-for="(src, idx) in screenshotsInMessage"
@@ -112,6 +108,34 @@
             :src="src"
             :alt="t('chatMessage.screenshot')"
           />
+        </div>
+
+        <!-- 本条消息中已保存的其它产物：音频、视频、文件/PDF（还原展示） -->
+        <div v-if="messageArtifactsNonImage.length" class="message-artifacts">
+          <template v-for="(art, idx) in messageArtifactsNonImage" :key="art.artifactId || art.path || idx">
+            <audio
+              v-if="art.kind === 'audio'"
+              class="message-artifact-audio"
+              controls
+              :src="art.path"
+              :title="art.name || 'audio'"
+            />
+            <video
+              v-else-if="art.kind === 'video'"
+              class="message-artifact-video"
+              controls
+              :src="art.path"
+              :title="art.name || 'video'"
+            />
+            <a
+              v-else
+              class="message-artifact-file"
+              :href="art.path"
+              target="_blank"
+              rel="noopener"
+              :title="art.name || art.path"
+            >{{ art.name || (art.kind === 'file' ? '文件' : art.kind) }}</a>
+          </template>
         </div>
 
         <!-- 思维链（<think> 块） -->
@@ -472,7 +496,7 @@ const formatResult = (resultStr, toolName) => {
   }
 }
 
-// 本条 assistant 消息中所有 take_screenshot 的图片 URL/base64，用于在列表里直接展示
+// 本条 assistant 消息中所有图片 URL/base64：来自 tool 结果 + 保存后的 metadata.artifacts（还原展示）
 const screenshotsInMessage = computed(() => {
   const list = []
   const toolCalls = props.message.toolCalls || []
@@ -481,7 +505,16 @@ const screenshotsInMessage = computed(() => {
     if (info?.url) list.push(info.url)
     else if (info?.base64) list.push('data:image/png;base64,' + info.base64)
   }
+  const fromMeta = (props.message.metadata?.artifacts || []).filter((a) => a.kind === 'image').map((a) => a.path).filter(Boolean)
+  fromMeta.forEach((url) => { if (!list.includes(url)) list.push(url) })
   return list
+})
+
+// 本条消息中已保存的产物（除图片外）：音频、视频、文件/PDF 等，用于还原展示
+const messageArtifactsNonImage = computed(() => {
+  return (props.message.metadata?.artifacts || []).filter(
+    (a) => a && a.path && a.kind && a.kind !== 'image'
+  )
 })
 
 // take_screenshot 类工具结果：提取 file_url 或 image_base64 用于在会话中展示截图（支持被截断的 JSON）
@@ -491,7 +524,7 @@ function screenshotFromResult(resultStr) {
     const obj = JSON.parse(resultStr)
     if (!obj || typeof obj !== 'object') return null
     const url = obj.file_url
-    if (url && typeof url === 'string' && (url.startsWith('local-resource://screenshots/') || url.startsWith('http'))) {
+    if (url && typeof url === 'string' && (url.startsWith('local-resource://screenshots/') || url.startsWith('local-resource://artifacts/') || url.startsWith('http'))) {
       return { url }
     }
     if (obj.image_base64 && typeof obj.image_base64 === 'string') {
@@ -499,7 +532,7 @@ function screenshotFromResult(resultStr) {
     }
     return null
   } catch {
-    const urlMatch = resultStr.match(/"file_url"\s*:\s*"(local-resource:\/\/screenshots\/[^"]+)"/)
+    const urlMatch = resultStr.match(/"file_url"\s*:\s*"(local-resource:\/\/[^"]+)"/)
     if (urlMatch) return { url: urlMatch[1] }
     return null
   }
@@ -781,9 +814,10 @@ const renderThink = (text) => renderMarkdown(text)
 }
 .user-text { color: var(--ou-text); }
 
-/* ── 工具调用卡片 ── */
+/* ── 工具调用卡片（与昵称同列，左对齐） ── */
 .tool-card {
   margin: 6px 0;
+  box-sizing: border-box;
   border-radius: 6px;
   overflow: hidden;
   border: 1px solid var(--ou-border);
@@ -918,6 +952,12 @@ const renderThink = (text) => renderMarkdown(text)
 .tc-screenshot { max-width: 100%; height: auto; border-radius: 6px; display: block; margin-bottom: 8px; }
 .message-screenshots { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; }
 .message-screenshot-img { max-width: 100%; max-height: 320px; width: auto; height: auto; border-radius: 8px; object-fit: contain; cursor: pointer; }
+
+.message-artifacts { margin-top: 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.message-artifact-audio { max-width: 320px; height: 36px; }
+.message-artifact-video { max-width: 100%; max-height: 280px; border-radius: 8px; }
+.message-artifact-file { color: var(--ou-primary); text-decoration: underline; font-size: 13px; }
+.message-artifact-file:hover { opacity: 0.85; }
 .tc-command-meta {
   margin: 0 0 6px 0;
   padding: 6px 8px;

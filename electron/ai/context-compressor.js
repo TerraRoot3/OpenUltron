@@ -1,11 +1,11 @@
 // 上下文压缩：当消息 token 超过阈值时，对早期消息生成摘要以节省 token
 // 算法：保留 system + 最近 keepRecent 条原文，将中间消息压缩为一条 summary system message
-// 触发频次较高、压缩更积极，在保证体验下节省 token
+// 降低触发频次，避免频繁压缩导致摘要质量差、丢失细节、多轮工具调用中误压缩
 
 const DEFAULT_CONFIG = {
   enabled: true,
-  threshold: 18000,   // token 估算超过此值即触发压缩（原 60k，降低以更早压缩）
-  keepRecent: 14,     // 保留最近 N 条消息原文（不含 system），略减以多省 token
+  threshold: 52000,   // token 估算超过此值才触发压缩，避免过早压缩
+  keepRecent: 20,     // 保留最近 N 条消息原文（不含 system）
   summaryMaxTokens: 600
 }
 

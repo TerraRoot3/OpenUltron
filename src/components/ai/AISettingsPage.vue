@@ -1037,6 +1037,8 @@ const saveConfig = async () => {
   color: var(--ou-text-muted);
   margin-top: 3px;
 }
+
+/* 响应缓存：第一行 switch + 文案对齐，第二行说明（避免 .form-group label 的 display:block 导致重叠） */
 .input-with-action {
   display: flex;
   gap: 4px;

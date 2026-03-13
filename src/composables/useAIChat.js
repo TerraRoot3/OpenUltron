@@ -449,21 +449,8 @@ export function useAIChat() {
       }
     }
     const filtered = raw.filter((m) => m.role !== 'tool')
-    const deduped = []
-    for (const item of filtered) {
-      const prev = deduped[deduped.length - 1]
-      if (
-        prev &&
-        prev.role === item.role &&
-        (item.role === 'assistant' || item.role === 'user') &&
-        normalizeForDedupe(prev.content) &&
-        normalizeForDedupe(prev.content) === normalizeForDedupe(item.content)
-      ) {
-        continue
-      }
-      deduped.push(item)
-    }
-    messages.value = deduped
+    // 不再按内容去重：用户可能故意发送相同内容两次，两条都应保留并展示
+    messages.value = filtered
   }
 
   // 供飞书会话等外部驱动：绑定当前会话 ID 并添加 assistant 占位，以接收主进程转发的 token/tool 事件

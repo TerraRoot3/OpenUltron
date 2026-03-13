@@ -10,9 +10,59 @@ const { shouldCompress, compressMessages, flushMemoryBeforeCompaction } = requir
 const { getTopMemoriesForProject, saveMemory, readGlobalMemoryMd, readSoulMd, readIdentityMd, readAgentDisplayName, readUserMd, readBootMd, readAgentsMd, readToolsMd, readLessonsLearned, appendToDiary } = require('./memory-store')
 const { loadPrompt } = require('./system-prompts')
 const { sanitizeAssistantIdentityWording, sanitizeAssistantModelIdentity } = require('./identity-wording')
+const fs = require('fs')
 const { getAppRootPath, getWorkspaceRoot } = require('../app-root')
-const responseCache = require('./response-cache')
 const sessionRegistry = require('./session-registry')
+const { logger: appLogger } = require('../app-logger')
+
+/** 从字符串中匹配第一个「绝对路径 + 图片扩展名」*/
+const SCREENSHOT_PATH_RE = /(\/var\/folders\/[^\s'")\]]+\.(?:png|jpg|jpeg|webp))|(\/tmp\/[^\s'")\]]+\.(?:png|jpg|jpeg|webp))|(\/(?:var|Users|tmp)[^\s'")\]]+\.(?:png|jpg|jpeg|webp))/i
+
+function extractScreenshotPathFromResult(result) {
+  if (!result || typeof result !== 'object') return null
+  const direct = result.file_path || result.filePath || result.path
+  if (direct && typeof direct === 'string' && path.isAbsolute(direct.trim())) return direct.trim()
+  const texts = [
+    result.result,
+    result.tip,
+    result.message,
+    result.text,
+    typeof result.content === 'string' ? result.content : null
+  ].filter(Boolean).map(String)
+  for (const text of texts) {
+    const m = text.match(SCREENSHOT_PATH_RE)
+    const p = (m && (m[1] || m[2] || m[3] || '')).trim()
+    if (p && path.isAbsolute(p) && fs.existsSync(p)) return p
+  }
+  return null
+}
+
+/** 根据工具名返回「回复文本若包含这些词则视为与该工具相关」的关键词（用于判断模型只说了没做） */
+function getToolReplyKeywords(toolName) {
+  if (!toolName || typeof toolName !== 'string') return []
+  const n = String(toolName).toLowerCase().replace(/^mcp__[^_]+__/, '')
+  if (n.includes('screenshot') || n.includes('截图')) return ['截图', '截屏', 'screenshot', '已截']
+  if (n.includes('navigate') || n.includes('new_page') || n.includes('open')) return ['打开', '导航', '访问', '已打开', '已访问', 'navigate']
+  if (n.includes('click')) return ['点击', '已点击', 'click']
+  if (n.includes('fill') || n.includes('input')) return ['填写', '输入', '已填', 'fill']
+  if (n.includes('execute_command') || n.includes('command')) return ['执行', '命令', '已执行', '运行']
+  return []
+}
+
+/** 若回复文本未带 tool_calls 但内容涉及某一携带工具（关键词匹配），返回该工具信息，用于动态注入「请先调用该工具」提示 */
+function findToolMentionedInContent(content, tools) {
+  if (!content || typeof content !== 'string' || !Array.isArray(tools) || tools.length === 0) return null
+  const text = String(content).trim()
+  if (!text) return null
+  for (const t of tools) {
+    const name = t.function?.name || t.name || ''
+    if (!name) continue
+    const keywords = getToolReplyKeywords(name)
+    if (keywords.length === 0) continue
+    if (keywords.some(kw => text.includes(kw))) return { name, displayName: name.replace(/^mcp__[^_]+__/, '') }
+  }
+  return null
+}
 
 /** 仅当 sender 存在且未销毁时才可推送（sender 可能非 WebContents，无 isDestroyed） */
 function canSend(sender) {
@@ -25,12 +75,16 @@ function canSend(sender) {
 const CLAUDE_PREFIXES = ['claude-']
 
 class Orchestrator {
-  constructor(getAIConfigOrStore, toolRegistry, mcpManager) {
+  constructor(getAIConfigOrStore, toolRegistry, mcpManager, opts = {}) {
     this.getAIConfig = typeof getAIConfigOrStore === 'function' ? getAIConfigOrStore : null
     this.store = this.getAIConfig ? null : getAIConfigOrStore
     this.toolRegistry = toolRegistry
     this.mcpManager = mcpManager || null
     this.activeSessions = new Map()
+    /** 可选：将工具返回的 image_base64 注册为文件并返回 file_url，避免 base64 进入消息体 */
+    this.registerImageBase64 = typeof opts.registerImageBase64 === 'function' ? opts.registerImageBase64 : null
+    /** 可选：将截图工具的 file_path 复制到应用目录并返回 file_url，供前端展示 */
+    this.registerScreenshotPath = typeof opts.registerScreenshotPath === 'function' ? opts.registerScreenshotPath : null
   }
 
   getConfig() {
@@ -356,9 +410,10 @@ class Orchestrator {
       }
     })
 
-    console.log('[AI] startChat →', isAnthropic ? 'Anthropic' : 'OpenAI', 'model:', useModel, 'baseUrl:', config.apiBaseUrl)
+    console.log('[AI] startChat →', isAnthropic ? 'Anthropic' : 'OpenAI', 'model:', useModel, 'baseUrl:', config.apiBaseUrl, 'tools:', sanitizedTools.length)
+    if (sanitizedTools.length === 0) console.warn('[AI] 无可用工具，本轮仅会文本回复，不会执行 MCP/浏览器等')
 
-    // 上下文压缩：阈值内每轮开始都会检查，超阈值即压缩（频次高、尽量省 token）
+    // 上下文压缩：仅在本轮对话开始前检查一次，超阈值才压缩，避免单轮内多次压缩
     const compressionConfig = config.contextCompression || {}
     const fakeSender = { send: () => {} }
     const callForSummary = async (msgs, maxTokens) => {
@@ -375,10 +430,10 @@ class Orchestrator {
       flushMemoryBeforeCompaction(currentMessages, callForSummary).catch(() => {})
       currentMessages = await compressMessages(currentMessages, compressionConfig, callForSummary)
     }
-    await maybeCompress()
 
     try {
       let modelCatalogNudgeCount = 0
+      let toolNudgeCount = 0
       while (iteration < safeMax) {
         if (abortController.signal.aborted) break
 
@@ -392,26 +447,21 @@ class Orchestrator {
           currentMessages.push({ role: 'user', content: `[来自总控的指令] ${msg}` })
         }
 
-        // 每轮开始前检查：多轮 tool 调用后上下文会膨胀，再次压缩以省 token
-        await maybeCompress()
-
         iteration++
 
-        // 响应缓存：上一轮纯 Q&A 且当前用户消息与上一轮完全一致时直接复用，减少 token
-        const lastUserContent = responseCache.getLastUserContent(currentMessages)
+        const lastUserContent = (() => {
+          for (let i = currentMessages.length - 1; i >= 0; i--) {
+            if (currentMessages[i].role === 'user') {
+              const c = currentMessages[i].content
+              return typeof c === 'string' ? c : (c ? JSON.stringify(c) : '')
+            }
+          }
+          return ''
+        })()
         const isModelCatalogQuestion = this._isModelCatalogQuery(lastUserContent)
         const isProviderScopedModelQuery = this._isProviderScopedModelQuery(lastUserContent)
         let response = null
-        let fromCache = false
-        if (lastUserContent && !isModelCatalogQuestion) {
-          const cached = responseCache.get(sessionId, lastUserContent)
-          if (cached) {
-            response = { content: cached, toolCalls: [] }
-            fromCache = true
-            wrappedSender.send('ai-chat-token', { sessionId, token: cached })
-          }
-        }
-        if (!response) {
+        {
           const modelCandidates = [{ model: useModel, routeConfig: config }]
           for (const r of fallbackRoutes) {
             if (!r || !r.model || !r.config) continue
@@ -456,7 +506,7 @@ class Orchestrator {
                     classify.action === 'disable_tools_then_retry' &&
                     ti < toolModes.length - 1
                   if (shouldRetryWithoutTools) {
-                    console.warn(`[AI] 模型 ${tryModel} 工具调用受限（${classify.kind}），自动改为无工具模式重试:`, modeErr.message)
+                    console.warn(`[AI] 模型 ${tryModel} 工具调用受限（${classify.kind}），自动改为无工具模式重试，故本轮不会执行 MCP/浏览器等工具:`, modeErr.message)
                     continue
                   }
                   throw modeErr
@@ -486,59 +536,8 @@ class Orchestrator {
         if (abortController.signal.aborted) break
 
         if (response.toolCalls && response.toolCalls.length > 0) {
-          // 内容重复检测：本轮助手文案与上一条助手消息几乎相同则视为死循环（如反复说「我来获取模型列表验证」）
-          // 不直接报错结束，而是注入提示让 AI 换表述或说明无法完成
-          const lastAssistant = [...currentMessages].reverse().find(m => m.role === 'assistant')
-          const prevContent = (lastAssistant && typeof lastAssistant.content === 'string') ? lastAssistant.content.trim() : ''
-          const currContent = (response.content && typeof response.content === 'string') ? response.content.trim() : ''
-          const prevHead = prevContent.slice(0, 80)
-          const currHead = currContent.slice(0, 80)
-          const contentRepeatDetected = prevHead.length >= 20 && currHead.length >= 20 && (prevHead === currHead || prevContent === currContent || prevContent.includes(currHead) || currContent.includes(prevHead))
-          const hasModelCatalogTool = response.toolCalls.some(tc => {
-            const n = String(tc?.function?.name || '').trim()
-            return n === 'list_configured_models' || n === 'list_providers_and_models' || n === 'verify_provider_model'
-          })
-          if (contentRepeatDetected && !hasModelCatalogTool) {
-            const normalizedToolCallsForRepeat = response.toolCalls.map((tc, idx) => ({
-              id: (tc.id && String(tc.id).trim()) || `call_${idx}_${Date.now()}`,
-              type: tc.type === 'function' ? 'function' : 'function',
-              function: {
-                name: tc.function?.name || '',
-                arguments: this._normalizeToolArguments(tc.function?.arguments)
-              }
-            }))
-            // 仍向前端发送 tool-call / tool-result，让用户能看到「本轮的命令执行情况」（结果为已跳过）
-            for (const toolCall of normalizedToolCallsForRepeat) {
-              wrappedSender.send('ai-chat-tool-call', {
-                sessionId,
-                toolCall: {
-                  id: toolCall.id,
-                  name: toolCall.function.name,
-                  arguments: toolCall.function.arguments
-                }
-              })
-            }
-            const skipReason = '检测到与上一轮几乎相同的回复，已跳过执行；请换一种表述或直接说明无法完成。'
-            for (const toolCall of normalizedToolCallsForRepeat) {
-              wrappedSender.send('ai-chat-tool-result', {
-                sessionId,
-                toolCallId: toolCall.id,
-                name: toolCall.function.name,
-                result: JSON.stringify({ skipped: true, reason: skipReason })
-              })
-            }
-            currentMessages.push({
-              role: 'assistant',
-              content: normalizeAssistantContent(response.content || null),
-              tool_calls: normalizedToolCallsForRepeat
-            })
-            currentMessages.push({
-              role: 'user',
-              content: '[系统] 检测到与上一轮几乎相同的回复，请换一种表述或直接说明无法完成并建议用户换一种方式；勿重复同一句话。'
-            })
-            continue
-          }
-
+          const toolNames = (response.toolCalls || []).map(tc => tc.function?.name || tc.name || '?').filter(Boolean)
+          appLogger?.info?.('[AI] 本轮模型返回工具调用', { count: response.toolCalls.length, names: toolNames.join(', ') })
           // OpenRouter 等要求 tool_calls 每项必须有 id 和 type: 'function'
           const normalizedToolCalls = response.toolCalls.map((tc, idx) => ({
             id: (tc.id && String(tc.id).trim()) || `call_${idx}_${Date.now()}`,
@@ -570,17 +569,14 @@ class Orchestrator {
           const toolResults = await Promise.all(
             normalizedToolCalls.map(async (toolCall) => {
               if (abortController.signal.aborted) return { toolCall, resultStr: '{"error":"已取消"}' }
+              const toolName = String(toolCall.function?.name || '')
+              const isScreenshotTool = /take_screenshot|chrome_devtools/.test(toolName)
               let result
               try {
                 const args = this._parseToolArgumentsObject(toolCall.function.arguments)
-                // 记录实际使用的工具名称与参数，便于排查「chrome-devtools vs webview_control」等选择
-                try {
-                  console.log('[AI][ToolCall]', {
-                    sessionId,
-                    name: toolCall.function.name,
-                    argsPreview: JSON.stringify(args).slice(0, 300)
-                  })
-                } catch (_) { /* ignore */ }
+                if (isScreenshotTool) {
+                  appLogger?.info?.('[AI][ToolCall] 执行截图相关工具', { name: toolName, sessionId, argsPreview: JSON.stringify(args).slice(0, 200) })
+                }
                 result = await this._executeTool(toolCall.function.name, args, wrappedSender, sessionId, toolCall.id)
               } catch (e) {
                 result = {
@@ -588,8 +584,49 @@ class Orchestrator {
                   code: e.code || '',
                   non_retryable: !!e.nonRetryable
                 }
+                if (isScreenshotTool) {
+                  appLogger?.warn?.('[AI][ToolCall] 截图工具执行异常', { name: toolName, error: e.message })
+                }
+              }
+              // 将 image_base64 注册为文件并用 file_url 替代，避免 base64 进入消息体（膨胀、耗 token）
+              if (typeof result === 'object' && result && result.image_base64 && this.registerImageBase64) {
+                try {
+                  const fileUrl = await this.registerImageBase64(result.image_base64, sessionId)
+                  if (fileUrl) {
+                    result.file_url = fileUrl
+                    delete result.image_base64
+                  }
+                } catch (e) {
+                  appLogger?.warn?.('[AI][ToolCall] 注册截图为文件失败，保留 base64', { error: e?.message })
+                }
+              }
+              // 截图工具只返回 file_path 或把路径写在文本里（如「截图已保存到：/var/.../screenshot.png」）时，复制到应用目录并设置 file_url，供前端展示
+              if (isScreenshotTool && typeof result === 'object' && result && !result.file_url && this.registerScreenshotPath) {
+                let srcPath = result.file_path || result.filePath || result.path
+                if (srcPath && typeof srcPath === 'string') srcPath = srcPath.trim()
+                if (!srcPath) srcPath = extractScreenshotPathFromResult(result)
+                if (srcPath && typeof srcPath === 'string') {
+                  try {
+                    const fileUrl = await this.registerScreenshotPath(srcPath, sessionId)
+                    if (fileUrl) {
+                      result.file_url = fileUrl
+                      appLogger?.info?.('[AI][ToolCall] 截图路径已注册为 file_url', { path: srcPath.slice(-60), fileUrl })
+                    } else {
+                      appLogger?.warn?.('[AI][ToolCall] 截图路径注册返回空', { path: srcPath.slice(-60) })
+                    }
+                  } catch (e) {
+                    appLogger?.warn?.('[AI][ToolCall] 注册截图路径失败', { error: e?.message })
+                  }
+                } else if (isScreenshotTool && typeof result === 'object' && result && !result.file_url && !result.image_base64) {
+                  appLogger?.info?.('[AI][ToolCall] 截图工具结果无 file_path/file_url/image_base64', { keys: Object.keys(result || {}) })
+                }
               }
               const resultStr = typeof result === 'string' ? result : JSON.stringify(result)
+              if (isScreenshotTool) {
+                const hasError = typeof result === 'object' && result && result.error
+                const hasImage = typeof result === 'object' && result && result.image_base64
+                appLogger?.info?.(hasError ? '[AI][ToolCall] 截图工具返回错误' : hasImage ? '[AI][ToolCall] 截图工具返回成功(含图)' : '[AI][ToolCall] 截图工具返回', { name: toolName, hasError: !!hasError, hasImage: !!hasImage })
+              }
               wrappedSender.send('ai-chat-tool-result', {
                 sessionId,
                 toolCallId: toolCall.id,
@@ -602,11 +639,13 @@ class Orchestrator {
 
           if (abortController.signal.aborted) break
 
-          // 不可恢复工具错误：立即终止，避免模型在同一参数错误上无限重试
+          // 不可恢复工具错误：立即终止，避免模型在同一参数错误上无限重试（截图「当前页不可截图」仅展示在命令结果里，不全局报错）
           const nonRetryableFailure = toolResults.find((x) => {
             try {
               const obj = JSON.parse(String(x.resultStr || '{}'))
-              return !!(obj && obj.non_retryable)
+              if (!(obj && obj.non_retryable)) return false
+              if (obj.code === 'SCREENSHOT_INVALID_PAGE' || /当前页不可截图|about:blank/.test(String(obj.error || ''))) return false
+              return true
             } catch (_) {
               return false
             }
@@ -663,9 +702,24 @@ class Orchestrator {
             }
           }
         }
-        // 无工具调用：写入响应缓存（仅真实 API 返回、纯 Q&A 时），便于下次相同问题命中
-        if (!isModelCatalogQuestion && !fromCache && response && response.content && (!response.toolCalls || response.toolCalls.length === 0)) {
-          responseCache.set(sessionId, lastUserContent, normalizeAssistantContent(response.content))
+        // 模型本轮未返回 tool_calls，仅文本回复
+        const contentPreview = response?.content ? String(response.content).trim().slice(0, 120) : ''
+        appLogger?.info?.('[AI] 本轮模型未返回工具调用，仅文本回复', { contentPreview: contentPreview || '(空)' })
+        // 若回复文本「属于」当前携带的某一工具（关键词匹配），说明模型在说但未调用，注入一次动态提示要求先调用该工具
+        const lastRoundHadTools = currentMessages.some(m => m.role === 'tool')
+        const matchedTool = findToolMentionedInContent(response?.content, sanitizedTools)
+        if (matchedTool && lastRoundHadTools && toolNudgeCount < 1) {
+          toolNudgeCount++
+          appLogger?.info?.('[AI] 回复内容涉及工具但未调用，注入提示后继续', { toolName: matchedTool.name })
+          currentMessages.push({
+            role: 'assistant',
+            content: response ? normalizeAssistantContent(response.content || null) : null
+          })
+          currentMessages.push({
+            role: 'user',
+            content: `[系统] 你上条回复涉及「${matchedTool.displayName}」相关操作，但未实际调用该工具。请先调用工具 ${matchedTool.name} 执行后再用文字总结。`
+          })
+          continue
         }
         currentMessages.push({
           role: 'assistant',
@@ -681,6 +735,8 @@ class Orchestrator {
         })
       }
 
+      // 仅在本轮会话结束后做一次上下文压缩，再落盘/推送
+      await maybeCompress()
       wrappedSender.send('ai-chat-complete', { sessionId, messages: currentMessages })
       sessionRegistry.markComplete(registryId)
       this._extractMemoriesAsync(currentMessages, projectPath, config, useModel, isAnthropic)
@@ -688,6 +744,7 @@ class Orchestrator {
       return { success: true, messages: currentMessages }
     } catch (error) {
       if (abortController.signal.aborted) {
+        await maybeCompress()
         wrappedSender.send('ai-chat-complete', { sessionId, messages: currentMessages })
         sessionRegistry.markComplete(registryId)
         this._extractMemoriesAsync(currentMessages, projectPath, config, useModel, isAnthropic)
@@ -1088,6 +1145,11 @@ class Orchestrator {
       // max_tokens=0 表示不限制，不传该字段让 API 使用模型默认值
       const reqBody = { ...body, stream: true }
       if (!reqBody.max_tokens) delete reqBody.max_tokens
+      // 显式指定 tool_choice，避免部分网关/代理不传时模型不调用工具
+      if (Array.isArray(reqBody.tools) && reqBody.tools.length > 0) {
+        if (reqBody.tool_choice === undefined) reqBody.tool_choice = 'auto'
+        console.log('[AI] 请求带工具', reqBody.tools.length, '个, tool_choice:', reqBody.tool_choice)
+      }
       const postData = JSON.stringify(reqBody)
 
       const onError = (err) => {

@@ -2083,7 +2083,7 @@ app.whenReady().then(async () => {
   aiGateway.start().catch(e => console.warn('[Gateway] start failed:', e.message))
 
   // 启动所有 MCP servers（app ready 后才 spawn，确保子进程环境正常）
-  startSavedMcpServers().catch(err => console.error('[MCP] 启动失败:', err.message))
+  startSavedMcpServers().catch(err => appLogger?.error?.('[MCP] 启动失败:', err.message))
 
   // 启动 Heartbeat 定时巡检（每 30 分钟）
   startHeartbeat()
@@ -3084,7 +3084,64 @@ const aiToolRegistry = createDefaultRegistry({
   getSkillsSources: () => require('./openultron-config').getSkillsSources(),
   onSkillChanged: () => { _skillsCache = readAllSkills() }
 })
-const aiOrchestrator = new Orchestrator(getAIConfigLegacy, aiToolRegistry, aiMcpManager)
+/** 将工具返回的 image_base64 注册为产物文件并返回 local-resource URL，避免 base64 进入消息体 */
+async function registerImageBase64ForChat(base64, sessionId) {
+  if (!base64 || typeof base64 !== 'string' || base64.length < 100) return null
+  try {
+    const rec = artifactRegistry.registerBase64Artifact({
+      base64,
+      ext: '.png',
+      kind: 'image',
+      source: 'chat_tool',
+      sessionId: String(sessionId || '')
+    })
+    if (!rec || !rec.path) return null
+    const appRoot = getAppRoot()
+    const rel = path.relative(appRoot, rec.path)
+    if (rel.startsWith('..')) return null
+    return 'local-resource://' + rel.split(path.sep).join('/')
+  } catch (e) {
+    appLogger?.warn?.('[main] registerImageBase64ForChat 失败', { error: e?.message })
+    return null
+  }
+}
+
+/** 将截图工具的 file_path（如 MCP 保存的临时路径）复制到应用 screenshots 目录并返回 local-resource URL，供前端展示 */
+async function registerScreenshotFilePathForChat(filePath, sessionId) {
+  if (!filePath || typeof filePath !== 'string') {
+    appLogger?.info?.('[main] registerScreenshotFilePathForChat 跳过: 无 path 或非字符串')
+    return null
+  }
+  const trimmed = String(filePath).trim()
+  if (!trimmed || !path.isAbsolute(trimmed)) {
+    appLogger?.info?.('[main] registerScreenshotFilePathForChat 跳过: 非绝对路径', { path: trimmed.slice(0, 80) })
+    return null
+  }
+  try {
+    if (!fs.existsSync(trimmed) || !fs.statSync(trimmed).isFile()) {
+      appLogger?.warn?.('[main] registerScreenshotFilePathForChat 文件不存在或非文件', { path: trimmed.slice(-80) })
+      return null
+    }
+    const dir = getAppRootPath('screenshots')
+    fs.mkdirSync(dir, { recursive: true })
+    const base = path.basename(trimmed)
+    const ext = path.extname(base) || '.png'
+    const name = (base.slice(0, -ext.length) || 'screenshot') + '-' + Date.now() + ext
+    const dest = path.join(dir, name)
+    fs.copyFileSync(trimmed, dest)
+    const url = 'local-resource://screenshots/' + name
+    appLogger?.info?.('[main] registerScreenshotFilePathForChat 已复制', { from: trimmed.slice(-60), to: url })
+    return url
+  } catch (e) {
+    appLogger?.warn?.('[main] registerScreenshotFilePathForChat 失败', { error: e?.message })
+    return null
+  }
+}
+
+const aiOrchestrator = new Orchestrator(getAIConfigLegacy, aiToolRegistry, aiMcpManager, {
+  registerImageBase64: registerImageBase64ForChat,
+  registerScreenshotPath: registerScreenshotFilePathForChat
+})
 
 // OpenClaw-style Gateway：开发 28792 / 正式 28790，与 UI 端口分离且同机双装不冲突
 const GATEWAY_PORT_PROD = 28790
@@ -4175,7 +4232,9 @@ const aiGateway = createGateway({
   port: isDev ? GATEWAY_PORT_DEV : GATEWAY_PORT_PROD,
   getOrchestrator: () => aiOrchestrator,
   getResolvedConfig: getResolvedAIConfig,
-  getToolDefinitions: () => getToolsForChat(),
+  getToolDefinitions: (params) => getToolsForChatWithWait({
+    excludeChannelSend: !params?.feishuChatId && params?.projectPath !== '__feishu__'
+  }),
   getCurrentOpenSession: () => currentOpenSession,
   getConfigForGateway: () => {
     const c = getResolvedAIConfig()
@@ -4351,6 +4410,7 @@ const aiGateway = createGateway({
   onChatComplete: (sessionId, messages, projectPath) => {
     try {
       const conv = require('./ai/conversation-file')
+      if (Array.isArray(messages) && messages.length) persistToolArtifactsToRegistry(messages, sessionId)
       const toSave = Array.isArray(messages)
         ? mergeCompactedConversationMessages(projectPath, sessionId, messages)
         : []
@@ -4388,13 +4448,27 @@ try {
   console.warn('加载 wait_for_previous_run 工具失败:', e.message)
 }
 
-// 启动已保存的 MCP servers — 在 app.whenReady 后执行，确保 Electron 完全初始化
+// 启动已保存的 MCP servers — 在 app.whenReady 后执行，确保 Electron 完全初始化；日志写入 app.log 便于排查
 async function startSavedMcpServers() {
   const mcpConfigJson = mcpConfigFile.readMcpConfig(store)
   const disabledServers = store.get('aiMcpDisabledServers', [])
   const servers = parseMcpJsonConfig(mcpConfigJson, disabledServers)
-  if (servers.length > 0) {
-    await aiMcpManager.startAll(servers)
+  if (servers.length === 0) {
+    appLogger?.warn?.('[MCP] 无可用服务器：配置解析失败或未包含任何服务器。请检查 mcp.json 或设置中是否禁用了 chrome-devtools。')
+    return
+  }
+  const names = servers.map((s) => (s.enabled !== false ? s.name : `${s.name}(已禁用)`)).join(', ')
+  appLogger?.info?.('[MCP] 正在启动 MCP 服务器:', names)
+  await aiMcpManager.startAll(servers)
+  const ready = [...aiMcpManager.connections.entries()].filter(([, c]) => c.ready).map(([n]) => n)
+  const failed = [...aiMcpManager.errors.entries()].map(([n, msg]) => `${n}: ${msg}`)
+  if (ready.length) appLogger?.info?.('[MCP] 已就绪:', ready.join(', '))
+  if (failed.length) {
+    appLogger?.warn?.('[MCP] 启动失败:', failed.join('; '))
+    const hasChrome = failed.some(([n]) => n === 'chrome-devtools')
+    if (hasChrome) {
+      appLogger?.info?.('[MCP] chrome-devtools 排查建议: 1) 确认已安装 Node 20+（nvm install 20 或 fnm install 20）；2) 若为「请求超时: initialize」多为 npx 拉包或 Chrome 启动慢，可重试或检查网络；3) 若为「进程退出」请查看本日志上方该进程的 stderr 输出。')
+    }
   }
 }
 
@@ -5026,15 +5100,36 @@ registerChannel('ai-get-models', async (event, providerBaseUrl) => {
 })
 
 // 统一「对话用工具列表」：builtin + MCP，chrome-devtools 排最前（与主会话一致，飞书/Webhook 等入口共用）
-const CHROME_DEVTOOLS_TOOL_PREFIX = 'mcp__chrome_devtools__'
+// 工具名由 MCP 的 sanitizeName 生成，为 mcp__chrome-devtools__xxx（连字符），兼容 chrome_devtools 写法
+const CHROME_DEVTOOLS_TOOL_PREFIX_REGEX = /^mcp__chrome[-_]devtools__/
 const CHANNEL_SEND_TOOL_REGEX = /^(feishu_send_message|telegram_send_message|dingtalk_send_message)$/
-function getToolsForChat() {
+let _loggedNoChromeDevtoolsOnce = false
+/** @param {{ excludeChannelSend?: boolean }} [opts] - excludeChannelSend: 主会话为 true，不暴露 feishu_send_message 等渠道发送工具 */
+function getToolsForChat(opts = {}) {
   const builtinTools = aiToolRegistry.getToolDefinitions()
   const mcpTools = aiMcpManager.getAllToolDefinitions()
-  const all = [...builtinTools, ...mcpTools]
-  const chromeDevtools = all.filter(t => (t.function?.name || '').startsWith(CHROME_DEVTOOLS_TOOL_PREFIX))
-  const rest = all.filter(t => !(t.function?.name || '').startsWith(CHROME_DEVTOOLS_TOOL_PREFIX))
+  let all = [...builtinTools, ...mcpTools]
+  if (opts.excludeChannelSend) {
+    all = all.filter((t) => !CHANNEL_SEND_TOOL_REGEX.test(String(t.function?.name || '').trim()))
+  }
+  const chromeDevtools = all.filter(t => CHROME_DEVTOOLS_TOOL_PREFIX_REGEX.test(t.function?.name || ''))
+  const rest = all.filter(t => !CHROME_DEVTOOLS_TOOL_PREFIX_REGEX.test(t.function?.name || ''))
+  if (chromeDevtools.length === 0 && !_loggedNoChromeDevtoolsOnce) {
+    _loggedNoChromeDevtoolsOnce = true
+    appLogger?.info?.('[MCP] getToolsForChat: chrome-devtools 未提供工具（可能未就绪或启动失败），截图将不可用或请用 webview_control。可查看上方 [MCP] 启动日志。')
+  }
   return [...chromeDevtools, ...rest]
+}
+
+/** 供 Gateway runChat 使用：若当前 chrome-devtools 工具数为 0 则等待一次再取。opts.excludeChannelSend 为 true 时主会话不暴露渠道发送工具 */
+async function getToolsForChatWithWait(opts = {}) {
+  let tools = getToolsForChat(opts)
+  const chromeCount = tools.filter(t => CHROME_DEVTOOLS_TOOL_PREFIX_REGEX.test(t.function?.name || '')).length
+  if (chromeCount === 0) {
+    await new Promise((r) => setTimeout(r, 2500))
+    tools = getToolsForChat(opts)
+  }
+  return tools
 }
 
 function getToolsForSubChat() {
@@ -5254,7 +5349,105 @@ registerChannel('ai-editor-open-files-response', (event, { requestId, files }) =
 
 // 会话历史持久化
 // ---- 项目聊天历史（文件存储，自动从 store 迁移旧数据） ----
-// 命令执行情况仅在进行中展示，不保留到历史消息；剥离后保存
+// 从工具结果中提取并注册产物（图片/文件/PDF/语音等），挂到上一条 assistant 的 metadata.artifacts，便于保存后还原展示
+function persistToolArtifactsToRegistry(messages, sessionId) {
+  if (!Array.isArray(messages) || !sessionId) return
+  const appRoot = getAppRoot()
+  const toLocalResourceUrl = (fullPath) => {
+    if (!fullPath || !path.isAbsolute(fullPath)) return null
+    const rel = path.relative(appRoot, fullPath)
+    if (rel.startsWith('..')) return null
+    return 'local-resource://' + rel.split(path.sep).join('/')
+  }
+  const inferKindFromPath = (p) => {
+    const ext = path.extname(String(p || '')).toLowerCase()
+    if (['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'].includes(ext)) return 'image'
+    if (['.mp3', '.wav', '.m4a', '.aac', '.ogg', '.opus', '.flac'].includes(ext)) return 'audio'
+    if (['.mp4', '.mov', '.webm', '.mkv'].includes(ext)) return 'video'
+    if (['.pdf'].includes(ext)) return 'file'
+    return 'file'
+  }
+  let lastAssistantIdx = -1
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i]
+    if (!m) continue
+    if (m.role === 'assistant') lastAssistantIdx = i
+    if (m.role !== 'tool' || lastAssistantIdx < 0) continue
+    let raw = m.content
+    if (raw == null) continue
+    if (typeof raw !== 'object') raw = typeof raw === 'string' ? raw : String(raw)
+    const str = typeof raw === 'string' ? raw : JSON.stringify(raw)
+    let obj = null
+    try {
+      obj = typeof raw === 'object' ? raw : JSON.parse(str)
+    } catch (_) {}
+    if (!obj || typeof obj !== 'object') continue
+    const artifactsToAdd = []
+    // 已有 local-resource URL：直接作为引用保留（不重复入库）
+    const fileUrl = obj.file_url || obj.fileUrl
+    if (fileUrl && typeof fileUrl === 'string') {
+      if (fileUrl.startsWith('local-resource://screenshots/') || fileUrl.startsWith('local-resource://artifacts/')) {
+        artifactsToAdd.push({ path: fileUrl, kind: 'image', name: path.basename(fileUrl.replace(/^[^?]+/, '')) })
+      }
+    }
+    // 图片 base64 -> 入库
+    const imageBase64 = obj.image_base64 || obj.imageBase64
+    if (imageBase64 && typeof imageBase64 === 'string' && imageBase64.length > 100) {
+      const rec = artifactRegistry.registerBase64Artifact({
+        base64: imageBase64,
+        ext: '.png',
+        kind: 'image',
+        source: 'chat_tool',
+        sessionId: String(sessionId)
+      })
+      if (rec && rec.path) {
+        const url = toLocalResourceUrl(rec.path)
+        if (url) artifactsToAdd.push({ path: url, kind: rec.kind || 'image', artifactId: rec.artifactId, name: rec.filename })
+      }
+    }
+    // 本地文件路径（截图、PDF、音频等）-> 入库
+    const filePath = obj.file_path || obj.filePath || obj.path
+    if (filePath && typeof filePath === 'string') {
+      const full = path.isAbsolute(filePath) ? filePath : getAppRootPath('screenshots', path.basename(filePath))
+      if (fs.existsSync(full) && fs.statSync(full).isFile()) {
+        const rec = artifactRegistry.registerFileArtifact({
+          path: full,
+          kind: inferKindFromPath(full),
+          source: 'chat_tool',
+          sessionId: String(sessionId)
+        })
+        if (rec && rec.path) {
+          const url = toLocalResourceUrl(rec.path)
+          if (url) artifactsToAdd.push({ path: url, kind: rec.kind || 'file', artifactId: rec.artifactId, name: rec.filename })
+        }
+      } else if (filePath.startsWith('local-resource://')) {
+        artifactsToAdd.push({ path: filePath, kind: inferKindFromPath(filePath), name: path.basename(filePath) })
+      }
+    }
+    // 语音/音频 base64（若有）
+    const audioBase64 = obj.audio_base64 || obj.audioBase64
+    if (audioBase64 && typeof audioBase64 === 'string' && audioBase64.length > 100) {
+      const rec = artifactRegistry.registerBase64Artifact({
+        base64: audioBase64,
+        ext: '.m4a',
+        kind: 'audio',
+        source: 'chat_tool',
+        sessionId: String(sessionId)
+      })
+      if (rec && rec.path) {
+        const url = toLocalResourceUrl(rec.path)
+        if (url) artifactsToAdd.push({ path: url, kind: 'audio', artifactId: rec.artifactId, name: rec.filename })
+      }
+    }
+    if (artifactsToAdd.length === 0) continue
+    const assistant = messages[lastAssistantIdx]
+    if (!assistant.metadata) assistant.metadata = {}
+    if (!Array.isArray(assistant.metadata.artifacts)) assistant.metadata.artifacts = []
+    assistant.metadata.artifacts.push(...artifactsToAdd)
+  }
+}
+
+// 命令执行情况仅在进行中展示，不保留到历史消息；剥离后保存（metadata.artifacts 已由 persistToolArtifactsToRegistry 填充，可还原展示）
 function stripToolExecutionFromMessages(messages) {
   if (!Array.isArray(messages)) return messages
   const sessionSpawnCallIds = new Set()
@@ -5449,6 +5642,7 @@ registerChannel('ai-save-chat-history', async (event, { projectPath, messages, s
   try {
     const projectKey = conversationFile.hashProjectPath(projectPath)
     const id = sessionId || `proj-${Date.now()}`
+    persistToolArtifactsToRegistry(messages, id)
     const toSave = stripToolExecutionFromMessages(messages)
     conversationFile.saveConversation(projectKey, { id, messages: toSave, projectPath, model, apiBaseUrl })
     return { success: true, sessionId: id }
@@ -5934,7 +6128,7 @@ function extractScreenshotsFromMessages(messages) {
       const pathMatch = raw.match(/"file_path"\s*:\s*"((?:[^"\\]|\\.)*)"/)
       if (pathMatch) filePath = pathMatch[1]
       if (!filePath) {
-        const urlMatch = raw.match(/"file_url"\s*:\s*"(local-resource:\/\/screenshots\/[^"]+)"/)
+        const urlMatch = raw.match(/"file_url"\s*:\s*"(local-resource:\/\/[^"]+)"/)
         if (urlMatch) fileUrl = urlMatch[1]
       }
       if (!imageBase64 && raw.includes('"image_base64"')) {
@@ -5945,14 +6139,17 @@ function extractScreenshotsFromMessages(messages) {
     if (filePath && typeof filePath === 'string' && filePath.includes('screenshots') && !seenPath.has(filePath)) {
       seenPath.add(filePath)
       out.push({ path: filePath })
-    } else if (fileUrl && typeof fileUrl === 'string' && fileUrl.startsWith('local-resource://screenshots/')) {
-      const filename = fileUrl.replace(/^local-resource:\/\/screenshots\//i, '').replace(/^\/+/, '')
-      if (filename) {
-        const fullPath = getAppRootPath('screenshots', filename)
-        if (!seenPath.has(fullPath)) {
-          seenPath.add(fullPath)
-          out.push({ path: fullPath })
+    } else if (fileUrl && typeof fileUrl === 'string' && fileUrl.startsWith('local-resource://')) {
+      if (fileUrl.startsWith('local-resource://screenshots/')) {
+        const filename = fileUrl.replace(/^local-resource:\/\/screenshots\//i, '').replace(/^\/+/, '')
+        if (filename) {
+          const fullPath = getAppRootPath('screenshots', filename)
+          if (!seenPath.has(fullPath)) { seenPath.add(fullPath); out.push({ path: fullPath }) }
         }
+      } else if (fileUrl.startsWith('local-resource://artifacts/')) {
+        const rel = fileUrl.replace(/^local-resource:\/\//i, '').replace(/\//g, path.sep)
+        const fullPath = path.join(getAppRoot(), rel)
+        if (!seenPath.has(fullPath) && fs.existsSync(fullPath)) { seenPath.add(fullPath); out.push({ path: fullPath }) }
       }
     }
     if (imageBase64 && typeof imageBase64 === 'string' && isValidImageBase64(imageBase64) && !seenBase64.has(imageBase64.slice(0, 50))) {
@@ -5993,7 +6190,7 @@ function parseScreenshotFromToolResult(result) {
         if (pathAlt) filePath = pathAlt[1]
       }
       if (!filePath) {
-        const urlMatch = resultStr.match(/"file_url"\s*:\s*"(local-resource:\/\/screenshots\/[^"]+)"/)
+        const urlMatch = resultStr.match(/"file_url"\s*:\s*"(local-resource:\/\/[^"]+)"/)
         if (urlMatch) fileUrl = urlMatch[1]
       }
       if (resultStr.includes('"image_base64"')) {
@@ -6006,9 +6203,15 @@ function parseScreenshotFromToolResult(result) {
     const pathToPush = path.isAbsolute(filePath) ? filePath : getAppRootPath('screenshots', path.basename(filePath))
     out.push({ path: pathToPush })
   }
-  if (fileUrl && typeof fileUrl === 'string' && fileUrl.startsWith('local-resource://screenshots/')) {
-    const filename = fileUrl.replace(/^local-resource:\/\/screenshots\//i, '').replace(/^\/+/, '')
-    if (filename) out.push({ path: getAppRootPath('screenshots', filename) })
+  if (fileUrl && typeof fileUrl === 'string' && fileUrl.startsWith('local-resource://')) {
+    if (fileUrl.startsWith('local-resource://screenshots/')) {
+      const filename = fileUrl.replace(/^local-resource:\/\/screenshots\//i, '').replace(/^\/+/, '')
+      if (filename) out.push({ path: getAppRootPath('screenshots', filename) })
+    } else if (fileUrl.startsWith('local-resource://artifacts/')) {
+      const rel = fileUrl.replace(/^local-resource:\/\//i, '').replace(/\//g, path.sep)
+      const fullPath = path.join(getAppRoot(), rel)
+      if (fs.existsSync(fullPath)) out.push({ path: fullPath })
+    }
   }
   if (imageBase64 && typeof imageBase64 === 'string' && isValidImageBase64(imageBase64)) {
     out.push({ base64: imageBase64 })
@@ -7203,52 +7406,8 @@ function buildSingleRunProgressSummary(key, runSessionId) {
 }
 
 function createLongRunNotifier({ binding, mainSessionId, projectPath, chatId, key, runSessionId }) {
-  let stopped = false
-  const timers = []
-  let sentCount = 0
-  const stopAll = () => {
-    stopped = true
-    for (const t of timers) clearTimeout(t)
-  }
-  const notifyOnce = () => {
-    if (stopped) return
-    if (completedRunSessionIds.has(runSessionId)) {
-      stopAll()
-      return
-    }
-    if (sentCount >= LONG_RUN_NOTIFY_MAX_TIMES) {
-      stopAll()
-      return
-    }
-    const snapshot = sessionRegistry.getSnapshot()
-    const s = snapshot.find(x => x.sessionId === runSessionId)
-    const st = String(s?.status || '').toLowerCase()
-    if (st === 'completed' || st === 'idle' || st === 'error' || st === 'failed' || st === 'closed') {
-      stopAll()
-      return
-    }
-    const summary = buildSingleRunProgressSummary(key, runSessionId)
-    if (!summary) return
-    const text = sentCount === 0
-      ? `任务仍在处理中，请耐心等待。\n${summary}`
-      : `任务还在继续执行中，请再稍等一下。\n${summary}`
-    const outBinding = { ...binding, sessionId: mainSessionId, projectPath, remoteId: chatId, ...(binding.channel === 'feishu' && { feishuChatId: chatId }) }
-    eventBus.emit('chat.session.completed', { binding: outBinding, payload: { text } })
-    sentCount++
-  }
-  const schedule = () => {
-    const first = setTimeout(() => {
-      if (stopped) return
-      notifyOnce()
-      const interval = setInterval(() => {
-        notifyOnce()
-      }, LONG_RUN_NOTIFY_INTERVAL_SEC * 1000)
-      timers.push(interval)
-    }, LONG_RUN_NOTIFY_START_SEC * 1000)
-    timers.push(first)
-  }
-  schedule()
-  return stopAll
+  // 不再向渠道发送「任务仍在处理中，请耐心等待」等进度提示，避免刷屏
+  return () => {}
 }
 
 async function processMessageReplace(payload) {
@@ -7261,75 +7420,7 @@ async function processMessageReplace(payload) {
     ? FEISHU_PROJECT
     : (binding.channel === 'telegram' ? TELEGRAM_PROJECT : DINGTALK_PROJECT)
   const chatId = binding.remoteId
-  if (isPureScreenshotRequestText(messageText)) {
-    const { images, files } = collectRecentSessionArtifacts(projectPath, mainSessionId)
-    const outBinding = { ...binding, sessionId: mainSessionId, projectPath, remoteId: chatId, ...(binding.channel === 'feishu' && { feishuChatId: chatId }) }
-    const recapture = isRecaptureRequestText(messageText)
-    const pageTarget = findRecentPageTarget(projectPath, mainSessionId)
-    if (recapture && pageTarget.value) {
-      const shot = pageTarget.kind === 'file'
-        ? await captureLocalHtmlScreenshot(pageTarget.value)
-        : await captureUrlScreenshot(pageTarget.value)
-      if (shot) {
-        eventBus.emit('chat.session.completed', {
-          binding: outBinding,
-          payload: { text: '已按上次页面重新截图并发送。', images: [{ path: shot }], files: [] }
-        })
-        return
-      }
-    }
-    if (images.length > 0) {
-      eventBus.emit('chat.session.completed', {
-        binding: outBinding,
-        payload: {
-          text: '已补发上次结果的截图。',
-          images,
-          files: []
-        }
-      })
-      return
-    }
-    const latestHtml = (pageTarget.kind === 'file' ? pageTarget.value : '') || ((files || []).find((f) => {
-      const pp = String(f?.path || '').trim().toLowerCase()
-      return pp.endsWith('.html') || pp.endsWith('.htm')
-    })?.path || '')
-    if (latestHtml) {
-      const shot = await captureLocalHtmlScreenshot(latestHtml)
-      if (shot) {
-        eventBus.emit('chat.session.completed', {
-          binding: outBinding,
-          payload: { text: '已根据上次生成的页面重新截图并发送。', images: [{ path: shot }], files: [] }
-        })
-        return
-      }
-    }
-    if (pageTarget.kind === 'url' && pageTarget.value) {
-      const shot = await captureUrlScreenshot(pageTarget.value)
-      if (shot) {
-        eventBus.emit('chat.session.completed', {
-          binding: outBinding,
-          payload: { text: '已根据上次页面链接重新截图并发送。', images: [{ path: shot }], files: [] }
-        })
-        return
-      }
-    }
-    const currentShot = await captureAiBrowserCurrentScreenshot()
-    if (currentShot) {
-      eventBus.emit('chat.session.completed', {
-        binding: outBinding,
-        payload: { text: '已按当前浏览器页签截图并发送。', images: [{ path: currentShot }], files: [] }
-      })
-      return
-    }
-    try {
-      appLogger?.info?.('[ScreenshotShortcut] 快捷截图未命中，回退主流程', {
-        sessionId: mainSessionId,
-        messageId: payload?.message?.messageId || '',
-        textPreview: summarizeTaskText(messageText, 120)
-      })
-    } catch (_) {}
-    // 不再使用写死文案；回退到常规主 Agent 流程，由 AI 结合上下文继续处理。
-  }
+  // 不再走「纯截图补发」快捷分支（写死「已补发上次结果的截图」等），一律由主 Agent 流程处理
   // 平铺并发策略：同一会话新消息直接派生新 run，不自动中止已有 run。
   // 若需中止/等待，由模型显式调用 stop_previous_task / wait_for_previous_run。
   const existingRuns = channelCurrentRun.get(key) || []
@@ -8046,44 +8137,15 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
         }
       }
     }
-    if (hasSpawnCall && !cleanedSpawnTrim && looksLikeGenericGreeting(textToSend)) {
-      const delegated = summarizeTaskText(String(message?.text || ''), 60)
-      textToSend = delegated
-        ? `任务已开始处理：${delegated}\n完成后会第一时间回传结果。`
-        : '任务已开始处理，完成后会第一时间回传结果。'
-    }
     textToSend = stripDispatchBoilerplateText(textToSend)
-    // 若回复声称“已截图”但本轮未附带图片，发送前强制补抓一张，避免用户侧只收到文本
-    const userAskedScreenshot = isScreenshotFollowupText(String(message?.text || ''))
+    // 不再快捷补抓截图或写死「已补发截图，请查收」；若回复声称已截图但无附件，仅清理误导文案
     const replyClaimsScreenshot = hasScreenshotClaimText(textToSend)
-    if (imageItems.length === 0 && (userAskedScreenshot || replyClaimsScreenshot)) {
-      let shotPath = ''
-      const pageTarget = findRecentPageTarget(projectPath, mainSessionId)
-      if (pageTarget.kind === 'file' && pageTarget.value) {
-        shotPath = await captureLocalHtmlScreenshot(pageTarget.value)
-      } else if (pageTarget.kind === 'url' && pageTarget.value) {
-        shotPath = await captureUrlScreenshot(pageTarget.value)
-      }
-      if (!shotPath) shotPath = await captureAiBrowserCurrentScreenshot()
-      if (shotPath && fs.existsSync(shotPath)) {
-        imageItems.push({ path: shotPath })
-        if (!textToSend || !String(textToSend).trim()) {
-          textToSend = '已补发截图，请查收。'
-        }
-        appLogger?.info?.('[ScreenshotFallback] 文本宣称有截图但无附件，已自动补抓并附带发送', {
-          sessionId: mainSessionId,
-          runSessionId,
-          messageId: userMessageId || '',
-          path: shotPath
-        })
-      } else {
-        // 没有补抓成功时，去掉“已发送截图”等误导文案
-        textToSend = stripFalseDeliveredClaims(textToSend, {
-          hasImages: false,
-          hasFiles: fileItems.length > 0,
-          channel: binding.channel
-        })
-      }
+    if (imageItems.length === 0 && replyClaimsScreenshot) {
+      textToSend = stripFalseDeliveredClaims(textToSend, {
+        hasImages: false,
+        hasFiles: fileItems.length > 0,
+        channel: binding.channel
+      })
     }
     // 暂停主 Agent 二次改写：保留主流程原始结果，避免风格/语义偏移
     if (streamState.enabled) {

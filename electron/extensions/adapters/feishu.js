@@ -544,7 +544,6 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
     async send(binding, payload) {
       const chatId = binding.remoteId
       const preferredDocHost = (chatId && chatDocHostByChatId.get(String(chatId))) || ''
-      const FEISHU_IMAGE_MAX_BYTES = 4 * 1024 * 1024
       const textRaw = normalizeFeishuDocLinks(
         normalizeFeishuOutboundText((payload.text && payload.text.trim()) ? payload.text.trim() : '（无回复内容）'),
         preferredDocHost
@@ -593,10 +592,6 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
               appLogger?.warn?.('[Feishu] 截图文件为空，跳过发送', { path: resolvedPath, bytes: 0 })
               continue
             }
-            if (buf.length > FEISHU_IMAGE_MAX_BYTES) {
-              await feishuNotify.sendMessage({ chat_id: chatId, text: `截图过大（${(buf.length / 1024 / 1024).toFixed(1)}MB），未发送。` }).catch(() => {})
-              continue
-            }
             imageBase64 = buf.toString('base64')
             imageFilename = img.filename || path.basename(resolvedPath)
           }
@@ -641,10 +636,6 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
           if (['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg'].includes(ext)) {
             const buf = fs.readFileSync(p)
             if (!buf || buf.length === 0) continue
-            if (buf.length > FEISHU_IMAGE_MAX_BYTES) {
-              await feishuNotify.sendMessage({ chat_id: chatId, text: `图片过大（${(buf.length / 1024 / 1024).toFixed(1)}MB），未发送。` }).catch(() => {})
-              continue
-            }
             const imgResult = await feishuNotify.sendMessage({
               chat_id: chatId,
               image_base64: buf.toString('base64'),

@@ -37,10 +37,6 @@ async function execute(args) {
   try {
     switch (action) {
       case 'read': {
-        const stat = await fs.promises.stat(filePath)
-        if (stat.size > 1024 * 1024) {
-          return { success: false, error: '文件过大（>1MB），请指定具体范围' }
-        }
         const raw = await fs.promises.readFile(filePath, 'utf-8')
         const lines = raw.split('\n')
         const truncated = lines.length > max_lines

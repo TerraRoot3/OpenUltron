@@ -196,13 +196,15 @@ function saveConversation(projectKey, session) {
   const index = readIndex(projectKey)
   const withoutChunks = index.filter(s => s.id === rootId || !String(s.id).startsWith(rootId + '@'))
   const idx = withoutChunks.findIndex(s => s.id === rootId)
+  const feishuChatId = session.feishuChatId ?? existingRoot.feishuChatId
   const entry = {
     id: rootId,
     title,
     updatedAt: now,
     messageCount: messages.length,
     apiBaseUrl: rootPayload.apiBaseUrl,
-    lastMessage: lastMessagePreview
+    lastMessage: lastMessagePreview,
+    ...(feishuChatId != null && feishuChatId !== '' && { feishuChatId: String(feishuChatId) })
   }
   if (idx >= 0) {
     withoutChunks[idx] = { ...withoutChunks[idx], ...entry }
@@ -237,7 +239,13 @@ function listAllSessions(sources) {
     const projectKey = hashProjectPath(projectPath)
     const list = listConversations(projectKey)
     for (const item of list) {
-      merged.push({ ...item, source, projectPath })
+      let enriched = { ...item, source, projectPath }
+      // 飞书会话：若 index 中无 feishuChatId，从会话文件补齐（兼容旧数据）
+      if (source === 'feishu' && !enriched.feishuChatId) {
+        const root = loadConversationFile(projectKey, item.id)
+        if (root && root.feishuChatId) enriched = { ...enriched, feishuChatId: String(root.feishuChatId) }
+      }
+      merged.push(enriched)
     }
   }
   return merged.sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime())

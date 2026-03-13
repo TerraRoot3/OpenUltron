@@ -38,6 +38,7 @@
       :key="projectPath"
       :project-path="projectPath"
       :initial-session-id="currentSessionId"
+      :session-type-label="currentSessionLabel"
       :system-prompt="''"
       :model="''"
       :enable-mention="false"
@@ -59,7 +60,16 @@ import { useI18n } from '../composables/useI18n.js'
 defineOptions({ name: 'ChatView' })
 
 const MAIN_CHAT_PROJECT = '__main_chat__'
+const FEISHU_PROJECT = '__feishu__'
 const DROPDOWN_SESSIONS_MAX = 8
+
+/** 飞书 chat_id 显示片段（后 8 位，便于区分不同群/会话） */
+function chatIdSnippet(chatId) {
+  const s = String(chatId || '').trim()
+  if (!s) return ''
+  if (s.length <= 8) return s
+  return s.slice(-8)
+}
 
 const route = useRoute()
 const router = useRouter()
@@ -77,8 +87,16 @@ const loadSessions = async () => {
   } catch { /* ignore */ }
 }
 
+/** 带「主」/「飞书」标签的会话标题，用于 tab 与下拉列表 */
 const sessionTitle = (s) => {
-  return s?.title || (s?.source === 'feishu' ? t('sessions.sourceFeishuSession') : s?.source === 'telegram' ? t('sessions.sourceTelegramSession') : s?.source === 'dingtalk' ? t('sessions.sourceDingtalkSession') : s?.source === 'gateway' ? t('sessions.sourceGatewaySession') : t('sessions.newChat'))
+  const tag = s?.source === 'feishu' ? t('sessions.sourceFeishu') : s?.source === 'main' ? t('sessions.sourceMain') : s?.source === 'telegram' ? 'Telegram' : s?.source === 'dingtalk' ? t('sessions.sourceDingtalk') : s?.source === 'gateway' ? 'Gateway' : ''
+  const base = s?.title || (s?.source === 'feishu' ? t('sessions.sourceFeishuSession') : s?.source === 'telegram' ? t('sessions.sourceTelegramSession') : s?.source === 'dingtalk' ? t('sessions.sourceDingtalkSession') : s?.source === 'gateway' ? t('sessions.sourceGatewaySession') : t('sessions.newChat'))
+  const parts = [tag, base]
+  if (s?.source === 'feishu' && s?.feishuChatId) {
+    const snip = chatIdSnippet(s.feishuChatId)
+    if (snip) parts.push(snip)
+  }
+  return parts.filter(Boolean).join(' · ')
 }
 const sourceLabel = (source) => {
   return source === 'feishu' ? t('sessions.sourceFeishu') : source === 'telegram' ? 'Telegram' : source === 'dingtalk' ? t('sessions.sourceDingtalk') : source === 'main' ? t('sessions.sourceMain') : source === 'gateway' ? 'Gateway' : source || ''
@@ -98,6 +116,7 @@ const currentSessionLabel = computed(() => {
   const found = sessions.value.find((s) => (s.projectPath || MAIN_CHAT_PROJECT) === pid && s.id === sid)
   if (found) return sessionTitle(found)
   if (pid === MAIN_CHAT_PROJECT) return t('sessions.sourceMain')
+  if (pid === FEISHU_PROJECT) return t('sessions.sourceFeishu')
   return t('sessions.newChat')
 })
 

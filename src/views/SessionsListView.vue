@@ -55,8 +55,21 @@ const sessions = ref([])
 const currentSessionId = computed(() => route.query.sessionId || null)
 const currentProjectPath = computed(() => route.query.projectPath || '__main_chat__')
 
+function chatIdSnippet(chatId) {
+  const str = String(chatId || '').trim()
+  if (!str) return ''
+  return str.length <= 8 ? str : str.slice(-8)
+}
+/** 带「主」/「飞书」标签的会话标题 */
 const sessionTitle = (s) => {
-  return s.title || (s.source === 'feishu' ? t('sessions.sourceFeishuSession') : s.source === 'telegram' ? t('sessions.sourceTelegramSession') : s.source === 'dingtalk' ? t('sessions.sourceDingtalkSession') : s.source === 'gateway' ? t('sessions.sourceGatewaySession') : t('sessions.newChat'))
+  const tag = s.source === 'feishu' ? t('sessions.sourceFeishu') : s.source === 'main' ? t('sessions.sourceMain') : s.source === 'telegram' ? 'Telegram' : s.source === 'dingtalk' ? t('sessions.sourceDingtalk') : s.source === 'gateway' ? 'Gateway' : ''
+  const base = s.title || (s.source === 'feishu' ? t('sessions.sourceFeishuSession') : s.source === 'telegram' ? t('sessions.sourceTelegramSession') : s.source === 'dingtalk' ? t('sessions.sourceDingtalkSession') : s.source === 'gateway' ? t('sessions.sourceGatewaySession') : t('sessions.newChat'))
+  const parts = [tag, base]
+  if (s.source === 'feishu' && s.feishuChatId) {
+    const snip = chatIdSnippet(s.feishuChatId)
+    if (snip) parts.push(snip)
+  }
+  return parts.filter(Boolean).join(' · ')
 }
 
 const sourceLabel = (source) => {

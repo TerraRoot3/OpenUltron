@@ -13,6 +13,7 @@ const os = require('os')
 const http = require('http')
 const https = require('https')
 const { URL } = require('url')
+const { logger: appLogger } = require('../app-logger')
 
 // 从目录名解析 Node 版本号（如 v18.20.8 -> [18,20,8]），用于排序
 const parseNodeVersion = (dirName) => {
@@ -37,17 +38,25 @@ const getNodeManagerPaths = (minMajor) => {
       }
     }
   } catch (_) {}
-  try {
-    const fnmDir = path.join(home, '.local', 'share', 'fnm')
-    if (fs.existsSync(fnmDir)) {
+  // fnm: macOS 常用 ~/.fnm 或 ~/Library/Application Support/fnm，Linux 常用 ~/.local/share/fnm
+  const fnmDirs = [
+    path.join(home, '.fnm'),
+    path.join(home, 'Library', 'Application Support', 'fnm'),
+    path.join(home, '.local', 'share', 'fnm')
+  ]
+  for (const fnmDir of fnmDirs) {
+    try {
+      if (!fs.existsSync(fnmDir)) continue
       const vers = fs.readdirSync(fnmDir)
       for (const v of vers) {
-        const bin = path.join(fnmDir, v, 'install', 'bin')
-        const binPath = fs.existsSync(bin) ? bin : path.join(fnmDir, v, 'bin')
+        const installBin = path.join(fnmDir, v, 'install', 'bin')
+        const plainBin = path.join(fnmDir, v, 'bin')
+        const binPath = fs.existsSync(installBin) ? installBin : plainBin
         if (fs.existsSync(binPath)) entries.push({ bin: binPath, version: parseNodeVersion(v) })
       }
-    }
-  } catch (_) {}
+      break
+    } catch (_) {}
+  }
   try {
     const nDir = path.join(home, 'n', 'bin')
     if (fs.existsSync(nDir)) entries.push({ bin: nDir, version: [999, 0, 0] })
@@ -193,6 +202,7 @@ class StdioMcpConnection {
     this._chromeLastNavigatedUrl = ''
     this._chromeRecoverAttempted = false
     this._chromeFallbackNavigateAttempted = false
+    this._chromeFallbackNewPageAttempted = false
   }
 
   async start() {
@@ -212,13 +222,16 @@ class StdioMcpConnection {
       const needNode20 = this.name === 'chrome-devtools'
       if (needNode20) {
         const node20Dirs = getNodeManagerPaths(20)
+        const allNodeDirs = getNodeManagerPaths(0)
         if (node20Dirs.length === 0) {
-          doReject(new Error(
-            '未检测到 Node 20+。chrome-devtools-mcp 需要 Node 20.19 LTS 或更高版本。\n' +
-            '请安装后重启应用，例如：\n  nvm install 20 && nvm use 20\n  或 fnm install 20 && fnm use 20'
-          ))
+          const hint = allNodeDirs.length
+            ? `当前检测到 ${allNodeDirs.length} 个 Node 目录但均非 20+（chrome-devtools-mcp 需 Node 20.19+）。请安装 Node 20 并重启应用，例如: nvm install 20 或 fnm install 20`
+            : '未检测到 nvm/fnm 下的 Node。chrome-devtools-mcp 需要 Node 20.19+。请先安装 nvm 或 fnm，再执行 nvm install 20 / fnm install 20，并重启应用'
+          appLogger?.warn?.(`[MCP:${this.name}] ${hint}`)
+          doReject(new Error(hint))
           return
         }
+        appLogger?.info?.(`[MCP:${this.name}] 已检测到 Node 20+ 路径，共 ${node20Dirs.length} 个`, { first: node20Dirs[0] })
       }
 
       let pathVal = env[pathKey] || env.PATH || ''
@@ -269,16 +282,15 @@ class StdioMcpConnection {
       })
 
       this.process.on('error', (err) => {
-        console.error(`[MCP:${this.name}] 进程错误:`, err.message)
+        appLogger?.warn?.(`[MCP:${this.name}] 进程错误: ${err.message}`)
         doReject(err)
       })
 
       this.process.on('exit', (code, signal) => {
-        console.log(`[MCP:${this.name}] 进程退出，code=${code}, signal=${signal}`)
         this.ready = false
         const tail = this.stderrBuf.slice(-15).join('\n').trim()
         if ((code != null && code !== 0) || signal) {
-          if (tail) console.error(`[MCP:${this.name}] 退出前 stderr:\n${tail}`)
+          appLogger?.warn?.(`[MCP:${this.name}] 进程退出 code=${code} signal=${signal}`, tail ? { stderrTail: tail } : {})
         }
         const exitMsg = tail
           ? `MCP server "${this.name}" 已退出\n${tail}`
@@ -296,23 +308,55 @@ class StdioMcpConnection {
         capabilities: { tools: {} },
         clientInfo: { name: 'git-manager', version: '1.0.0' }
       }).then(async (result) => {
-        console.log(`[MCP:${this.name}] 初始化成功, serverInfo:`, result?.serverInfo?.name)
+        appLogger?.info?.(`[MCP:${this.name}] 初始化成功`, { serverInfo: result?.serverInfo?.name })
         // 发送 initialized 通知
         this._sendNotification('notifications/initialized', {})
-        // 获取工具列表
+        // 获取工具列表（chrome-devtools 首次可能未就绪，多等几秒并重试）
         try {
-          await this._fetchTools()
+          await this._fetchToolsWithRetry()
         } catch (e) {
           console.warn(`[MCP:${this.name}] 获取工具列表失败:`, e.message)
         }
         this.ready = true
         resolve(this)
-      }).catch(doReject)
+      }).catch((err) => {
+        appLogger?.warn?.(`[MCP:${this.name}] 启动失败: ${err?.message || err}`)
+        doReject(err)
+      })
     })
   }
 
-  async _fetchTools() {
-    const result = await this._sendRequest('tools/list', {})
+  async _fetchToolsWithRetry() {
+    const isChrome = this.name === 'chrome-devtools'
+    const maxAttempts = isChrome ? 5 : 1
+    const delayMs = isChrome ? 4000 : 0
+    const listTimeoutMs = isChrome ? 45000 : 30000
+    this.tools = []
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await this._fetchTools(listTimeoutMs)
+      } catch (e) {
+        appLogger?.warn?.(`[MCP:${this.name}] 拉取工具列表失败 (${attempt}/${maxAttempts}): ${e?.message || e}`)
+        if (attempt === maxAttempts) return
+        if (delayMs > 0) {
+          appLogger?.info?.(`[MCP:${this.name}] ${delayMs / 1000}s 后重试…`)
+          await new Promise((r) => setTimeout(r, delayMs))
+        }
+        continue
+      }
+      if (this.tools && this.tools.length > 0) return
+      if (attempt < maxAttempts && delayMs > 0) {
+        appLogger?.info?.(`[MCP:${this.name}] 工具列表为空，${delayMs / 1000}s 后重试 (${attempt}/${maxAttempts})`)
+        await new Promise((r) => setTimeout(r, delayMs))
+      }
+    }
+    if (isChrome && (!this.tools || this.tools.length === 0)) {
+      appLogger?.warn?.(`[MCP:${this.name}] 多次拉取后仍无工具，请查看上方 [MCP:chrome-devtools] stderr 或稍后重试`)
+    }
+  }
+
+  async _fetchTools(timeoutMs = 30000) {
+    const result = await this._sendRequest('tools/list', {}, timeoutMs)
     this.tools = (result?.tools || []).map(t => {
       const raw = t.inputSchema
       const sanitized = sanitizeSchema(raw)
@@ -346,17 +390,30 @@ class StdioMcpConnection {
       if (originalName !== 'take_screenshot') {
         this._chromeRecoverAttempted = false
         this._chromeFallbackNavigateAttempted = false
+        this._chromeFallbackNewPageAttempted = false
       }
     }
     if (this.name === 'chrome-devtools' && originalName === 'take_screenshot') {
       await this._ensureChromePageReadyForScreenshot()
     }
-    // 截图可能较慢（大页面或 CDP 延迟），使用更长超时
-    const screenshotTimeout = (this.name === 'chrome-devtools' && originalName === 'take_screenshot') ? 60000 : 30000
-    const result = await this._sendRequest('tools/call', {
-      name: originalName,
-      arguments: args || {}
-    }, screenshotTimeout)
+    // 截图、页面打开/加载等可能较慢（尤其首次打开），使用更长超时；其余 30s
+    const longTimeoutTools = ['take_screenshot', 'wait_for_load', 'wait_for', 'new_page', 'navigate_page']
+    const longTimeoutMs = 120000 // 120s，避免首次打开或慢网下超时
+    const timeoutMs = (this.name === 'chrome-devtools' && longTimeoutTools.includes(originalName)) ? longTimeoutMs : 30000
+    let result
+    try {
+      result = await this._sendRequest('tools/call', {
+        name: originalName,
+        arguments: args || {}
+      }, timeoutMs)
+    } catch (e) {
+      const isTimeout = /超时|timeout/i.test(String(e?.message || ''))
+      appLogger?.warn?.(`[MCP] ${this.name} 工具 ${originalName} 执行失败${isTimeout ? '（超时）' : ''}: ${e?.message || e}`)
+      if (isTimeout && this.name === 'chrome-devtools' && longTimeoutTools.includes(originalName)) {
+        appLogger?.warn?.(`[MCP] chrome-devtools ${originalName} 已超时（${timeoutMs / 1000}s），可能原因：首次打开较慢、页面加载过慢、Chrome 未就绪或 CDP 无响应。请查看本日志上方 [MCP:chrome-devtools] 的 stderr 输出。`)
+      }
+      throw e
+    }
     // MCP tools/call 返回 { content: [...], isError? }；content 可为 text 或 image（base64）
     if (result?.isError) {
       const errText = result.content?.map(c => c.text || '').join('\n') || '工具执行失败'
@@ -374,12 +431,15 @@ class StdioMcpConnection {
     // 若有 image 部分（如 chrome-devtools take_screenshot 返回的 base64），并入同一对象供飞书发图等使用
     const imageBase64 = this._extractImageBase64FromContent(content)
     if (imageBase64) out.image_base64 = imageBase64
-    // 截图工具成功返回但无图片时，给出明确错误便于重试或改用 filePath
+    // 截图工具成功返回但无 base64 时：若有 filePath/file_path 则视为成功（由主进程复制并生成 file_url 展示），仅当两者都没有时才报错
     if (this.name === 'chrome-devtools' && originalName === 'take_screenshot' && !imageBase64) {
-      console.warn(`[MCP:${this.name}] take_screenshot 返回成功但无 image 内容，可能 CDP 超时或页面异常`)
-      return {
-        error: 'chrome-devtools 截图未返回图片数据（可能页面过大或 CDP 超时）。可尝试：1) 先 navigate_page 到目标页再截图；2) 使用 filePath 参数将截图保存到本地文件。',
-        ...out
+      const hasFilePath = out.filePath || out.file_path || out.path
+      if (!hasFilePath) {
+        console.warn(`[MCP:${this.name}] take_screenshot 返回成功但无 image 内容，可能 CDP 超时或页面异常`)
+        return {
+          error: 'chrome-devtools 截图未返回图片数据（可能页面过大或 CDP 超时）。可尝试：1) 先 navigate_page 到目标页再截图；2) 使用 filePath 参数将截图保存到本地文件。',
+          ...out
+        }
       }
     }
     return Object.keys(out).length ? out : { result: text || '(空)' }
@@ -424,6 +484,8 @@ class StdioMcpConnection {
   async _ensureChromePageReadyForScreenshot() {
     const maxWaitMs = 20000
     const start = Date.now()
+    /** 已通过 select_page 切到目标页签（list_pages 中有非空白页），避免再调 new_page 多开标签 */
+    let didSelectNonBlankTab = false
     // 导航后给页面一个最小稳定窗口，避免刚完成导航就截图导致空白
     await new Promise((r) => setTimeout(r, 900))
     while (Date.now() - start < maxWaitMs) {
@@ -445,42 +507,73 @@ class StdioMcpConnection {
       }
       if (invalidPage) {
         const preferredUrl = String(this._chromeLastNavigatedUrl || '').trim()
+        appLogger?.info?.(`[MCP:${this.name}] 截图前检查: 当前页=${href || 'about:blank'}, preferredUrl=${preferredUrl ? preferredUrl.slice(0, 80) : '(空，需先调用 navigate_page/new_page)'}`)
         if (preferredUrl) {
           console.warn(`[MCP:${this.name}] 当前页为 ${href || 'about:blank'}，将尝试切换到最近导航页: ${preferredUrl.slice(0, 80)}`)
         }
         if (!this._chromeRecoverAttempted) {
           this._chromeRecoverAttempted = true
           try {
-            // 优先切换到与最近导航 URL 匹配的页签（用户已看到小红书加载，说明目标页在别的 tab）
             const switched = await this._trySelectNonBlankPage(preferredUrl || undefined)
+            if (switched) didSelectNonBlankTab = true
+            appLogger?.info?.(`[MCP:${this.name}] 尝试切换页签: switched=${!!switched}`)
             if (switched) {
-              await new Promise((r) => setTimeout(r, 700))
+              // select_page 后 MCP 的「当前页」可能延迟更新，多等一会并多轮再检查，避免误判后去 navigate/new_page
+              await new Promise((r) => setTimeout(r, 1200))
               continue
             }
           } catch (e) {
             console.warn(`[MCP:${this.name}] 切换页签失败:`, e.message || String(e))
           }
         }
+        // 已通过 select_page 切到目标页签时，不再对「当前页」做 navigate_page（可能作用在错误 tab），也不 new_page（会多开标签）
+        if (didSelectNonBlankTab) {
+          appLogger?.info?.(`[MCP:${this.name}] 已切换到目标页签，MCP 当前页仍显示 about:blank，直接尝试截图（不 new_page）`)
+          return
+        }
         if (!this._chromeFallbackNavigateAttempted && preferredUrl && preferredUrl !== 'about:blank' && !preferredUrl.startsWith('chrome-error://')) {
           this._chromeFallbackNavigateAttempted = true
           try {
+            appLogger?.info?.(`[MCP:${this.name}] 当前页 about:blank，尝试 navigate_page: ${preferredUrl.slice(0, 60)}`)
             await this._callToolAndParse('navigate_page', { type: 'url', url: preferredUrl, timeout: 15000 })
             await new Promise((r) => setTimeout(r, 900))
             continue
           } catch (e) {
+            appLogger?.warn?.(`[MCP:${this.name}] navigate_page 失败:`, e?.message || e)
             console.warn(`[MCP:${this.name}] 无法从 about:blank 恢复到最近页面:`, e.message || String(e))
+          }
+        }
+        // 仅当 list_pages 里没有目标页时再 new_page，避免已有目标页签时多开新标签
+        if (!this._chromeFallbackNewPageAttempted && preferredUrl && preferredUrl !== 'about:blank' && !preferredUrl.startsWith('chrome-error://')) {
+          this._chromeFallbackNewPageAttempted = true
+          try {
+            appLogger?.info?.(`[MCP:${this.name}] 当前页仍为 about:blank，尝试 new_page 新标签打开: ${preferredUrl.slice(0, 60)}`)
+            await this._callToolAndParse('new_page', { url: preferredUrl })
+            await new Promise((r) => setTimeout(r, 1200))
+            appLogger?.info?.(`[MCP:${this.name}] new_page 已调用，继续检查页面`)
+            continue
+          } catch (e) {
+            appLogger?.warn?.(`[MCP:${this.name}] new_page 失败: ${e?.message || e}`)
+            console.warn(`[MCP:${this.name}] 新标签打开目标页失败:`, e.message || String(e))
           }
         }
         // 再试一次：可能 list_pages 刚返回时目标页还未列出来，此时再切一次
         try {
           const switched = await this._trySelectNonBlankPage(preferredUrl || undefined)
           if (switched) {
-            await new Promise((r) => setTimeout(r, 700))
+            didSelectNonBlankTab = true
+            await new Promise((r) => setTimeout(r, 1200))
             continue
           }
         } catch (_) {}
-        // 不重启会话：保持 Chrome MCP 与浏览器窗口运行，供用户后续继续操作（导航、截图等）
-        const err = new Error(`chrome-devtools 当前页不可截图: ${href || 'about:blank'}。请先导航到目标页面后再截图。`)
+        if (didSelectNonBlankTab) {
+          appLogger?.info?.(`[MCP:${this.name}] 已切换到目标页签，直接尝试截图（不 new_page）`)
+          return
+        }
+        if (!preferredUrl) {
+          appLogger?.warn?.(`[MCP:${this.name}] 截图前无目标 URL（_chromeLastNavigatedUrl 为空），未执行 new_page。请先让模型调用 navigate_page 或 new_page 再截图。`)
+        }
+        const err = new Error(`chrome-devtools 当前页不可截图: ${href || 'about:blank'}。请先使用 navigate_page 或 new_page 打开目标页面后再截图。`)
         err.code = 'SCREENSHOT_INVALID_PAGE'
         err.nonRetryable = true
         throw err
@@ -628,7 +721,9 @@ class StdioMcpConnection {
         settled = true
         if (this.pending.has(id)) {
           this.pending.delete(id)
-          reject(new Error(`MCP "${this.name}" 请求超时: ${method}`))
+          const errMsg = `MCP "${this.name}" 请求超时: ${method}`
+          appLogger?.warn?.('[MCP]', errMsg)
+          reject(new Error(errMsg))
         }
       }, timeoutMs)
       const done = (fn, arg) => {
@@ -995,10 +1090,7 @@ class McpManager {
     // chrome-devtools-mcp 常因上次进程未正常退出留下 Singleton 锁，导致「被占用」无法启动；启动前清除锁
     if (cfg.name === 'chrome-devtools') {
       try {
-        console.log('[MCP] chrome-devtools 启动参数:', {
-          command: cfg.command,
-          args: Array.isArray(cfg.args) ? cfg.args : []
-        })
+        appLogger?.info?.('[MCP] chrome-devtools 启动参数', { command: cfg.command, args: Array.isArray(cfg.args) ? cfg.args : [] })
       } catch (_) {}
       cleanupChromeDevtoolsOrphans()
       clearChromeDevtoolsProfileLock()

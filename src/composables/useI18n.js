@@ -162,6 +162,8 @@ const messages = {
       connectFailed: '连接失败',
       saveFailed: '保存失败',
       saved: '配置已保存',
+      enableResponseCache: '启用响应缓存',
+      enableResponseCacheHint: '相同问题且上一轮无工具调用时直接复用上轮回复，省 token；默认关闭，避免截图等工具场景误命中。',
     },
     notify: {
       title: '消息通知',
@@ -472,6 +474,8 @@ const messages = {
       connectFailed: 'Connection failed',
       saveFailed: 'Save failed',
       saved: 'Config saved',
+      enableResponseCache: 'Enable response cache',
+      enableResponseCacheHint: 'Reuse last reply when the same question was asked and last round had no tool calls; default off to avoid skipping tool use (e.g. screenshot).',
     },
     notify: {
       title: 'Notifications',

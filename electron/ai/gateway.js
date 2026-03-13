@@ -135,11 +135,15 @@ function createGateway(opts) {
    * @param {object} sender - { send(channel, data) } 如 IPC 的 event.sender 或 WebSocket 包装
    * @returns {Promise<{ messages?: object[] }>}
    */
-  function runChat(params, sender) {
+  async function runChat(params, sender) {
     const { sessionId, projectPath, messages: rawMessages, model, tools, panelId, feishuChatId, feishuTenantKey, feishuDocHost, fromAppWindow } = params
     const orchestrator = getOrchestrator()
     const resolvedConfig = getResolvedConfig()
-    const toolDefs = typeof getToolDefinitions === 'function' ? getToolDefinitions() : []
+    let toolDefs = []
+    if (typeof getToolDefinitions === 'function') {
+      const out = getToolDefinitions(params)
+      toolDefs = out && typeof out.then === 'function' ? await out : (out || [])
+    }
     const openSession = typeof getCurrentOpenSession === 'function' ? getCurrentOpenSession() : null
     const isSameSession = openSession && openSession.sessionId === sessionId && openSession.projectPath === projectPath
 
@@ -190,7 +194,8 @@ function createGateway(opts) {
       }
     }
 
-    const useTools = tools === false ? [] : (Array.isArray(tools) && tools.length > 0 ? tools : toolDefs)
+    const isMainSession = !params?.feishuChatId && params?.projectPath !== '__feishu__'
+    const useTools = tools === false ? [] : (Array.isArray(tools) && tools.length > 0 && !isMainSession ? tools : toolDefs)
     return orchestrator.startChat({
       sessionId,
       messages: msgList,

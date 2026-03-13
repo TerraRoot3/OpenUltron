@@ -2,6 +2,10 @@
   <div class="chat-panel" ref="panelRef">
     <!-- 消息列表 -->
     <div class="chat-messages" ref="messagesRef">
+      <!-- 当前会话类型：主 / 飞书 · chat_id 片段 -->
+      <div v-if="sessionTypeLabel" class="chat-session-type-bar">
+        <span class="chat-session-type-label">{{ sessionTypeLabel }}</span>
+      </div>
       <!-- 被压缩过的会话：始终展示摘要块（若有），再展示最近几条可见对话 -->
       <div v-if="compressionSummaryText" class="chat-compression-notice">
         <div class="compression-notice-head">
@@ -213,7 +217,8 @@ const props = defineProps({
   model: { type: String, default: '' },
   projectPath: { type: String, default: '' },
   enableMention: { type: Boolean, default: true },  // 是否支持 @ 文件提及（非项目页面禁用）
-  initialSessionId: { type: String, default: null }  // 主会话传入的当前会话 id，用于加载指定会话或与 URL 同步
+  initialSessionId: { type: String, default: null },  // 主会话传入的当前会话 id，用于加载指定会话或与 URL 同步
+  sessionTypeLabel: { type: String, default: '' }     // 当前会话类型展示（主/飞书 · chat_id 片段），由 ChatView 传入
 })
 
 const emit = defineEmits(['first-message', 'model-change', 'provider-change', 'session-loaded', 'session-created'])
@@ -221,7 +226,6 @@ const emit = defineEmits(['first-message', 'model-change', 'provider-change', 's
 const useAIChatInstance = useAIChat()
 const { messages, isStreaming, error, pendingConfirm, sendMessage, stopChat, loadMessages, respondConfirm } = useAIChatInstance
 const seenFeishuMessageIds = new Set()
-const seenFeishuContentMap = new Map() // key=sessionId|content -> timestamp
 const feishuReloadPending = ref(false)
 
 // 带输入框的确认弹框
@@ -1566,27 +1570,7 @@ onMounted(async () => {
     }
     const userContent = [text, attachmentText].filter(Boolean).join('\n')
     const normalizedUserContent = String(userContent || '[附件]').replace(/\r/g, '\n').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim()
-    const dedupeKey = `${incomingSessionId}|${normalizedUserContent}`
-    const now = Date.now()
-    const lastTs = seenFeishuContentMap.get(dedupeKey) || 0
-    if (now - lastTs < 8000) return
-    seenFeishuContentMap.set(dedupeKey, now)
-    if (seenFeishuContentMap.size > 500) {
-      const entries = Array.from(seenFeishuContentMap.entries()).slice(-250)
-      seenFeishuContentMap.clear()
-      entries.forEach(([k, v]) => seenFeishuContentMap.set(k, v))
-    }
-    const lastLoaded = messages.value[messages.value.length - 1]
-    const alreadyInHistory = !!(
-      lastLoaded?.role === 'user' &&
-      String(lastLoaded.content || '').replace(/\r/g, '\n').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim() === normalizedUserContent
-    ) || messages.value.slice(-6).some((m) =>
-      m && m.role === 'user' &&
-      String(m.content || '').replace(/\r/g, '\n').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim() === normalizedUserContent
-    )
-    if (!alreadyInHistory) {
-      messages.value.push({ role: 'user', content: normalizedUserContent })
-    }
+    messages.value.push({ role: 'user', content: normalizedUserContent })
     useAIChatInstance.setCurrentSessionId(incomingSessionId)
     useAIChatInstance.startStreamingPlaceholder()
     nextTick(() => persistSave())
@@ -1599,6 +1583,9 @@ onMounted(async () => {
       if (isStreaming.value) {
         feishuReloadPending.value = true
       } else {
+        // 避免刚发出用户消息尚未收到 complete 时被 persistLoad 用旧数据覆盖导致丢消息
+        const last = messages.value[messages.value.length - 1]
+        if (last?.role === 'user') return
         persistLoad()
       }
     }
@@ -1608,6 +1595,8 @@ onMounted(async () => {
     if (data.projectPath !== historyProjectPath()) return
     loadConversationList()
     if (currentSessionId.value === data.sessionId) {
+      const last = messages.value[messages.value.length - 1]
+      if (last?.role === 'user') return
       persistLoad()
     }
   })
@@ -1794,6 +1783,15 @@ defineExpose({ clearMessages, loadMessages, messages, handleExternalSend, isStre
 }
 .chat-empty-edit-role:hover { color: var(--ou-primary); background: var(--ou-bg-hover); }
 .chat-empty-path-hint { margin-top: 8px; font-size: 11px; color: var(--ou-text-muted); }
+.chat-session-type-bar {
+  flex-shrink: 0;
+  padding: 6px 16px;
+  font-size: 12px;
+  color: var(--ou-text-muted);
+  border-bottom: 1px solid var(--ou-border);
+  background: var(--ou-bg-main);
+}
+.chat-session-type-label { font-weight: 500; color: var(--ou-text-secondary); }
 .chat-compression-notice {
   margin: 12px 16px;
   padding: 12px 16px;
