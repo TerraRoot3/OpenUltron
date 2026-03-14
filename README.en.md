@@ -16,7 +16,7 @@ Think of it as a local AI workspace that can understand tasks, run tools, produc
 
 - Generate webpages, docs, scripts, and reports
 - Handle screenshots, files, and links as task artifacts
-- Send results directly to Feishu / Telegram / DingTalk
+- Send results directly to Feishu / Telegram / DingTalk; Feishu **user space docs** supported (authorize User Access Token to create docs in your space, token auto-refresh)
 - Extend capabilities with Skills and MCP tools
 - Keep multi-session context and progress history
 
@@ -26,7 +26,7 @@ Think of it as a local AI workspace that can understand tasks, run tools, produc
 - Sub-agent execution for complex tasks
 - Built-in + MCP tool calling system
 - Persistent conversation memory
-- Cron-based scheduled tasks
+- Cron-based scheduled tasks (including Feishu User Token refresh, can be disabled)
 - Backup and restore for local data
 
 ## Typical Use Cases
