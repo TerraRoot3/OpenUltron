@@ -251,9 +251,14 @@ const lastAssistantHasActivity = computed(() => {
   return !!(last.content?.trim() || last.toolCalls?.length)
 })
 
-// 仅展示 user/assistant，避免被压缩后只含 system 的会话出现整屏空白（ChatMessage 不渲染 system）
+// 仅展示 user/assistant，且过滤掉后端注入的「仅给模型看的」提示，避免 [系统] 提示词出现在用户侧
 const displayMessages = computed(() =>
-  messages.value.filter(m => m.role === 'user' || m.role === 'assistant')
+  messages.value.filter((m) => {
+    if (m.role !== 'user' && m.role !== 'assistant') return false
+    if (m._hideInUI) return false
+    if (m.role === 'user' && typeof m.content === 'string' && m.content.trim().startsWith('[系统]')) return false
+    return true
+  })
 )
 
 const messageRenderKey = (msg, idx) => {

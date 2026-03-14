@@ -112,23 +112,6 @@ class Orchestrator {
     return CLAUDE_PREFIXES.some(p => m.startsWith(p))
   }
 
-  _isModelCatalogQuery(text) {
-    const s = String(text || '').toLowerCase()
-    if (!s) return false
-    return (
-      /你是什么模型|你是啥模型|当前模型|现在用的模型|用的什么模型|可用模型|有哪些模型|能用什么模型|模型列表|配置了哪些模型|供应商/.test(s) ||
-      /what model are you|which model are you using|current model|available models|model list|which models can you use|configured models|providers/.test(s)
-    )
-  }
-
-  _isProviderScopedModelQuery(text) {
-    const s = String(text || '').toLowerCase()
-    if (!s) return false
-    return (
-      /供应商|按供应商|各供应商|provider|providers|by provider/.test(s)
-    )
-  }
-
   _hasToolCallAfterLastUser(messages, toolName) {
     if (!Array.isArray(messages) || !toolName) return false
     let lastUserIdx = -1
@@ -336,8 +319,7 @@ class Orchestrator {
       memParts.push(
         '[可用供应商与模型]\n' +
         '**主会话**的供应商与模型由用户在设置页配置。为**子任务**指定模型请用 sessions_spawn(provider=..., model=...)，勿用 ai_config_control 改主会话以免错配。若必须改主会话：先调用 verify_provider_model(provider=..., model=...) 验证该供应商+模型可用，仅当返回 success 后再调用 ai_config_control 的 switch_provider 或 switch_model（switch_model 切到别家模型时须同时传 provider）。\n' +
-        '**当用户询问「有哪些模型可以用」等且未要求按供应商展开时**：先 list_configured_models，严格按主模型+模型池回答。\n' +
-        '仅当用户明确要求按供应商查看时，才调用 list_providers_and_models。\n' +
+        '用户问当前/可用模型时，可选用 list_configured_models 或 list_providers_and_models 获取配置后回答，也可根据上下文自然回答。\n' +
         '派生子 Agent：可先 verify_provider_model(provider, model) 确认可用，再 sessions_spawn(task=..., provider=..., model=...)。'
       )
 
@@ -432,7 +414,6 @@ class Orchestrator {
     }
 
     try {
-      let modelCatalogNudgeCount = 0
       let toolNudgeCount = 0
       while (iteration < safeMax) {
         if (abortController.signal.aborted) break
@@ -458,8 +439,6 @@ class Orchestrator {
           }
           return ''
         })()
-        const isModelCatalogQuestion = this._isModelCatalogQuery(lastUserContent)
-        const isProviderScopedModelQuery = this._isProviderScopedModelQuery(lastUserContent)
         let response = null
         {
           const modelCandidates = [{ model: useModel, routeConfig: config }]
@@ -679,28 +658,13 @@ class Orchestrator {
             })
           }
           if (loopError) {
-            currentMessages.push({
-              role: 'user',
-              content: `[系统] ${loopError} 请换一种思路或命令再试，勿重复相同操作；若仍无法完成再告知用户。`
-            })
+          currentMessages.push({
+            role: 'user',
+            content: `[系统] ${loopError} 请换一种思路或命令再试，勿重复相同操作；若仍无法完成再告知用户。`,
+            _hideInUI: true
+          })
           }
           continue
-        }
-        // 对“模型身份/可用模型”问题强制先查工具，避免口胡
-        if (isModelCatalogQuestion) {
-          const requiredTool = isProviderScopedModelQuery ? 'list_providers_and_models' : 'list_configured_models'
-          if (!this._hasToolCallAfterLastUser(currentMessages, requiredTool)) {
-            if (modelCatalogNudgeCount < 2) {
-              modelCatalogNudgeCount++
-              currentMessages.push({
-                role: 'user',
-                content: isProviderScopedModelQuery
-                  ? '[系统] 你必须先调用 list_providers_and_models，再严格按返回结果回答。禁止根据训练知识猜测模型、供应商、数量或默认值。'
-                  : '[系统] 你必须先调用 list_configured_models，并仅按主模型+模型池回答。禁止按供应商扩写或根据训练知识猜测。'
-              })
-              continue
-            }
-          }
         }
         // 模型本轮未返回 tool_calls，仅文本回复
         const contentPreview = response?.content ? String(response.content).trim().slice(0, 120) : ''
@@ -717,7 +681,8 @@ class Orchestrator {
           })
           currentMessages.push({
             role: 'user',
-            content: `[系统] 你上条回复涉及「${matchedTool.displayName}」相关操作，但未实际调用该工具。请先调用工具 ${matchedTool.name} 执行后再用文字总结。`
+            content: `[系统] 你上条回复涉及「${matchedTool.displayName}」相关操作，但未实际调用该工具。请先调用工具 ${matchedTool.name} 执行后再用文字总结。`,
+            _hideInUI: true
           })
           continue
         }
