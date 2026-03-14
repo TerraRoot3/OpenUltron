@@ -79,7 +79,7 @@ function getDefaultPrompts() {
 
 **2. feishu（飞书消息与接收）**
 - 键：app_id, app_secret, default_chat_id, doc_host, user_access_token, user_refresh_token, user_access_token_expire_at, doc_create_in_user_space, notify_on_complete, receive_enabled, allowFrom（"*" 或 chat_id/用户 ID 数组）
-- 引导用户：① 飞书开放平台（open.feishu.cn）创建企业自建应用 → 获取 App ID、App Secret；② 应用后台开通「机器人」与「接收消息」等权限；③ default_chat_id：用于发通知的会话 ID，可在「与机器人的单聊」或「拉机器人加入的群聊」中，通过开放平台文档「获取 chat_id」或发一条消息后从接收事件中获取；④ 若只允许特定人/群触发，将对应 chat_id 或用户 ID 填入 allowFrom 数组，否则填 "*"；⑤ 如需将文档创建到用户个人空间，需先在设置页发起用户 OAuth 授权拿到 user_access_token，再开启 doc_create_in_user_space。
+- 引导用户：① 飞书开放平台（open.feishu.cn）创建企业自建应用 → 获取 App ID、App Secret；② 应用后台开通「机器人」与「接收消息」等权限；③ default_chat_id：用于发通知的会话 ID，可在「与机器人的单聊」或「拉机器人加入的群聊」中，通过开放平台文档「获取 chat_id」或发一条消息后从接收事件中获取；④ 若只允许特定人/群触发，将对应 chat_id 或用户 ID 填入 allowFrom 数组，否则填 "*"；⑤ 如需将文档创建到用户个人空间，需先在设置页发起用户 OAuth 授权拿到 user_access_token，再开启 doc_create_in_user_space。user_access_token 约 2 小时过期，refresh_token 也有有效期；应用会在使用时自动刷新，若 user token 或 refresh 均失效则默认使用应用身份（tenant）继续操作，用户可重新授权以恢复用户空间能力。
 
 **3. telegram（Telegram Bot）**
 - 键：bot_token, enabled（true 开启接收）, allowFrom（"*" 或 chat_id 数组）

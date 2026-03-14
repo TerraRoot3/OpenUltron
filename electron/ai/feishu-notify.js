@@ -21,6 +21,7 @@ const AUTH_PATH = '/open-apis/auth/v3/tenant_access_token/internal'
 const AUTH_APP_PATH = '/open-apis/auth/v3/app_access_token/internal'
 const AUTH_USER_AUTHORIZE_PATH = '/open-apis/authen/v1/index'
 const AUTH_USER_TOKEN_PATH = '/open-apis/authen/v1/access_token'
+const AUTH_USER_REFRESH_PATH = '/open-apis/authen/v1/refresh_access_token'
 const MESSAGE_PATH = '/open-apis/im/v1/messages'
 const IMAGE_UPLOAD_PATH = '/open-apis/im/v1/images'
 const FILE_UPLOAD_PATH = '/open-apis/im/v1/files'
@@ -638,6 +639,57 @@ async function exchangeUserAccessTokenByCode({ code, redirectUri }) {
   }
 }
 
+/** 使用 refresh_token 刷新 user_access_token。飞书 user_access_token 约 2 小时过期；refresh_token 也有有效期（以飞书文档为准），过期后需用户重新授权。 */
+async function refreshUserAccessToken() {
+  const config = getConfig()
+  const refreshToken = String(config?.user_refresh_token || '').trim()
+  if (!refreshToken) {
+    throw new Error('未配置 feishu.user_refresh_token，请重新在设置页发起飞书用户授权')
+  }
+  if (!config.app_id || !config.app_secret) {
+    throw new Error('请先配置飞书 app_id 与 app_secret（AI 管理 → 飞书通知）')
+  }
+  const appAccessToken = await getAppAccessToken()
+  const payload = {
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken
+  }
+  const res = await httpsPost(AUTH_URL, AUTH_USER_REFRESH_PATH, payload, appAccessToken)
+  const accessToken = String(res?.data?.access_token || res?.access_token || '').trim()
+  if (!accessToken) throw new Error(res?.msg || res?.error_description || '刷新 user_access_token 失败')
+  const newRefreshToken = String(res?.data?.refresh_token || res?.refresh_token || '').trim()
+  const expire = Number(res?.data?.expires_in || res?.expires_in || 0) || 0
+  const expireAt = expire > 0 ? Math.floor(Date.now() / 1000) + expire : 0
+  setConfig({
+    user_access_token: accessToken,
+    user_refresh_token: newRefreshToken || refreshToken,
+    user_access_token_expire_at: expireAt
+  })
+  return { access_token: accessToken, refresh_token: newRefreshToken || refreshToken, expires_in: expire, expire_at: expireAt }
+}
+
+const USER_TOKEN_EXPIRE_BUFFER_SEC = 60 // 提前 60 秒视为即将过期并刷新
+
+/** 获取当前有效的 user_access_token：若已过期则用 refresh_token 自动刷新后返回。若刷新失败（如 refresh_token 已过期）返回 null，调用方应使用应用身份（tenant_access_token）兜底。 */
+async function getValidUserAccessToken() {
+  const config = getConfig()
+  const accessToken = String(config?.user_access_token || '').trim()
+  if (!accessToken) return null
+  const expireAt = Number(config?.user_access_token_expire_at || 0) || 0
+  const nowSec = Math.floor(Date.now() / 1000)
+  if (expireAt > 0 && nowSec < expireAt - USER_TOKEN_EXPIRE_BUFFER_SEC) {
+    return accessToken
+  }
+  const refreshToken = String(config?.user_refresh_token || '').trim()
+  if (!refreshToken) return null
+  try {
+    const refreshed = await refreshUserAccessToken()
+    return refreshed.access_token
+  } catch (_) {
+    return null
+  }
+}
+
 /**
  * 发送文本消息到指定会话（群或私聊）
  */
@@ -1119,6 +1171,8 @@ module.exports = {
   getTenantAccessToken,
   buildUserAuthorizeUrl,
   exchangeUserAccessTokenByCode,
+  refreshUserAccessToken,
+  getValidUserAccessToken,
   sendText,
   sendImage,
   sendPost,

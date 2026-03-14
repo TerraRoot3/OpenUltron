@@ -37,28 +37,20 @@ async function withTenantToken() {
   return await feishuNotify.getTenantAccessToken()
 }
 
-function getConfiguredUserAccessToken() {
-  try {
-    const cfg = openultronConfig.getFeishu()
-    return String(cfg?.user_access_token || '').trim()
-  } catch (_) {
-    return ''
-  }
-}
-
 async function withFeishuToken(options = {}) {
   const preferUser = options && options.preferUser === true
   const allowTenantFallback = !(options && options.allowTenantFallback === false)
-  const userToken = getConfiguredUserAccessToken()
   if (preferUser) {
+    const userToken = await feishuNotify.getValidUserAccessToken()
     if (userToken) {
       return { token: userToken, tokenType: 'user', source: 'config:user_access_token' }
     }
     if (!allowTenantFallback) {
-      const err = new Error('未配置 feishu.user_access_token，无法以用户身份创建到个人空间')
+      const err = new Error('未配置 feishu.user_access_token 或已过期且无 refresh_token，请到设置页重新发起飞书用户授权')
       err.code = 'FEISHU_USER_TOKEN_MISSING'
       throw err
     }
+    // user token 不可用时默认使用应用身份（tenant_access_token）
   }
   const tenantToken = await withTenantToken()
   return { token: tenantToken, tokenType: 'tenant', source: 'tenant_access_token' }

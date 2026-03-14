@@ -2,7 +2,7 @@
 const cronScheduler = require('../cron-scheduler')
 
 const definition = {
-  description: '管理定时任务（Cron）。可列出任务、新增、更新、删除任务，或立即执行。任务类型：heartbeat=执行 HEARTBEAT.md 巡检，command=在应用数据目录（默认 ~/.openultron）下执行 shell 命令。schedule 为 cron 五段式：分 时 日 月 周，如 "0 9 * * *" 表示每天 9:00。delete=直接删除任务；要让任务不执行可让用户到定时任务页关掉开关（enabled=false），或用 update 把 enabled 设为 false。',
+  description: '管理定时任务（Cron）。可列出任务、新增、更新、删除任务，或立即执行。任务类型：heartbeat=执行 HEARTBEAT.md 巡检，command=在应用数据目录（默认 ~/.openultron）下执行 shell 命令，feishu_refresh_token=刷新飞书 user_access_token（飞书用户授权后会自动添加，可在定时任务页关闭或删除）。schedule 为 cron 五段式：分 时 日 月 周，如 "0 9 * * *" 表示每天 9:00。delete=直接删除任务；要让任务不执行可让用户到定时任务页关掉开关（enabled=false），或用 update 把 enabled 设为 false。',
   parameters: {
     type: 'object',
     properties: {
@@ -22,8 +22,8 @@ const definition = {
       },
       type: {
         type: 'string',
-        enum: ['heartbeat', 'command'],
-        description: 'heartbeat=执行 HEARTBEAT 巡检，command=执行 shell 命令'
+        enum: ['heartbeat', 'command', 'feishu_refresh_token'],
+        description: 'heartbeat=执行 HEARTBEAT 巡检，command=执行 shell 命令，feishu_refresh_token=刷新飞书 user token'
       },
       enabled: { type: 'boolean', description: '是否启用' },
       command: {

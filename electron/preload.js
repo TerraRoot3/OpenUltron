@@ -398,6 +398,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     update: (taskId, updates) => ipcRenderer.invoke('cron-update', { taskId, updates }),
     remove: (taskId) => ipcRenderer.invoke('cron-remove', taskId),
     runNow: (taskId) => ipcRenderer.invoke('cron-run-now', taskId),
+    ensureFeishuRefreshTask: () => ipcRenderer.invoke('cron-ensure-feishu-refresh-task'),
   },
 
   // ==================== 扣子 (Coze) AI API ====================

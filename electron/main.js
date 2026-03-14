@@ -9197,6 +9197,16 @@ registerChannel('feishu-get-config', () => {
 registerChannel('feishu-set-config', (event, payload) => {
   try {
     feishuNotify.setConfig(payload)
+    const cfg = feishuNotify.getConfig()
+    const hasUserToken = String(cfg?.user_access_token || '').trim() || String(cfg?.user_refresh_token || '').trim()
+    if (!hasUserToken) {
+      try {
+        const cronScheduler = require('./ai/cron-scheduler')
+        cronScheduler.listTasks().forEach((t) => {
+          if (t.type === 'feishu_refresh_token') cronScheduler.removeTask(t.id)
+        })
+      } catch (_) {}
+    }
     return { success: true }
   } catch (e) {
     return { success: false, message: e.message }
@@ -9260,6 +9270,22 @@ registerChannel('feishu-authorize-user-token', async () => {
         res.statusCode = 200
         res.setHeader('Content-Type', 'text/html; charset=utf-8')
         res.end('<html><body><h3>飞书授权成功，可返回应用继续操作。</h3></body></html>')
+        try {
+          const cronScheduler = require('./ai/cron-scheduler')
+          const tasks = cronScheduler.listTasks()
+          appLogger.info('[Feishu OAuth] 授权成功，检查定时任务', { taskCount: tasks.length, hasFeishuTask: tasks.some((t) => t.type === 'feishu_refresh_token') })
+          if (!tasks.some((t) => t.type === 'feishu_refresh_token')) {
+            cronScheduler.addTask({
+              name: '飞书 User Token 刷新',
+              schedule: '0 */1 * * *',
+              type: 'feishu_refresh_token',
+              enabled: true
+            })
+            appLogger.info('[Feishu OAuth] 已添加飞书 Token 刷新定时任务', { cronPath: cronScheduler.CRON_JSON_PATH })
+          }
+        } catch (e) {
+          appLogger.warn('[Feishu OAuth] 添加定时任务失败，授权成功后前端会再次尝试', { error: e?.message, stack: e?.stack })
+        }
         finish({
           success: true,
           message: '飞书用户授权成功',
@@ -9365,7 +9391,33 @@ registerChannel('ai-open-boot-md', ensureAndOpenMd('BOOT', BOOT_MD_PATH,
 
 // ==================== 定时任务 Cron ====================
 const cronScheduler = require('./ai/cron-scheduler')
-registerChannel('cron-list', () => ({ success: true, tasks: cronScheduler.listTasks() }))
+registerChannel('cron-list', () => {
+  const tasks = cronScheduler.listTasks()
+  appLogger.info('[Cron] cron-list', { taskCount: tasks.length, cronPath: cronScheduler.CRON_JSON_PATH, types: tasks.map((t) => t.type) })
+  return { success: true, tasks }
+})
+registerChannel('cron-ensure-feishu-refresh-task', () => {
+  try {
+    const cfg = feishuNotify.getConfig()
+    const hasUserToken = String(cfg?.user_access_token || '').trim() || String(cfg?.user_refresh_token || '').trim()
+    const tasks = cronScheduler.listTasks()
+    const alreadyHas = tasks.some((t) => t.type === 'feishu_refresh_token')
+    appLogger.info('[Cron] cron-ensure-feishu-refresh-task 被调用', { hasUserToken: !!hasUserToken, taskCount: tasks.length, alreadyHas })
+    if (!hasUserToken) return { success: true, added: false }
+    if (alreadyHas) return { success: true, added: false }
+    cronScheduler.addTask({
+      name: '飞书 User Token 刷新',
+      schedule: '0 */1 * * *',
+      type: 'feishu_refresh_token',
+      enabled: true
+    })
+    appLogger.info('[Cron] 已添加飞书 Token 刷新任务', { cronPath: cronScheduler.CRON_JSON_PATH })
+    return { success: true, added: true }
+  } catch (e) {
+    appLogger.warn('[Cron] cron-ensure-feishu-refresh-task 失败', { message: e?.message, stack: e?.stack })
+    return { success: false, added: false, message: e.message }
+  }
+})
 registerChannel('cron-add', (event, task) => {
   try {
     const t = cronScheduler.addTask(task)

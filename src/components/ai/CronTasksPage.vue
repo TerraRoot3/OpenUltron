@@ -15,40 +15,40 @@
       <div v-if="tasks.length === 0" class="cron-empty">{{ t('cron.empty') }}</div>
       <div v-else class="cron-list">
         <div
-          v-for="t in tasks"
-          :key="t.id"
+          v-for="task in tasks"
+          :key="task.id"
           class="cron-item"
-          :class="{ disabled: !t.enabled }"
+          :class="{ disabled: !task.enabled }"
         >
           <div class="cron-item-main">
-            <span class="cron-item-name">{{ t.name }}</span>
-            <code class="cron-item-schedule">{{ t.schedule }}</code>
-            <span class="cron-item-type">{{ t.type === 'heartbeat' ? 'Heartbeat' : t('cron.command') }}</span>
-            <span v-if="t.lastRun" class="cron-item-last">{{ t('cron.lastRun') }}: {{ formatTime(t.lastRun) }} {{ t.lastResult ? `(${t.lastResult})` : '' }}</span>
+            <span class="cron-item-name">{{ task.name }}</span>
+            <code class="cron-item-schedule">{{ task.schedule }}</code>
+            <span class="cron-item-type">{{ cronTypeLabel(task.type) }}</span>
+            <span v-if="task.lastRun" class="cron-item-last">{{ t('cron.lastRun') }}: {{ formatTime(task.lastRun) }} {{ task.lastResult ? `(${task.lastResult})` : '' }}</span>
           </div>
           <div class="cron-item-actions">
             <button
               class="cron-item-btn cron-toggle"
-              :class="{ on: t.enabled, off: !t.enabled }"
-              :title="t.enabled ? t('cron.clickDisable') : t('cron.clickEnable')"
-              @click="toggleEnabled(t)"
+              :class="{ on: task.enabled, off: !task.enabled }"
+              :title="task.enabled ? t('cron.clickDisable') : t('cron.clickEnable')"
+              @click="toggleEnabled(task)"
             >
-              <ToggleRight v-if="t.enabled" :size="14" />
+              <ToggleRight v-if="task.enabled" :size="14" />
               <ToggleLeft v-else :size="14" />
-              <span>{{ t.enabled ? t('cron.enabled') : t('cron.disabled') }}</span>
+              <span>{{ task.enabled ? t('cron.enabled') : t('cron.disabled') }}</span>
             </button>
             <button
               class="cron-item-btn"
-              :class="{ running: runningTaskId === t.id }"
-              :title="runningTaskId === t.id ? t('cron.running') : t('cron.runNow')"
+              :class="{ running: runningTaskId === task.id }"
+              :title="runningTaskId === task.id ? t('cron.running') : t('cron.runNow')"
               :disabled="runningTaskId !== null"
-              @click="runNow(t.id)"
+              @click="runNow(task.id)"
             >
-              <Loader v-if="runningTaskId === t.id" :size="14" class="spin" />
+              <Loader v-if="runningTaskId === task.id" :size="14" class="spin" />
               <Play v-else :size="14" />
-              <span class="cron-run-label">{{ runningTaskId === t.id ? t('cron.running') : t('cron.runNow') }}</span>
+              <span class="cron-run-label">{{ runningTaskId === task.id ? t('cron.running') : t('cron.runNow') }}</span>
             </button>
-            <button class="cron-item-btn danger" :title="t('cron.delete')" @click="removeTask(t.id)">
+            <button class="cron-item-btn danger" :title="t('cron.delete')" @click="removeTask(task.id)">
               <Trash2 :size="14" />
             </button>
           </div>
@@ -74,6 +74,12 @@ const { t, locale } = useI18n()
 
 const api = () => window.electronAPI?.cron
 
+function cronTypeLabel(type) {
+  if (type === 'heartbeat') return 'Heartbeat'
+  if (type === 'feishu_refresh_token') return t('cron.feishuRefreshToken')
+  return t('cron.command')
+}
+
 function formatTime(iso) {
   if (!iso) return ''
   try {
@@ -92,9 +98,9 @@ async function loadTasks() {
 }
 
 
-async function toggleEnabled(t) {
+async function toggleEnabled(task) {
   if (!api()) return
-  const res = await api().update(t.id, { enabled: !t.enabled })
+  const res = await api().update(task.id, { enabled: !task.enabled })
   if (res?.success) await loadTasks()
 }
 

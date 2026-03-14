@@ -1,6 +1,6 @@
 /**
  * 定时任务调度器：读取 <appRoot>/cron.json，按 cron 表达式或简单周期触发任务
- * 任务类型：heartbeat（执行 HEARTBEAT.md 清单）、command（执行 shell 命令）
+ * 任务类型：heartbeat（执行 HEARTBEAT.md 清单）、command（执行 shell 命令）、feishu_refresh_token（刷新飞书 user_access_token）
  */
 const path = require('path')
 const fs = require('fs')
@@ -88,6 +88,12 @@ function addTask(task) {
   }
   config.tasks.push(t)
   setConfig(config)
+  if (t.type === 'feishu_refresh_token') {
+    try {
+      const appLogger = require('../app-logger').logger
+      appLogger.info('[Cron] addTask 已写入 cron.json', { path: CRON_JSON_PATH, taskId: t.id, totalTasks: config.tasks.length })
+    } catch (_) {}
+  }
   return t
 }
 
@@ -153,6 +159,18 @@ async function runTask(task, opts = {}) {
       const msg = (e.stderr || e.message || '').toString().trim()
       setLastRun(task.id, `error: ${msg.slice(0, 200)}`)
       return { success: false, message: msg || e.message }
+    }
+  }
+  if (task.type === 'feishu_refresh_token') {
+    try {
+      const feishuNotify = require('./feishu-notify')
+      await feishuNotify.refreshUserAccessToken()
+      setLastRun(task.id, 'ok')
+      return { success: true, message: '飞书 User Token 已刷新' }
+    } catch (e) {
+      const msg = (e && e.message) ? String(e.message).slice(0, 200) : 'unknown'
+      setLastRun(task.id, `error: ${msg}`)
+      return { success: false, message: msg }
     }
   }
   setLastRun(task.id, 'skip')

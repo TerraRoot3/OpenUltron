@@ -630,7 +630,7 @@ async function execute(args = {}, context = {}) {
     })
     const auth = await withFeishuToken({
       preferUser: preferUserSpaceForCreate,
-      allowTenantFallback: !preferUserSpaceForCreate
+      allowTenantFallback: true
     })
     const token = String(auth?.token || '').trim()
     const tokenType = String(auth?.tokenType || 'tenant').trim()
@@ -932,7 +932,7 @@ async function execute(args = {}, context = {}) {
     }
 
     if (action === 'search_docs') {
-      const searchAuth = await withFeishuToken({ preferUser: true, allowTenantFallback: false })
+      const searchAuth = await withFeishuToken({ preferUser: true, allowTenantFallback: true })
       const searchToken = String(searchAuth?.token || '').trim()
       const searchRes = await searchCloudDocuments({
         query: args.query,
@@ -956,7 +956,7 @@ async function execute(args = {}, context = {}) {
     }
 
     if (action === 'search_wiki') {
-      const searchAuth = await withFeishuToken({ preferUser: true, allowTenantFallback: false })
+      const searchAuth = await withFeishuToken({ preferUser: true, allowTenantFallback: true })
       const searchToken = String(searchAuth?.token || '').trim()
       const searchRes = await searchWikiNodes({
         query: args.query,

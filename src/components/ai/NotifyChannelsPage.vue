@@ -459,12 +459,15 @@ async function saveConfig() {
   saving.value = true
   result.value = null
   try {
+    const userToken = (feishuUserAccessToken.value || '').trim()
     const res = await api().setConfig({
       app_id: appId.value?.trim() || '',
       app_secret: appSecret.value?.trim() || '',
       default_chat_id: defaultChatIdTrimmed.value,
       oauth_redirect_uri: (oauthRedirectUri.value || '').trim() || 'http://127.0.0.1:14579/feishu/oauth/callback',
-      user_access_token: (feishuUserAccessToken.value || '').trim(),
+      user_access_token: userToken,
+      user_refresh_token: userToken ? undefined : '',
+      user_access_token_expire_at: userToken ? undefined : 0,
       doc_create_in_user_space: docCreateInUserSpace.value,
       notify_on_complete: notifyOnComplete.value,
       streaming_reply_enabled: streamingReplyEnabled.value,
@@ -498,7 +501,16 @@ async function authorizeUserToken() {
         await api().setConfig({ doc_create_in_user_space: true })
         await loadConfig()
       }
-      result.value = { ok: true, message: t('notify.authorizeUserTokenSuccess') }
+      try {
+        const cronRes = await window.electronAPI?.cron?.ensureFeishuRefreshTask?.()
+        if (cronRes?.added) {
+          result.value = { ok: true, message: t('notify.authorizeUserTokenSuccess') + ' ' + t('notify.feishuCronTaskAdded') }
+        } else {
+          result.value = { ok: true, message: t('notify.authorizeUserTokenSuccess') }
+        }
+      } catch (_) {
+        result.value = { ok: true, message: t('notify.authorizeUserTokenSuccess') }
+      }
     } else {
       result.value = { ok: false, message: res?.message || t('notify.authorizeUserTokenFailed') }
     }
