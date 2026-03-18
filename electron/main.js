@@ -3915,7 +3915,7 @@ async function runSubChat(opts) {
   const runtimeChain = resolveRuntimeChain(effectiveRuntime, availableExternalIds)
   const attemptErrors = []
   /** 子 Agent 单次运行超时（毫秒），超时后返回 envelope 让主 Agent 可继续 */
-  const SUBAGENT_RUN_TIMEOUT_MS = 600000 // 10 min
+  const SUBAGENT_RUN_TIMEOUT_MS = 1800000 // 30 min
   const runCore = async () => {
   try {
     sessionRegistry.markRunning(subSessionId, {
@@ -5271,8 +5271,10 @@ registerChannel('ai-upload-attachments', async (event, { sessionId, source, atta
 })
 
 // 启动 AI 对话（HTTP/浏览器 无 sender 时等待完整响应后返回，应用内则立即返回、流式走 sender）
-registerChannel('ai-chat-start', async (event, { sessionId, messages, model, tools, projectPath, panelId }) => {
+// stopPrevious: 为 true 时先中止该 session 当前 run，再启动新 run（用户发新消息时“先停掉上一轮再发”）
+registerChannel('ai-chat-start', async (event, { sessionId, messages, model, tools, projectPath, panelId, stopPrevious }) => {
   try {
+    if (stopPrevious && sessionId) aiGateway.stopChat(sessionId)
     const sender = event?.sender ?? null
     const ipcSender = sender ? { send: (ch, d) => sender.send(ch, d) } : null
     const promise = aiGateway.runChat(

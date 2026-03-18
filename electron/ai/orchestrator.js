@@ -117,6 +117,7 @@ class Orchestrator {
       return { success: false, error: hint }
     }
 
+    // 同 session 新消息会开新 run 并覆盖 activeSessions[sessionId]；旧 run 仍在后台跑，finally 里只删“当前仍是自己的”条目，避免旧 run 结束时误删新 run
     const abortController = new AbortController()
     this.activeSessions.set(sessionId, {
       abortController,
@@ -196,6 +197,7 @@ class Orchestrator {
         '当用户要求修改或配置**本机其他项目**、某仓库或用户提到的任意名称时：自行决定用 execute_command 执行哪些命令定位，用 file_operation 读改配置；不要未执行就称找不到或向用户索要路径。可先调用 query_command_log 查看当前项目下已执行命令的成功/失败与已查看路径，再决定本次命令，实现自我进化。具体项目名称、常见路径与配置文件名由你自行检索或根据用户表述判断，提示词中不预设。\n' +
         '当执行中遇到「命令不存在」「依赖缺失」（如 tesseract、ffmpeg、python 包等）时：先判断是否存在内置工具可完成任务；若有内置工具建议优先使用，避免安装依赖。仅当确实不存在内置替代方案时，再执行最小化安装步骤并继续任务；安装命令超时或失败时，自动换一种安装方式重试一次（无需向用户弹确认），仍失败再给降级方案。\n' +
         'TTS/语音场景建议优先使用内置工具，不要安装依赖。先用 tts_voice_manager(list_voices/list_aliases) 获取音色与别名，再用 tts_voice_manager(set_alias/set_default) 记录用户选择；飞书发送用 feishu_send_message 的 audio_* 参数，Telegram 发送用 telegram_send_message 的 audio_* 参数；不要执行 npm/brew/pip 安装 node-edge-tts 或其他 TTS 依赖。\n' +
+        '**用户明确要求「用语音」「语音介绍」「发语音」时，必须实际调用工具**（如 feishu_send_message 的 audio_text、或 execute_command 生成音频后 audio_file_path 发送），不得仅用文字回复声称已完成而未调用任何工具。\n' +
         `默认工作空间：${getWorkspaceRoot()}。\n` +
         `当无真实项目路径时：脚本优先写入 ${path.join(getWorkspaceRoot(), 'scripts')}，新建项目优先放入 ${path.join(getWorkspaceRoot(), 'projects')}，避免散落在其他目录。\n` +
         '**回复风格**：不要写「我来帮你…」「让我执行…」等固定话术；不要输出「可能的原因和建议」「请提供以下任一信息」等模板式列表。直接执行、根据结果继续或简短说明已尝试与下一步。未明确要求修改外部项目时，默认在 OpenUltron 内完成。'
@@ -692,6 +694,7 @@ class Orchestrator {
       return { success: true, messages: currentMessages }
     } catch (error) {
       if (abortController.signal.aborted) {
+        appLogger?.info?.('[Orchestrator] 会话因中止结束', { sessionId: String(sessionId).slice(0, 24) })
         await maybeCompress()
         wrappedSender.send('ai-chat-complete', { sessionId, messages: currentMessages })
         sessionRegistry.markComplete(registryId)
@@ -704,7 +707,11 @@ class Orchestrator {
         return { success: false, error: error.message }
       }
     } finally {
-      this.activeSessions.delete(sessionId)
+      // 仅当当前 run 仍是 activeSessions 中该 session 的条目时才删除，避免旧 run 完成后误删新 run
+      const cur = this.activeSessions.get(sessionId)
+      if (cur && cur.abortController === abortController) {
+        this.activeSessions.delete(sessionId)
+      }
     }
   }
 
@@ -885,8 +892,40 @@ class Orchestrator {
   stopChat(sessionId) {
     const session = this.activeSessions.get(sessionId)
     if (session) {
+      appLogger?.info?.('[Orchestrator] stopChat 中止会话', { sessionId: String(sessionId).slice(0, 24) })
       session.abortController.abort()
       this.activeSessions.delete(sessionId)
+    }
+  }
+
+  hasActiveSession(sessionId) {
+    return this.activeSessions.has(sessionId)
+  }
+
+  /**
+   * 用模型判断用户消息是否表达「先停掉当前任务」的意图，用于同 session 新消息时是否先 stopChat。
+   * @param {string} userMessageText - 用户最后一条消息的纯文本
+   * @returns {Promise<boolean>} 建议先停止当前任务则 true，出错或为否则 false
+   */
+  async classifyStopPreviousIntent(userMessageText) {
+    if (!userMessageText || typeof userMessageText !== 'string') return false
+    const trimmed = userMessageText.trim()
+    if (!trimmed) return false
+    const config = this.getConfig()
+    if (!config?.apiKey || !String(config.apiKey).trim()) return false
+    const systemPrompt = 'You are a classifier. A task is currently running in the chat. The user just sent a new message (may be in Chinese or English, e.g. 停止/先停掉/别做了/cancel/stop). Does the user clearly want to stop, cancel or abort the current task (before doing something else)? Reply with exactly YES or NO, nothing else. If the message is ambiguous or just normal content, reply NO.'
+    try {
+      const text = await this.generateText({
+        prompt: trimmed.slice(0, 500),
+        systemPrompt,
+        config: { ...config, maxTokens: 16 }
+      })
+      const yes = /^\s*yes\s*$/i.test(String(text || '').trim())
+      if (yes) appLogger?.info?.('[Orchestrator] AI 判定用户意图为先停止当前任务', { preview: trimmed.slice(0, 40) })
+      return yes
+    } catch (e) {
+      appLogger?.warn?.('[Orchestrator] classifyStopPreviousIntent 失败，不停止', { error: e?.message })
+      return false
     }
   }
 

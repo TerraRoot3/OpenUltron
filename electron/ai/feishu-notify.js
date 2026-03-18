@@ -11,6 +11,7 @@ const { execFile } = require('child_process')
 const { promisify } = require('util')
 const openultronConfig = require('../openultron-config')
 const { redactSensitiveText } = require('../core/sensitive-text')
+const { logger: appLogger } = require('../app-logger')
 
 const CONFIG_PATH = openultronConfig.getPath()
 
@@ -349,16 +350,32 @@ function makeTmpFile(ext = '.tmp') {
   return path.join(tmpRoot, name)
 }
 
+function ensureExecutable(p) {
+  if (!p || typeof p !== 'string') return
+  try {
+    const st = fs.statSync(p)
+    // any execute bit
+    const hasX = (st.mode & 0o111) !== 0
+    if (!hasX) fs.chmodSync(p, 0o755)
+  } catch (_) {}
+}
+
 function resolveFfmpegBundledPath(tool) {
   try {
     const staticPkg = require('ffmpeg-static')
     // ffmpeg-static 返回 ffmpeg 路径，ffprobe 在同目录
     const base = typeof staticPkg === 'string' ? staticPkg : staticPkg.path
     if (tool === 'ffmpeg') {
-      if (fs.existsSync(base)) return base
+      if (fs.existsSync(base)) {
+        ensureExecutable(base)
+        return base
+      }
     } else {
       const probePath = path.join(path.dirname(base), 'ffprobe')
-      if (fs.existsSync(probePath)) return probePath
+      if (fs.existsSync(probePath)) {
+        ensureExecutable(probePath)
+        return probePath
+      }
     }
   } catch (_) {}
   return null
@@ -408,6 +425,30 @@ async function convertMp3ToOpus(inputMp3, outputOpus) {
     await execFileAsync(ffmpegBin, [
       '-y',
       '-i', inputMp3,
+      '-ac', '1',
+      '-ar', '16000',
+      '-c:a', 'libopus',
+      '-b:a', '24k',
+      outputOpus
+    ], {
+      timeout: 120000,
+      maxBuffer: 4 * 1024 * 1024
+    })
+  } catch (e) {
+    const msg = String(e?.stderr || e?.message || 'ffmpeg 转码失败').trim()
+    if (/not found|enoent/i.test(msg)) {
+      throw new Error('未检测到 ffmpeg。请先安装 ffmpeg（macOS: brew install ffmpeg）')
+    }
+    throw new Error(`ffmpeg 转码失败: ${msg.slice(0, 300)}`)
+  }
+}
+
+async function convertAudioToOpus(inputAudio, outputOpus) {
+  const ffmpegBin = resolveFfmpegPath()
+  try {
+    await execFileAsync(ffmpegBin, [
+      '-y',
+      '-i', inputAudio,
       '-ac', '1',
       '-ar', '16000',
       '-c:a', 'libopus',
@@ -818,8 +859,10 @@ async function uploadFile(filePathOrBuffer, fileName, fileType, durationSec) {
     { name: 'file_name', body: name },
     { name: 'file', body, filename: name, contentType: mime }
   ]
+  // 飞书上传文件 API：duration 单位为毫秒（见开放平台文档）
   if (Number.isFinite(Number(durationSec)) && Number(durationSec) > 0) {
-    formParts.push({ name: 'duration', body: String(Math.round(Number(durationSec))) })
+    const durationMs = Math.round(Number(durationSec) * 1000)
+    formParts.push({ name: 'duration', body: String(durationMs) })
   }
   const res = await httpsPostMultipart(AUTH_URL, FILE_UPLOAD_PATH, formParts, token)
   const key = res.data && res.data.file_key
@@ -829,25 +872,26 @@ async function uploadFile(filePathOrBuffer, fileName, fileType, durationSec) {
 
 /**
  * 发送文件消息（需先通过 uploadFile 获得 file_key）
+ * 飞书文档：content 仅含 file_key，见 https://open.feishu.cn/document/server-docs/im-v1/message-content-description/create_json
  */
 async function sendFile(receiveId, fileKey, fileName, receiveIdType = 'chat_id') {
-  if (!fileKey || !fileName) throw new Error('发送文件消息需提供 file_key 与 file_name')
+  if (!fileKey) throw new Error('发送文件消息需提供 file_key（或 file_path 由上传获得）')
   const token = await getTenantAccessToken()
   const body = {
     receive_id: receiveId,
     msg_type: 'file',
-    content: JSON.stringify({ file_key: fileKey, file_name: fileName })
+    content: JSON.stringify({ file_key: fileKey })
   }
   const pathWithQuery = `${MESSAGE_PATH}?receive_id_type=${encodeURIComponent(receiveIdType)}`
   const res = await httpsPost(AUTH_URL, pathWithQuery, body, token)
   return res
 }
 
-async function sendAudio(receiveId, fileKey, durationSec, receiveIdType = 'chat_id') {
+async function sendAudio(receiveId, fileKey, _durationSec, receiveIdType = 'chat_id') {
   if (!fileKey) throw new Error('发送语音消息需提供 file_key')
   const token = await getTenantAccessToken()
+  // 飞书发送语音消息的 content 仅支持 file_key（见开放平台「发送消息内容结构」），传 duration 会触发 9499 Bad Request
   const content = { file_key: fileKey }
-  if (Number.isFinite(Number(durationSec)) && Number(durationSec) > 0) content.duration = Math.round(Number(durationSec))
   const body = {
     receive_id: receiveId,
     msg_type: 'audio',
@@ -993,17 +1037,51 @@ async function sendMessage(options = {}) {
   }
   const receiveIdType = options.receive_id_type || 'chat_id'
 
+  // 若调用方只传了 file_path 且为语音 opus，则自动按语音发送，减少一次「检测到音频请用 audio_*」的失败重试。
+  // 注意：mp3 等格式通常是“当文件发送”，不应强行走语音分支。
+  const AUDIO_EXTS = new Set(['.opus'])
+  let effectiveAudioPath = audio_file_path
+  let effectiveAudioName = audio_file_name
+  if (!audio_file_key && !effectiveAudioPath && !audio_text && file_path && fs.existsSync(file_path)) {
+    const ext = path.extname(String(file_path).trim().toLowerCase())
+    if (ext && AUDIO_EXTS.has(ext)) {
+      effectiveAudioPath = file_path
+      effectiveAudioName = effectiveAudioName || file_name || path.basename(file_path)
+    }
+  }
+
   try {
     if (post != null && typeof post === 'object') {
       const res = await sendPost(receiveId, post, receiveIdType)
       return { success: true, message_id: res.data && res.data.message_id, message: '富文本发送成功' }
     }
-    if (audio_file_key || audio_file_path || audio_text) {
+    if (audio_file_key || effectiveAudioPath || audio_text) {
       let key = audio_file_key
       let durationSec = Number.isFinite(Number(audio_duration)) ? Number(audio_duration) : undefined
-      if (!key && audio_file_path && fs.existsSync(audio_file_path)) {
-        key = await uploadFile(audio_file_path, audio_file_name || path.basename(audio_file_path), 'opus', durationSec)
-        if (!durationSec) durationSec = await ffprobeDurationSec(audio_file_path)
+      if (!key && effectiveAudioPath && fs.existsSync(effectiveAudioPath)) {
+        let pathToUpload = effectiveAudioPath
+        let cleanup = false
+        // 飞书语音消息仅支持 OPUS。若传入非 .opus（如 aiff/mp3/wav），自动转码为 opus 后再上传发送。
+        try {
+          const ext = path.extname(String(effectiveAudioPath || '')).toLowerCase()
+          if (ext && ext !== '.opus') {
+            const opusPath = makeTmpFile('.opus')
+            await convertAudioToOpus(effectiveAudioPath, opusPath)
+            pathToUpload = opusPath
+            cleanup = true
+          }
+        } catch (e) {
+          // 转码失败时，显式提示而非悄悄走文件发送
+          throw e
+        }
+        try {
+          key = await uploadFile(pathToUpload, effectiveAudioName || path.basename(pathToUpload), 'opus', durationSec)
+          if (!durationSec) durationSec = await ffprobeDurationSec(pathToUpload)
+        } finally {
+          if (cleanup) {
+            try { if (pathToUpload && fs.existsSync(pathToUpload)) fs.unlinkSync(pathToUpload) } catch (_) {}
+          }
+        }
       }
       if (!key && audio_text && String(audio_text).trim()) {
         const resolvedVoice = resolveTtsVoice(audio_voice)
@@ -1020,6 +1098,7 @@ async function sendMessage(options = {}) {
       }
       if (!key) return { success: false, message: '发送语音需提供 audio_file_key / audio_file_path / audio_text 之一' }
       const res = await sendAudio(receiveId, key, durationSec, receiveIdType)
+      appLogger?.info?.('[Feishu] 语音发送成功', { message_id: res.data?.message_id ?? '', receive_id_type: receiveIdType })
       return { success: true, message_id: res.data && res.data.message_id, message: '语音发送成功' }
     }
     if (media_file_key || media_file_path) {
@@ -1047,6 +1126,10 @@ async function sendMessage(options = {}) {
       const imageExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'])
       const lowerPath = String(file_path || '').trim().toLowerCase()
       const ext = lowerPath ? path.extname(lowerPath) : ''
+      // 音频已在上方通过 effectiveAudioPath 自动走语音分支；此处仅兜底（未命中时仍提示）
+      if (!file_key && file_path && ext && AUDIO_EXTS.has(ext) && fs.existsSync(file_path)) {
+        return { success: false, message: '检测到音频文件，请使用 audio_text / audio_file_path / audio_file_key 发送语音（飞书语音仅支持 opus，会自动转码）' }
+      }
       // 兜底：调用方把图片误传到 file_path 时，强制按图片上传发送，避免 file 模式报 Invalid request param
       if (!file_key && file_path && ext && imageExts.has(ext) && fs.existsSync(file_path)) {
         const buf = fs.readFileSync(file_path)
@@ -1063,10 +1146,10 @@ async function sendMessage(options = {}) {
         key = await uploadFile(file_path)
         name = name || path.basename(file_path)
       }
-      if (!key || !name) {
-        return { success: false, message: '发送文件需提供 file_key+file_name 或 file_path' }
+      if (!key) {
+        return { success: false, message: '发送文件需提供 file_key 或 file_path' }
       }
-      const res = await sendFile(receiveId, key, name, receiveIdType)
+      const res = await sendFile(receiveId, key, name || path.basename(file_path || ''), receiveIdType)
       return { success: true, message_id: res.data && res.data.message_id, message: '文件发送成功' }
     }
     const content = text != null ? redactSensitiveText(String(text)) : ''
@@ -1076,8 +1159,29 @@ async function sendMessage(options = {}) {
     const res = await sendText(receiveId, content, receiveIdType)
     return { success: true, message_id: res.data && res.data.message_id, message: '发送成功' }
   } catch (e) {
-    return { success: false, message: e.message || '发送失败' }
+    const raw = e.message || '发送失败'
+    const hint = mapFeishuErrorToHint(raw)
+    const isAudio = !!(options.audio_file_key || options.audio_file_path || options.audio_text) ||
+      (options.file_path && AUDIO_EXTS.has(path.extname(String(options.file_path).toLowerCase())))
+    if (isAudio) appLogger?.warn?.('[Feishu] 语音发送失败', { error: raw.slice(0, 200) })
+    return { success: false, message: hint ? `${raw}（${hint}）` : raw }
   }
+}
+
+/**
+ * 将飞书开放平台常见错误码转为中文排查提示（见文档错误码表）
+ */
+function mapFeishuErrorToHint(msg) {
+  if (!msg || typeof msg !== 'string') return ''
+  const s = msg.toLowerCase()
+  if (/234001|invalid request param|请求参数无效/.test(s)) return '请检查参数：图片用 image_key 或 image_base64；文件用 file_key 或 file_path；语音用 opus 的 file_key 或 audio_text/audio_file_path'
+  if (/234006|exceed the max|超出限制/.test(s)) return '图片不超过 10MB，文件不超过 30MB；GIF 分辨率不超过 2000×2000，其他图不超过 12000×12000'
+  if (/234007|bot feature|机器人能力/.test(s)) return '请在飞书应用后台开启「机器人」能力'
+  if (/234010|size can't be 0|大小为 0/.test(s)) return '不能上传空文件'
+  if (/234011|recognize.*image format|图片格式/.test(s)) return '图片仅支持 JPG/PNG/GIF/WEBP/BMP；若为 base64 请带正确 data:image/xxx;base64, 或传 image_filename 如 .png'
+  if (/234039|resolution exceeds|分辨率/.test(s)) return '图片分辨率超限：GIF 不超过 2000×2000，其他不超过 12000×12000'
+  if (/invalid receive_id|receive_id/.test(s)) return '请确认 chat_id 为当前群组/会话的 chat_id（通常以 oc_ 开头）'
+  return ''
 }
 
 /**

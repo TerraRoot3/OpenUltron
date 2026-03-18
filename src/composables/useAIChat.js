@@ -176,8 +176,8 @@ export function useAIChat() {
     await window.electronAPI.ai.confirmResponse({ confirmId, confirmed, userInput, pushAfterCommit })
   }
 
-  // 发送消息
-  const sendMessage = async (content, { model, systemPrompt, projectPath, displayContent, userContentParts, panelId, sessionId: passedSessionId } = {}) => {
+  // 发送消息（是否先停掉当前任务由后端 AI 根据消息内容识别，或由前端传 stopPrevious 显式指定）
+  const sendMessage = async (content, { model, systemPrompt, projectPath, displayContent, userContentParts, panelId, sessionId: passedSessionId, stopPrevious } = {}) => {
     error.value = ''
 
     // 添加用户消息（展示用 displayContent，发给 AI 用 content）
@@ -295,14 +295,15 @@ export function useAIChat() {
         return
       }
 
-      // 应用内：IPC 启动对话
+      // 应用内：IPC 启动对话（stopPrevious 时主进程会先 stopChat 再 runChat）
       const payload = toSerializable({
         sessionId: currentSessionId,
         messages: reqMessages,
         model,
         tools,
         projectPath: projectPath || '',
-        panelId: panelId || undefined
+        panelId: panelId || undefined,
+        stopPrevious: stopPrevious || undefined
       })
       const result = await window.electronAPI.ai.chatStart(payload)
 

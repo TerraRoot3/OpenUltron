@@ -5,6 +5,7 @@
  */
 const { spawn } = require('child_process')
 const { tryInProcess } = require('./shell-inprocess')
+const { logger: appLogger } = require('../../app-logger')
 
 const DEFAULT_TIMEOUT = 600000
 const MAX_BUFFER = 1024 * 1024 * 5
@@ -33,11 +34,22 @@ async function execute(options, context) {
       exitCode: inProcess.exitCode
     }
   }
+  const scriptPreview = script.length > 200 ? script.slice(0, 200) + '...' : script
+  const hasFfmpegOrSay = /\b(ffmpeg|say|espeak)\b/i.test(script)
+  appLogger?.info?.('[ShellExecutor] 开始执行', {
+    cwd,
+    timeoutSec: Math.floor(timeout / 1000),
+    scriptPreview,
+    hasFfmpegOrSay
+  })
+
   return new Promise((resolve) => {
+    // detached=true 让子进程成为新的进程组 leader，便于超时后杀掉整个进程组（含 ffmpeg/say 等派生子进程）
     const child = spawn('/bin/sh', ['-c', script], {
       cwd,
       shell: false,
-      env: env || process.env
+      env: env || process.env,
+      detached: true
     })
 
     const appendChunk = (prev, chunk) => {
@@ -59,6 +71,28 @@ async function execute(options, context) {
     let timedOut = false
     let settled = false
 
+    const killProcessTree = () => {
+      try {
+        if (!child || !child.pid) return
+        appLogger?.warn?.('[ShellExecutor] 超时，终止进程组', {
+          pid: child.pid,
+          timeoutSec: Math.floor(timeout / 1000),
+          scriptPreview,
+          stderrTail: (stderr || '').slice(-800)
+        })
+        // 先杀进程组（负 pid），保证 bash/sh 派生的子进程也被终止
+        try { process.kill(-child.pid, 'SIGTERM') } catch (e) { appLogger?.warn?.('[ShellExecutor] 杀进程组 SIGTERM 失败', { pid: child.pid, err: e.message }) }
+        // 兜底：若进程组杀失败，至少杀掉本体
+        try { child.kill('SIGTERM') } catch (_) {}
+        setTimeout(() => {
+          try { process.kill(-child.pid, 'SIGKILL') } catch (_) {}
+          try { child.kill('SIGKILL') } catch (_) {}
+        }, 1200)
+      } catch (e) {
+        appLogger?.warn?.('[ShellExecutor] killProcessTree 异常', { err: e.message })
+      }
+    }
+
     child.stdout?.on('data', (chunk) => {
       stdout = appendChunk(stdout, chunk)
       try { if (typeof onStdout === 'function') onStdout(Buffer.isBuffer(chunk) ? chunk.toString('utf-8') : String(chunk || '')) } catch (_) {}
@@ -72,7 +106,7 @@ async function execute(options, context) {
     const timer = setTimeout(() => {
       timedOut = true
       stderr = appendChunk(stderr, `\n命令执行超时 (${Math.floor(timeout / 1000)}秒)`)
-      try { child.kill('SIGKILL') } catch (_) {}
+      killProcessTree()
     }, timeout)
 
     child.on('error', (err) => {
@@ -94,8 +128,23 @@ async function execute(options, context) {
       settled = true
       clearTimeout(timer)
       const exitCode = timedOut ? -1 : (code ?? (signal ? 1 : 0))
+      const success = !timedOut && exitCode === 0
+      if (!success) {
+        const stderrTail = (stderr || '').trim().slice(-1200)
+        appLogger?.warn?.('[ShellExecutor] 命令未成功结束', {
+          exitCode,
+          signal: signal || null,
+          timedOut,
+          scriptPreview,
+          stderrTail,
+          hasFfmpegOrSay
+        })
+        if (hasFfmpegOrSay) {
+          appLogger?.info?.('[ShellExecutor] ffmpeg/say 类命令失败时，常见原因：1) ffmpeg 未安装或不在 PATH；2) say 文本过长导致合成过久；3) 超时被终止；4) 输出路径无写权限。请根据上方 stderrTail 排查。')
+        }
+      }
       resolve({
-        success: !timedOut && exitCode === 0,
+        success,
         stdout: trimOutput(stdout),
         stderr: trimOutput(stderr),
         exitCode,

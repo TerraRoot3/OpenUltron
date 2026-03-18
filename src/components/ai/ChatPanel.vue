@@ -140,7 +140,7 @@
                 ref="inputRef"
                 v-model="inputText"
                 :placeholder="hasActiveSlash ? t('chat.inputHintWithSlash') : isStreaming ? t('chat.aiReplying') : ''"
-                :disabled="isStreaming"
+                :disabled="false"
                 @keydown="onKeyDown"
                 @input="onInput"
                 @paste="onInputPaste"
@@ -178,7 +178,16 @@
           <Square :size="14" />
         </button>
         <button
-          v-else
+          v-if="isStreaming"
+          class="send-btn stop-then-send"
+          :disabled="!inputText.trim() && !hasActiveSlash && pendingAttachments.length === 0"
+          @click="handleSend({ stopPrevious: true })"
+          title="先停止当前任务再发送"
+        >
+          <Send :size="14" />
+        </button>
+        <button
+          v-if="!isStreaming"
           class="send-btn"
           :disabled="!inputText.trim() && !hasActiveSlash && pendingAttachments.length === 0"
           @click="handleSend"
@@ -1232,10 +1241,11 @@ const buildSlashSystemPrompt = async (item) => {
   return null
 }
 
-const handleSend = async () => {
+const handleSend = async (opts = {}) => {
+  const { stopPrevious } = opts
   const text = inputText.value.trim()
   if (!text && !hasActiveSlash.value && pendingAttachments.value.length === 0) return
-  if (isStreaming.value) return
+  if (!stopPrevious && isStreaming.value) return
 
   if (HISTORY_CMD_RE.test(text)) {
     inputText.value = ''
@@ -1448,7 +1458,8 @@ const handleSend = async () => {
     userContentParts,
     displayContent: finalText !== displayText ? displayText : undefined,
     panelId,
-    sessionId: ensuredSessionId || undefined
+    sessionId: ensuredSessionId || undefined,
+    stopPrevious: stopPrevious || undefined
   })
   if (carrySummaryForNextSession.value) carrySummaryForNextSession.value = ''
   nextTick(() => forceScrollToBottom())

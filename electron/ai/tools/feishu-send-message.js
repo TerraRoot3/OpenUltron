@@ -6,7 +6,14 @@ const { logger: appLogger } = require('../../app-logger')
 const artifactRegistry = require('../artifact-registry')
 
 const definition = {
-  description: '向飞书群或会话发送消息。支持 text、image、file、post（富文本）、audio（语音）、media（图文）。语音支持三种方式：audio_file_key、audio_file_path（本地 opus）、audio_text（内置 node-edge-tts 生成 mp3 再转 opus 上传；无需额外安装依赖）。音色建议先用 tts_voice_manager 配置别名与默认值。当用户是在飞书里与机器人对话时，不传 chat_id 会自动发往当前会话。',
+  description: `向飞书群或会话发送消息。当用户在飞书内与机器人对话时，不传 chat_id 会自动发往当前会话。
+
+【发文本】传 text。
+【发图片】二选一：1) image_key（已上传得到的 key）；2) image_base64 + image_filename（如 image.png），会自动上传后发送。限制：单张 <10MB，GIF≤2000×2000，其他≤12000×12000；格式仅支持 JPG/PNG/GIF/WEBP/BMP。
+【发文件】二选一：1) file_key（已上传得到的 key）；2) file_path（本地绝对路径），会自动上传后发送。限制：<30MB。
+【发语音】飞书仅支持 opus 格式，三种方式任选：1) audio_text：传入要读的文字，自动 TTS 成 opus 发送（推荐）；2) audio_file_path：本地 .opus 文件路径；3) audio_file_key：已上传的 opus 的 file_key。音色用 audio_voice（如 zh-CN-XiaoyiNeural 或配置的别名），可选 audio_duration（秒）。
+【发图文/视频】media_file_key 或 media_file_path（mp4），可选 media_image_key 作封面。
+【富文本】post_title + post_content（见参数说明）。`,
   parameters: {
     type: 'object',
     properties: {
@@ -214,6 +221,26 @@ async function execute(args, context = {}) {
     opts.text = String(text)
   }
 
+  const hasAnyPayload = !!(
+    (opts.text && String(opts.text).trim()) ||
+    opts.post ||
+    opts.image_key ||
+    opts.image_base64 ||
+    opts.file_key ||
+    opts.file_path ||
+    opts.media_file_key ||
+    opts.media_file_path ||
+    opts.audio_file_key ||
+    opts.audio_file_path ||
+    opts.audio_text
+  )
+  if (!hasAnyPayload) {
+    const fatalErr = new Error('feishu_send_message 缺少消息内容：请提供 text / post / image_* / file_* / audio_* / media_* 之一（不可重试）')
+    fatalErr.code = 'FEISHU_NON_RETRYABLE'
+    fatalErr.nonRetryable = true
+    throw fatalErr
+  }
+
   appLogger?.info?.('[FeishuTool] feishu_send_message 调用', {
     mode,
     chat_id: opts.chat_id || '',
@@ -289,7 +316,8 @@ async function execute(args, context = {}) {
   const noChatId = !opts.chat_id || !String(opts.chat_id).trim()
   const invalidReceiveId = /invalid\s+receive_id/i.test(resultMessage)
   const missingReceiveId = /请提供\s*chat_id\/receive_id/i.test(resultMessage)
-  if (result && result.success === false && (noChatId || invalidReceiveId || missingReceiveId)) {
+  const missingPayload = /请提供\s*text、image_key\/image_base64、file_key\/file_path、post、audio_\*\s*或\s*media_\*\s*之一/.test(resultMessage)
+  if (result && result.success === false && (noChatId || invalidReceiveId || missingReceiveId || missingPayload)) {
     const fatalErr = new Error(resultMessage || 'feishu_send_message 参数无效（不可重试）')
     fatalErr.code = 'FEISHU_NON_RETRYABLE'
     fatalErr.nonRetryable = true

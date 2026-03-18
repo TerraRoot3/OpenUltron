@@ -2,6 +2,7 @@
 const commandExecutionLog = require('../command-execution-log')
 const executorRegistry = require('../../extensions/executor-registry')
 const userConfirmationTool = require('./user-confirmation')
+const { logger: appLogger } = require('../../app-logger')
 const os = require('os')
 const path = require('path')
 
@@ -19,12 +20,14 @@ const definition = {
   }
 }
 
-const DEFAULT_TIMEOUT_MS = 600000
+// 默认超时调大，避免长任务（如转码/构建）频繁超时
+const DEFAULT_TIMEOUT_MS = 1800000 // 30 min
 const MIN_TIMEOUT_MS = 1000
-const MAX_TIMEOUT_MS = 600000
+// 允许显式传更长超时（例如大项目构建/转码）；上限 2h
+const MAX_TIMEOUT_MS = 2 * 60 * 60 * 1000
 const MAX_STREAM_PREVIEW_LEN = 4000
 const STREAM_PUSH_INTERVAL_MS = 700
-const INSTALL_TIMEOUT_MS = 600000
+const INSTALL_TIMEOUT_MS = 1800000
 const PROTECTED_DIRS = ['Desktop', 'Documents', 'Downloads', 'Music', 'Pictures', 'Movies']
 
 function clampTimeout(timeout) {
@@ -272,6 +275,22 @@ async function execute(args, context = {}) {
       sessionId
     })
   } catch (e) { /* ignore */ }
+
+  if (!result.success || result.timedOut) {
+    const hasFfmpegOrSay = /\b(ffmpeg|say|espeak)\b/i.test(command || '')
+    appLogger?.warn?.('[execute_command] 命令未成功', {
+      success: result.success,
+      exitCode: result.exitCode,
+      timedOut: result.timedOut,
+      timeoutMs: effectiveTimeout,
+      cwd,
+      commandPreview: (command || '').slice(0, 300),
+      stderrTail: (result.stderr || '').trim().slice(-1000)
+    })
+    if (hasFfmpegOrSay) {
+      appLogger?.info?.('[execute_command] ffmpeg/say 失败时请查日志 [ShellExecutor] 与上方 stderrTail。常见原因：ffmpeg 未安装或不在 PATH；say 文本过长；超时被终止；输出路径无写权限。')
+    }
+  }
 
   return {
     ...result,

@@ -136,7 +136,7 @@ function createGateway(opts) {
    * @returns {Promise<{ messages?: object[] }>}
    */
   async function runChat(params, sender) {
-    const { sessionId, projectPath, messages: rawMessages, model, tools, panelId, feishuChatId, feishuTenantKey, feishuDocHost, fromAppWindow } = params
+    const { sessionId, projectPath, messages: rawMessages, model, tools, panelId, feishuChatId, feishuTenantKey, feishuDocHost, fromAppWindow, stopPrevious: explicitStopPrevious } = params
     const orchestrator = getOrchestrator()
     const resolvedConfig = getResolvedConfig()
     let toolDefs = []
@@ -185,6 +185,13 @@ function createGateway(opts) {
     const userMessages = msgList.filter(m => m && m.role === 'user')
     const lastUser = userMessages.length ? userMessages[userMessages.length - 1] : null
     const userContent = lastUser ? (typeof lastUser.content === 'string' ? lastUser.content : '') : ''
+    const lastUserText = lastUser
+      ? (typeof lastUser.content === 'string'
+          ? lastUser.content
+          : Array.isArray(lastUser.content)
+            ? (lastUser.content.map(p => p && p.text).filter(Boolean).join(' ') || '')
+            : '')
+      : ''
     // 仅当请求来自「非应用窗口」（如浏览器/远程）时通知窗口展示用户消息，避免应用内发消息时重复一条
     if (isSameSession && userContent && typeof onRemoteUserMessage === 'function' && !fromAppWindow) {
       try {
@@ -192,6 +199,16 @@ function createGateway(opts) {
       } catch (e) {
         console.warn('[Gateway] onRemoteUserMessage error:', e.message)
       }
+    }
+
+    // 是否先停掉当前任务：显式传 stopPrevious 则直接停；否则若该 session 有 run 在跑则交给 AI 识别用户意图
+    if (explicitStopPrevious === true && sessionId) {
+      stopChat(sessionId)
+    } else if (sessionId && lastUserText.trim() && typeof orchestrator.hasActiveSession === 'function' && orchestrator.hasActiveSession(sessionId)) {
+      try {
+        const shouldStop = await orchestrator.classifyStopPreviousIntent(lastUserText)
+        if (shouldStop) stopChat(sessionId)
+      } catch (_) { /* 识别失败则不停止 */ }
     }
 
     const isMainSession = !params?.feishuChatId && params?.projectPath !== '__feishu__'
