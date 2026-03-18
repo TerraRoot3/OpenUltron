@@ -568,6 +568,7 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
       let fileFailed = 0
       const streamMessageId = String(payload.stream_message_id || '').trim()
       const allowStreamUpdate = payload && payload.stream_allow_update === true
+      const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'])
       if (mergedImages.length > 0) {
         for (const img of mergedImages) {
           let imageBase64 = null
@@ -575,6 +576,7 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
           let imageResolvedPath = ''
           if (img.base64 && typeof img.base64 === 'string' && img.base64.length > 0) {
             imageBase64 = img.base64
+            if (!IMAGE_EXTS.has(path.extname(imageFilename).toLowerCase())) imageFilename = 'image.png'
           } else if (img.path) {
             // 相对路径统一解析到应用 screenshots 目录，避免读到主进程 cwd 下的空文件
             const resolvedPath = path.isAbsolute(img.path)
@@ -582,6 +584,11 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
               : path.join(getAppRootPath('screenshots'), path.basename(img.path))
             imageResolvedPath = resolvedPath
             if (!fs.existsSync(resolvedPath)) continue
+            const ext = path.extname(resolvedPath).toLowerCase()
+            if (!IMAGE_EXTS.has(ext)) {
+              appLogger?.info?.('[Feishu] 非图片扩展名，跳过作为图片发送', { path: resolvedPath, ext })
+              continue
+            }
             const st = fs.statSync(resolvedPath)
             if (!st.isFile()) {
               appLogger?.warn?.('[Feishu] 截图路径不是文件，跳过发送', { path: resolvedPath })
@@ -594,6 +601,7 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
             }
             imageBase64 = buf.toString('base64')
             imageFilename = img.filename || path.basename(resolvedPath)
+            if (!IMAGE_EXTS.has(path.extname(imageFilename).toLowerCase())) imageFilename = path.basename(resolvedPath).replace(/\.[^.]+$/, '') + ext
           }
           if (!imageBase64 || imageBase64.length === 0) continue
           const result = await feishuNotify.sendMessage({
