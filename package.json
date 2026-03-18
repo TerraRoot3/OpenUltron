@@ -1,8 +1,8 @@
 {
   "name": "openultron",
   "private": true,
-  "version": "1.0.24",
-  "description": "OpenUltron - AI-first desktop app, enhanced OpenClaw with memory import",
+  "version": "1.0.25",
+  "description": "OpenUltron - Super-agent desktop: multi-model, tools & MCP, sub-agent dispatch, Feishu/Telegram/DingTalk in-chat. Not just chat—your AI runs tasks, keeps context, and delivers results.",
   "author": "OpenUltron",
   "license": "MIT",
   "main": "electron/main.js",
