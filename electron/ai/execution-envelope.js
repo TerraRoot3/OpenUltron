@@ -9,6 +9,7 @@ function normalizeErrorCode(errorText = '') {
   if (/not support|unsupported|不支持|can't recognize image format/.test(s)) return 'UNSUPPORTED_FORMAT'
   if (/render.*not ready|页面渲染未就绪/.test(s)) return 'RENDER_NOT_READY'
   if (/missing|缺少|未提供/.test(s)) return 'MISSING_CONTEXT'
+  if (/子.?Agent.?执行超时|run.?timeout|subagent.?timeout/i.test(s)) return 'RUN_TIMEOUT'
   return 'UNKNOWN'
 }
 

@@ -3914,6 +3914,9 @@ async function runSubChat(opts) {
   const availableExternalById = new Map(availableExternal.map(a => [a.id, a]))
   const runtimeChain = resolveRuntimeChain(effectiveRuntime, availableExternalIds)
   const attemptErrors = []
+  /** 子 Agent 单次运行超时（毫秒），超时后返回 envelope 让主 Agent 可继续 */
+  const SUBAGENT_RUN_TIMEOUT_MS = 600000 // 10 min
+  const runCore = async () => {
   try {
     sessionRegistry.markRunning(subSessionId, {
       projectPath: projectPath || '__main_chat__',
@@ -4189,6 +4192,28 @@ async function runSubChat(opts) {
     error: attemptErrors.join(' | ') || '子 Agent 执行失败',
     subSessionId,
     commandLogs: [...commandLogLines]
+  }
+  }
+  try {
+    return await Promise.race([
+      runCore(),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('SUBAGENT_TIMEOUT')), SUBAGENT_RUN_TIMEOUT_MS))
+    ])
+  } catch (e) {
+    if (e && e.message === 'SUBAGENT_TIMEOUT') {
+      pushCommandLog('[meta] sub-agent run timeout')
+      emitPartial()
+      try { sessionRegistry.markError(subSessionId, '子 Agent 执行超时') } catch (_) {}
+      const { buildExecutionEnvelope } = require('./ai/execution-envelope')
+      return {
+        success: false,
+        error: '子 Agent 执行超时',
+        subSessionId,
+        commandLogs: [...commandLogLines],
+        envelope: buildExecutionEnvelope({ success: false, error: '子 Agent 执行超时' }, 'internal')
+      }
+    }
+    throw e
   }
 }
 

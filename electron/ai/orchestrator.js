@@ -639,11 +639,39 @@ class Orchestrator {
           continue
         }
         // 模型本轮未返回 tool_calls，仅文本回复
-        const contentPreview = response?.content ? String(response.content).trim().slice(0, 120) : ''
+        let finalContent = response ? normalizeAssistantContent(response.content || null) : null
+        const isEmptyContent = !finalContent ||
+          (typeof finalContent === 'string' && !String(finalContent).trim()) ||
+          (Array.isArray(finalContent) && (!finalContent.length || finalContent.every(c => !String((c && c.text) || '').trim())))
+
+        // 若上一轮唯一/最后有 sessions_spawn 且模型返回空，用 envelope.summary 兜底，避免「有恢复无后续」
+        if (isEmptyContent) {
+          const lastAssistant = [...currentMessages].reverse().find(m => m.role === 'assistant')
+          const hadSessionsSpawn = lastAssistant && lastAssistant.tool_calls &&
+            lastAssistant.tool_calls.some(tc => (tc.function && tc.function.name === 'sessions_spawn') || tc.name === 'sessions_spawn')
+          if (hadSessionsSpawn) {
+            let fallbackSummary = ''
+            for (let i = currentMessages.length - 1; i >= 0; i--) {
+              const m = currentMessages[i]
+              if (m.role !== 'tool' || !m.content) continue
+              try {
+                const obj = typeof m.content === 'string' ? JSON.parse(m.content) : m.content
+                if (obj && obj.envelope && typeof obj.envelope.summary === 'string') {
+                  fallbackSummary = String(obj.envelope.summary).trim()
+                  break
+                }
+              } catch (_) {}
+            }
+            finalContent = fallbackSummary ? `子任务已完成：${fallbackSummary}` : '子任务已结束，详见上方工具输出。'
+            appLogger?.info?.('[AI] sessions_spawn 后模型返回空，已用 envelope 兜底', { fallbackLen: String(finalContent).length })
+          }
+        }
+
+        const contentPreview = finalContent ? (typeof finalContent === 'string' ? finalContent : JSON.stringify(finalContent)).trim().slice(0, 120) : ''
         appLogger?.info?.('[AI] 本轮模型未返回工具调用，仅文本回复', { contentPreview: contentPreview || '(空)' })
         currentMessages.push({
           role: 'assistant',
-          content: response ? normalizeAssistantContent(response.content || null) : null
+          content: finalContent
         })
         break
       }
