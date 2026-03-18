@@ -1283,6 +1283,7 @@ module.exports = {
   sendAudio,
   sendMedia,
   synthesizeAndUploadAudioByTts,
+  synthesizeEdgeTtsToMp3,
   listEdgeTtsVoices,
   resolveTtsVoice,
   getTtsAliasMap,

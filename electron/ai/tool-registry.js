@@ -44,6 +44,29 @@ class ToolRegistry {
 function createDefaultRegistry(options = {}) {
   const registry = new ToolRegistry()
 
+  // 内置工具靠前：飞书语音/文件/消息、TTS 音色，便于模型优先选用
+  try {
+    registry.register('feishu_send_voice_message', require('./tools/feishu-send-voice-message'))
+  } catch (e) { console.warn('加载 feishu_send_voice_message 工具失败:', e.message) }
+  try {
+    registry.register('feishu_send_file_message', require('./tools/feishu-send-file-message'))
+  } catch (e) { console.warn('加载 feishu_send_file_message 工具失败:', e.message) }
+  try {
+    registry.register('feishu_send_message', require('./tools/feishu-send-message'))
+  } catch (e) { console.warn('加载 feishu_send_message 工具失败:', e.message) }
+  try {
+    registry.register('tts_voice_manager', require('./tools/tts-voice-manager'))
+  } catch (e) { console.warn('加载 tts_voice_manager 工具失败:', e.message) }
+  try {
+    registry.register('edge_tts_synthesize', require('./tools/edge-tts-synthesize'))
+  } catch (e) { console.warn('加载 edge_tts_synthesize 工具失败:', e.message) }
+  try {
+    registry.register('ffmpeg_run', require('./tools/ffmpeg-run'))
+  } catch (e) { console.warn('加载 ffmpeg_run 工具失败:', e.message) }
+  try {
+    registry.register('feishu_doc_capability', require('./tools/feishu-doc-capability'))
+  } catch (e) { console.warn('加载 feishu_doc_capability 工具失败:', e.message) }
+
   const builtinTools = [
     ['analyze_project', './tools/analyze-project'],
     ['execute_command', './tools/execute-command'],
@@ -195,41 +218,6 @@ function createDefaultRegistry(options = {}) {
     console.warn('加载 cron_task 工具失败:', e.message)
   }
 
-  // 飞书通知：发送文本到群/会话
-  try {
-    registry.register('feishu_send_message', require('./tools/feishu-send-message'))
-  } catch (e) {
-    console.warn('加载 feishu_send_message 工具失败:', e.message)
-  }
-
-  // 飞书语音消息：专用工具（自动转 OPUS、上传、发送）
-  try {
-    registry.register('feishu_send_voice_message', require('./tools/feishu-send-voice-message'))
-  } catch (e) {
-    console.warn('加载 feishu_send_voice_message 工具失败:', e.message)
-  }
-
-  // 飞书文件/图片消息：专用工具（图片自动按图片发送，其它按文件发送）
-  try {
-    registry.register('feishu_send_file_message', require('./tools/feishu-send-file-message'))
-  } catch (e) {
-    console.warn('加载 feishu_send_file_message 工具失败:', e.message)
-  }
-
-  // 飞书语音消息：专用工具（自动转 OPUS、上传、发送）
-  try {
-    registry.register('feishu_send_voice_message', require('./tools/feishu-send-voice-message'))
-  } catch (e) {
-    console.warn('加载 feishu_send_voice_message 工具失败:', e.message)
-  }
-
-  // 飞书文档能力：创建/读取/追加改写副本
-  try {
-    registry.register('feishu_doc_capability', require('./tools/feishu-doc-capability'))
-  } catch (e) {
-    console.warn('加载 feishu_doc_capability 工具失败:', e.message)
-  }
-
   // 飞书多维表格能力：表/字段/记录
   try {
     registry.register('feishu_bitable_capability', require('./tools/feishu-bitable-capability'))
@@ -256,13 +244,6 @@ function createDefaultRegistry(options = {}) {
     registry.register('dingtalk_send_message', require('./tools/dingtalk-send-message'))
   } catch (e) {
     console.warn('加载 dingtalk_send_message 工具失败:', e.message)
-  }
-
-  // TTS 音色管理：全量音色、别名、默认音色
-  try {
-    registry.register('tts_voice_manager', require('./tools/tts-voice-manager'))
-  } catch (e) {
-    console.warn('加载 tts_voice_manager 工具失败:', e.message)
   }
 
   // process_manager 后台进程管理
