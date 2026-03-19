@@ -47,6 +47,11 @@ function canSend(sender) {
 // Claude 模型前缀
 const CLAUDE_PREFIXES = ['claude-']
 
+/** OpenRouter：未传 max_tokens 时网关会按模型默认（如 65536）预留输出额度，易触发「more credits / fewer max_tokens」 */
+const OPENROUTER_DEFAULT_MAX_TOKENS = 8192
+/** 即使用户在设置里填得很大，也对 OpenRouter 封顶，避免误预留天文数字 */
+const OPENROUTER_MAX_TOKENS_CAP = 16384
+
 class Orchestrator {
   constructor(getAIConfigOrStore, toolRegistry, mcpManager, opts = {}) {
     this.getAIConfig = typeof getAIConfigOrStore === 'function' ? getAIConfigOrStore : null
@@ -705,9 +710,10 @@ class Orchestrator {
         this._notifyFeishuOnComplete(currentMessages)
         return { success: true, messages: currentMessages }
       } else {
-        wrappedSender.send('ai-chat-error', { sessionId, error: error.message })
-        sessionRegistry.markError(registryId, error.message)
-        return { success: false, error: error.message }
+        const userMsg = this._enhanceLlmErrorForUser(error)
+        wrappedSender.send('ai-chat-error', { sessionId, error: userMsg })
+        sessionRegistry.markError(registryId, userMsg)
+        return { success: false, error: userMsg }
       }
     } finally {
       // 仅当当前 run 仍是 activeSessions 中该 session 的条目时才删除，避免旧 run 完成后误删新 run
@@ -977,7 +983,13 @@ class Orchestrator {
           stream: false,
           temperature: config.temperature ?? 0
         }
-        if (config.maxTokens) reqBody.max_tokens = config.maxTokens
+        if (this._isOpenRouterBaseUrl(config.apiBaseUrl)) {
+          const userCap = Number(config.maxTokens) || 0
+          let mt = userCap > 0 ? Math.min(userCap, OPENROUTER_MAX_TOKENS_CAP) : OPENROUTER_DEFAULT_MAX_TOKENS
+          reqBody.max_tokens = Math.max(256, mt)
+        } else if (config.maxTokens) {
+          reqBody.max_tokens = config.maxTokens
+        }
         headers = {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${config.apiKey}`
@@ -1080,6 +1092,27 @@ class Orchestrator {
     return msg.includes('operation not allowed') || msg.includes('not allowed')
   }
 
+  _isOpenRouterBaseUrl(apiBaseUrl) {
+    return /openrouter\.ai/i.test(String(apiBaseUrl || ''))
+  }
+
+  /**
+   * 将 LLM 原始错误转为对用户更友好的文案（OpenRouter 额度/max_tokens 时提示开新会话等）
+   */
+  _enhanceLlmErrorForUser(err) {
+    const base = String(err && err.message ? err.message : err || '未知错误')
+    const status = Number(err && err.httpStatus) || 0
+    const lower = base.toLowerCase()
+    const looksLikeOpenRouterMaxOrCredits =
+      status === 402 ||
+      /fewer max_tokens|more credits|can only afford|max_tokens.*afford/.test(lower) ||
+      (/openrouter/.test(lower) && /credit|quota|billing|afford|max_tokens/.test(lower))
+    if (looksLikeOpenRouterMaxOrCredits) {
+      return `${base}\n\n💡 建议：① 在「设置 → AI 配置」将「最大输出 Tokens」设为 2048～8192（勿长期为 0，否则网关可能按模型默认极大值预留额度）；② **开启新会话**或删除部分历史消息以缩短上下文；③ 额度不足时可到 OpenRouter 充值或更换供应商。`
+    }
+    return base
+  }
+
   _classifyLlmError(err) {
     const status = Number(err && (err.httpStatus || err.statusCode || 0)) || 0
     const raw = String(err && err.message ? err.message : err || '')
@@ -1089,7 +1122,8 @@ class Orchestrator {
       /invalid api key|unauthorized|authentication|auth failed|forbidden/.test(msg)
     if (isAuth) return { kind: 'auth', action: 'fail_fast' }
 
-    const isBilling = /insufficient_quota|quota|billing|余额|欠费|credit|payment required/.test(msg)
+    const isBilling = status === 402 ||
+      /insufficient_quota|quota|billing|余额|欠费|credit|payment required|more credits|can only afford|fewer max_tokens/.test(msg)
     if (isBilling) return { kind: 'billing', action: 'fail_fast' }
 
     const isModelUnavailable =
@@ -1132,9 +1166,23 @@ class Orchestrator {
       if (signal.aborted) { reject(new Error('已取消')); return }
 
       const url = new URL(`${config.apiBaseUrl}/chat/completions`)
-      // max_tokens=0 表示不限制，不传该字段让 API 使用模型默认值
       const reqBody = { ...body, stream: true }
-      if (!reqBody.max_tokens) delete reqBody.max_tokens
+      // OpenRouter：必须显式限制 max_tokens，否则按模型默认（如 65536）预留额度，易触发余额不足
+      if (this._isOpenRouterBaseUrl(config.apiBaseUrl)) {
+        const userCap = Number(config.maxTokens) || 0
+        let mt = Number(reqBody.max_tokens) || 0
+        if (userCap > 0) {
+          mt = Math.min(userCap, OPENROUTER_MAX_TOKENS_CAP)
+        } else if (!mt || mt <= 0) {
+          mt = OPENROUTER_DEFAULT_MAX_TOKENS
+        } else {
+          mt = Math.min(mt, OPENROUTER_MAX_TOKENS_CAP)
+        }
+        reqBody.max_tokens = Math.max(256, mt)
+      } else {
+        // 非 OpenRouter：max_tokens=0 表示不限制，不传该字段让 API 使用模型默认值
+        if (!reqBody.max_tokens) delete reqBody.max_tokens
+      }
       // 显式指定 tool_choice，避免部分网关/代理不传时模型不调用工具
       if (Array.isArray(reqBody.tools) && reqBody.tools.length > 0) {
         if (reqBody.tool_choice === undefined) reqBody.tool_choice = 'auto'
