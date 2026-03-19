@@ -148,9 +148,41 @@ function getExecutionSummary(projectPath) {
   }
 }
 
+/**
+ * 获取最近执行记录（用于会话摘要与经验提炼：看了哪些命令、安装了什么、成功/失败）
+ * @param {string} projectPath - 项目路径
+ * @param {number} limit - 最多返回条数
+ * @param {string} [sessionId] - 可选，仅返回该会话内的记录
+ * @returns {{ entries: Array<{ command: string, cwd: string, success: boolean, toolName: string, exitCode?: number }> }}
+ */
+function getRecentEntries(projectPath, limit = 50, sessionId = null) {
+  const key = hashProjectKey(projectPath)
+  const data = readLog()
+  const proj = data.byProject[key]
+  if (!proj || !proj.entries.length) {
+    return { entries: [] }
+  }
+  let list = proj.entries
+  if (sessionId && String(sessionId).trim()) {
+    const sid = String(sessionId).trim()
+    list = list.filter((e) => e.sessionId === sid)
+  }
+  const recent = list.slice(0, Math.min(limit, list.length))
+  return {
+    entries: recent.map((e) => ({
+      command: e.command || '',
+      cwd: e.cwd || '',
+      success: e.success === true,
+      toolName: e.toolName || 'execute_command',
+      exitCode: e.exitCode
+    }))
+  }
+}
+
 module.exports = {
   append,
   getViewedPaths,
   getExecutionSummary,
+  getRecentEntries,
   extractPathsFromCommand
 }

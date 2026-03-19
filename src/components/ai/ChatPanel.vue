@@ -169,6 +169,7 @@
         >
           <Paperclip :size="14" />
         </button>
+        <!-- 发送 / 暂停共用一个位置：流式时显示暂停，否则显示发送 -->
         <button
           v-if="isStreaming"
           class="send-btn stop"
@@ -178,16 +179,7 @@
           <Square :size="14" />
         </button>
         <button
-          v-if="isStreaming"
-          class="send-btn stop-then-send"
-          :disabled="!inputText.trim() && !hasActiveSlash && pendingAttachments.length === 0"
-          @click="handleSend({ stopPrevious: true })"
-          title="先停止当前任务再发送"
-        >
-          <Send :size="14" />
-        </button>
-        <button
-          v-if="!isStreaming"
+          v-else
           class="send-btn"
           :disabled="!inputText.trim() && !hasActiveSlash && pendingAttachments.length === 0"
           @click="handleSend"

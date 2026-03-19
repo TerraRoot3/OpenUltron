@@ -603,7 +603,7 @@ async function getTenantAccessToken() {
   }
   const config = getConfig()
   if (!config.app_id || !config.app_secret) {
-    throw new Error('请先配置飞书 app_id 与 app_secret（AI 管理 → 飞书通知）')
+    throw new Error('请先在「AI 管理 → 飞书通知」中配置 App ID 与 App Secret，并确保应用已开通机器人及发消息权限')
   }
   const res = await httpsPost(AUTH_URL, AUTH_PATH, {
     app_id: config.app_id,
@@ -623,7 +623,7 @@ async function getAppAccessToken() {
   }
   const config = getConfig()
   if (!config.app_id || !config.app_secret) {
-    throw new Error('请先配置飞书 app_id 与 app_secret（AI 管理 → 飞书通知）')
+    throw new Error('请先在「AI 管理 → 飞书通知」中配置 App ID 与 App Secret，并确保应用已开通机器人及发消息权限')
   }
   const res = await httpsPost(AUTH_URL, AUTH_APP_PATH, {
     app_id: config.app_id,
@@ -640,7 +640,7 @@ async function getAppAccessToken() {
 function buildUserAuthorizeUrl({ redirectUri, state }) {
   const config = getConfig()
   if (!config.app_id || !config.app_secret) {
-    throw new Error('请先配置飞书 app_id 与 app_secret（AI 管理 → 飞书通知）')
+    throw new Error('请先在「AI 管理 → 飞书通知」中配置 App ID 与 App Secret，并确保应用已开通机器人及发消息权限')
   }
   const params = new URLSearchParams({
     app_id: String(config.app_id).trim(),
@@ -653,7 +653,7 @@ function buildUserAuthorizeUrl({ redirectUri, state }) {
 async function exchangeUserAccessTokenByCode({ code, redirectUri }) {
   const config = getConfig()
   if (!config.app_id || !config.app_secret) {
-    throw new Error('请先配置飞书 app_id 与 app_secret（AI 管理 → 飞书通知）')
+    throw new Error('请先在「AI 管理 → 飞书通知」中配置 App ID 与 App Secret，并确保应用已开通机器人及发消息权限')
   }
   const appAccessToken = await getAppAccessToken()
   const payload = {
@@ -688,7 +688,7 @@ async function refreshUserAccessToken() {
     throw new Error('未配置 feishu.user_refresh_token，请重新在设置页发起飞书用户授权')
   }
   if (!config.app_id || !config.app_secret) {
-    throw new Error('请先配置飞书 app_id 与 app_secret（AI 管理 → 飞书通知）')
+    throw new Error('请先在「AI 管理 → 飞书通知」中配置 App ID 与 App Secret，并确保应用已开通机器人及发消息权限')
   }
   const appAccessToken = await getAppAccessToken()
   const payload = {
@@ -1033,7 +1033,7 @@ async function sendMessage(options = {}) {
   const config = getConfig()
   const receiveId = id && id.trim() ? id.trim() : (config.default_chat_id && config.default_chat_id.trim())
   if (!receiveId) {
-    return { success: false, message: '请提供 chat_id/receive_id 或在飞书通知中配置默认会话' }
+    return { success: false, message: '请提供 chat_id/receive_id，或在「飞书通知」中配置默认会话；在飞书内与机器人对话时会自动使用当前会话' }
   }
   const receiveIdType = options.receive_id_type || 'chat_id'
 

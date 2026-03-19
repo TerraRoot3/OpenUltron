@@ -54,6 +54,15 @@ async function execute(args) {
         if (content === undefined || content === null) {
           return { success: false, error: '缺少 content 参数' }
         }
+        // 禁止写入“看起来像二进制”的扩展名：file_operation 只能写 UTF-8 文本，写 .pptx/.pdf 等会得到无效文件
+        const ext = path.extname(filePath).toLowerCase()
+        const binaryExts = ['.pptx', '.ppt', '.xlsx', '.xls', '.pdf', '.docx', '.doc', '.zip', '.rar']
+        if (binaryExts.includes(ext)) {
+          return {
+            success: false,
+            error: `file_operation 仅支持写入纯文本（UTF-8）。扩展名 ${ext} 为二进制格式，请改用 execute_command 运行实际生成工具（如 npx slidev build、python-pptx、pandoc 等），并在回复中告知用户生成文件的完整绝对路径。`
+          }
+        }
         // 确保目录存在
         await fs.promises.mkdir(path.dirname(filePath), { recursive: true })
         await fs.promises.writeFile(filePath, content, 'utf-8')

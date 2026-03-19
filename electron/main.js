@@ -5691,7 +5691,18 @@ registerChannel('ai-save-session-summary', async (event, { projectPath, sessionI
     if (!sid || !Array.isArray(messages) || messages.length === 0) {
       return { success: false, message: 'invalid args' }
     }
-    const summary = buildSessionSummary(messages)
+    let summary = buildSessionSummary(messages)
+    const { entries: recentEntries } = commandExecutionLog.getRecentEntries(proj, 20, sid)
+    if (recentEntries.length > 0) {
+      const successCount = recentEntries.filter((e) => e.success).length
+      const failCount = recentEntries.length - successCount
+      const lines = recentEntries.slice(0, 10).map((e) => {
+        const status = e.success ? '✓' : '✗'
+        const cmd = (e.command || '').trim().slice(0, 80)
+        return `  ${status} ${cmd}`
+      })
+      summary = [summary, '', '命令执行情况：', `成功 ${successCount} 次，失败 ${failCount} 次。最近执行：`, ...lines].join('\n')
+    }
     if (!summary) return { success: true, summary: '' }
     memoryStore.saveMemory({
       content: summary,
@@ -5827,15 +5838,28 @@ async function evolveFromSessionInternal({ projectPath, sessionId, force = false
       return rows.join(' | ')
     })()
 
-    const systemPrompt = '你负责从对话中提炼经验教训。只输出一个 JSON 数组，格式为 [{"content":"...", "category":"..."}]。每条 content 必须详细（80～400字）：包含具体场景、失败原因或成功做法、可复用的命令/路径/步骤。category 只能从 通用/git/部署/调试/命令/飞书/MCP/自动化 中选。若无值得提炼内容则输出 []。禁止 markdown 代码块，禁止额外解释。'
+    const { entries: recentEntries } = commandExecutionLog.getRecentEntries(projectPath || '', 50, sessionId)
+    const recentCommandsText = recentEntries.length
+      ? recentEntries
+          .map((e) => {
+            const status = e.success ? '成功' : '失败'
+            const cwd = e.cwd ? ` (cwd: ${e.cwd})` : ''
+            const code = !e.success && e.exitCode != null ? ` exit=${e.exitCode}` : ''
+            return `- [${status}]${cwd} ${(e.command || '').trim().slice(0, 200)}${code}`
+          })
+          .join('\n')
+      : ''
+
+    const systemPrompt = '你负责从对话与命令执行记录中提炼经验教训。只输出一个 JSON 数组，格式为 [{"content":"...", "category":"..."}]。每条 content 必须详细（80～400字）：包含具体场景、失败原因或成功做法、可复用的命令/路径/步骤；须结合「最近执行命令」判断安装了哪些、哪些成功/失败。category 只能从 通用/git/部署/调试/命令/飞书/MCP/自动化 中选。若无值得提炼内容则输出 []。禁止 markdown 代码块，禁止额外解释。'
     const prompt = [
       `触发来源：${reason}`,
       `项目：${projectPath}`,
       `会话：${sessionId}`,
       `命令执行摘要：${cmdBrief}`,
       cmdByTool ? `按工具统计：${cmdByTool}` : '',
+      recentCommandsText ? ['', '最近执行命令（本会话，供提炼「安装了哪些、哪些成功/失败」参考）：', recentCommandsText].join('\n') : '',
       '',
-      '请根据以下对话提炼 1～5 条经验教训：',
+      '请根据以上「对话」与「最近执行命令」提炼 1～5 条经验教训：',
       dialogText
     ].filter(Boolean).join('\n')
 

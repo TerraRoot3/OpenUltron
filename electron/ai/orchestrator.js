@@ -200,6 +200,7 @@ class Orchestrator {
         '**用户明确要求「用语音」「语音介绍」「发语音」时，必须实际调用工具**（如 feishu_send_message 的 audio_text、或 execute_command 生成音频后 audio_file_path 发送），不得仅用文字回复声称已完成而未调用任何工具。\n' +
         `默认工作空间：${getWorkspaceRoot()}。\n` +
         `当无真实项目路径时：脚本优先写入 ${path.join(getWorkspaceRoot(), 'scripts')}，新建项目优先放入 ${path.join(getWorkspaceRoot(), 'projects')}，避免散落在其他目录。\n` +
+        '**生成 PPT/PDF/Excel 等二进制文件**：必须用 execute_command 运行实际生成工具（如 npx slidev build、python-pptx、pandoc 等），不可用 file_operation 写 .pptx/.pdf；生成后从命令输出或 list_dir 确认输出路径，在回复中给出**完整绝对路径**，避免用户找不到文件。\n' +
         '**回复风格**：不要写「我来帮你…」「让我执行…」等固定话术；不要输出「可能的原因和建议」「请提供以下任一信息」等模板式列表。直接执行、根据结果继续或简短说明已尝试与下一步。未明确要求修改外部项目时，默认在 OpenUltron 内完成。'
       )
 
@@ -1632,9 +1633,10 @@ class Orchestrator {
       // 无真实项目路径时，默认将相对路径落到统一 workspace 根目录
       args = { ...args, path: path.join(defaultWorkspaceCwd, args.path) }
     }
-    // 飞书会话下调用 feishu_send_message 时，优先使用当前会话 chat_id。
+    // 飞书会话下调用发消息/发文件/发语音时，优先使用当前会话 chat_id。
     // 子 Agent 偶发会把 session/run id 当作 chat_id，导致 invalid receive_id，这里统一兜底纠正。
-    if (name === 'feishu_send_message' && session?.feishuChatId) {
+    const feishuSendToolNames = ['feishu_send_message', 'feishu_send_file_message', 'feishu_send_voice_message']
+    if (feishuSendToolNames.includes(name) && session?.feishuChatId) {
       const sessionChatId = String(session.feishuChatId || '').trim()
       const rawChatId = String((args && args.chat_id) || '').trim()
       const looksLikeFeishuChatId = /^oc_[a-zA-Z0-9]+$/.test(rawChatId)
@@ -1642,7 +1644,7 @@ class Orchestrator {
       const shouldRewrite = !rawChatId || !looksLikeFeishuChatId || looksLikeSessionToken
       if (shouldRewrite) {
         if (rawChatId !== sessionChatId) {
-          console.log('[FeishuToolRoute] 修正 feishu_send_message chat_id', {
+          console.log('[FeishuToolRoute] 修正', name, 'chat_id', {
             sessionId,
             from: rawChatId || '(empty)',
             to: sessionChatId
