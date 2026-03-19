@@ -47,8 +47,8 @@ function canSend(sender) {
 // Claude 模型前缀
 const CLAUDE_PREFIXES = ['claude-']
 
-/** OpenRouter：未传 max_tokens 时网关会按模型默认（如 65536）预留输出额度，易触发「more credits / fewer max_tokens」 */
-const OPENROUTER_DEFAULT_MAX_TOKENS = 8192
+/** OpenRouter：若未显式限制 max_tokens，网关可能按模型默认/估算预留额度，易触发 credits 不足 */
+const OPENROUTER_DEFAULT_MAX_TOKENS = 2048
 /** 即使用户在设置里填得很大，也对 OpenRouter 封顶，避免误预留天文数字 */
 const OPENROUTER_MAX_TOKENS_CAP = 16384
 
@@ -1162,6 +1162,20 @@ class Orchestrator {
   _callOpenAILLM(body, config, sender, sessionId, signal) {
     const { maxRetries, baseDelayMs, maxDelayMs } = this._getRetryConfig(config)
 
+    const parseOpenRouterAffordMaxTokens = (message) => {
+      const m = String(message || '').match(/can only afford\s+(\d+)/i)
+      if (m && m[1]) {
+        const afford = Number(m[1])
+        if (Number.isFinite(afford) && afford > 0) return afford
+      }
+      return null
+    }
+
+    // For OpenRouter 402 credits/max_tokens errors:
+    // do a single retry with smaller max_tokens to avoid showing failure to users.
+    let openrouterCreditRetryUsed = false
+    let openrouterMaxTokensForced = null
+
     const attemptOnce = (attempt) => new Promise((resolve, reject) => {
       if (signal.aborted) { reject(new Error('已取消')); return }
 
@@ -1169,6 +1183,9 @@ class Orchestrator {
       const reqBody = { ...body, stream: true }
       // OpenRouter：必须显式限制 max_tokens，否则按模型默认（如 65536）预留额度，易触发余额不足
       if (this._isOpenRouterBaseUrl(config.apiBaseUrl)) {
+        if (openrouterMaxTokensForced != null && openrouterMaxTokensForced > 0) {
+          reqBody.max_tokens = Math.max(256, Math.min(openrouterMaxTokensForced, OPENROUTER_MAX_TOKENS_CAP))
+        } else {
         const userCap = Number(config.maxTokens) || 0
         let mt = Number(reqBody.max_tokens) || 0
         if (userCap > 0) {
@@ -1179,6 +1196,7 @@ class Orchestrator {
           mt = Math.min(mt, OPENROUTER_MAX_TOKENS_CAP)
         }
         reqBody.max_tokens = Math.max(256, mt)
+        }
       } else {
         // 非 OpenRouter：max_tokens=0 表示不限制，不传该字段让 API 使用模型默认值
         if (!reqBody.max_tokens) delete reqBody.max_tokens
@@ -1191,6 +1209,26 @@ class Orchestrator {
       const postData = JSON.stringify(reqBody)
 
       const onError = (err) => {
+        // Special retry: OpenRouter credits不足 / max_tokens 过大（402）时自动降 max_tokens
+        if (!openrouterCreditRetryUsed &&
+          this._isOpenRouterBaseUrl(config.apiBaseUrl) &&
+          Number(err?.httpStatus) === 402
+        ) {
+          const afford = parseOpenRouterAffordMaxTokens(err?.message)
+          if (afford != null) {
+            openrouterCreditRetryUsed = true
+            // 留一点余量给输入+系统开销：afford - 512；并给一个下限
+            const reduced = Math.max(256, Math.floor(afford - 512))
+            // 若 reduced 没有比当前更小，仍降到默认 2048 兜底
+            openrouterMaxTokensForced = reduced > 0 ? reduced : OPENROUTER_DEFAULT_MAX_TOKENS
+            console.warn('[AI] OpenRouter 402 credits/max_tokens，自动重试（max_tokens 降低为）', openrouterMaxTokensForced)
+            this._sleep(300, signal)
+              .then(() => attemptOnce(attempt + 1).then(resolve).catch(reject))
+              .catch(() => reject(err))
+            return
+          }
+        }
+
         if (this._shouldRetryError(err, attempt, maxRetries)) {
           const delay = this._getRetryDelayMs(attempt, baseDelayMs, maxDelayMs)
           console.warn(`[AI] API 调用失败，将在 ${delay}ms 后重试 (${attempt + 1}/${maxRetries})：`, err.message)

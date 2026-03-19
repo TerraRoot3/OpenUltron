@@ -84,7 +84,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, onActivated } from 'vue'
 import { Zap, Pencil, Trash2, Rocket, Eye, Wrench } from 'lucide-vue-next'
 
 // ── 状态 ──────────────────────────────────────────────────
@@ -96,10 +96,16 @@ const editing = ref(null)
 const allSkills = computed(() => allSkillsRaw.value)
 
 const groupedSkills = computed(() => {
-  const order = ['deploy', 'review', 'custom']
+  const knownOrder = ['deploy', 'review', 'custom']
+  const categories = Array.from(new Set(allSkills.value.map(s => s.category || 'custom')))
+  const otherCats = categories
+    .filter(c => !knownOrder.includes(c))
+    .sort((a, b) => String(a).localeCompare(String(b), 'zh-CN'))
+  const orderedCats = [...knownOrder.filter(c => categories.includes(c)), ...otherCats]
+
   const groups = {}
-  for (const cat of order) {
-    const items = allSkills.value.filter(s => s.category === cat)
+  for (const cat of orderedCats) {
+    const items = allSkills.value.filter(s => (s.category || 'custom') === cat)
     if (items.length > 0) groups[cat] = items
   }
   return groups
@@ -112,6 +118,11 @@ onMounted(() => {
   if (window.electronAPI?.ai?.onSkillsChanged) {
     unsubscribeSkillsChanged = window.electronAPI.ai.onSkillsChanged(loadSkills)
   }
+})
+// If SkillManager is wrapped by <KeepAlive>, onMounted only runs once.
+// Ensure latest installed skills are shown whenever the page becomes active again.
+onActivated(() => {
+  loadSkills()
 })
 onUnmounted(() => {
   if (typeof unsubscribeSkillsChanged === 'function') unsubscribeSkillsChanged()
@@ -145,7 +156,9 @@ async function removeSkill(id) {
 
 // ── 操作 ──────────────────────────────────────────────────
 function startEdit(skill) {
-  editing.value = { ...skill, _isNew: false }
+  const order = ['deploy', 'review', 'custom']
+  const normalizedCategory = order.includes(skill?.category) ? skill.category : 'custom'
+  editing.value = { ...skill, _isNew: false, category: normalizedCategory }
 }
 
 async function saveEditing() {
