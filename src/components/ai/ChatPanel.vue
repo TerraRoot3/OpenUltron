@@ -890,6 +890,8 @@ const onImageClick = (e) => {
 // ---- 会话历史持久化（projectPath 辅助函数提前，供历史列表复用）----
 const historyProjectPath = () => props.projectPath || '__general__'
 const HISTORY_CMD_RE = /^\/(history|memory)\s*$/i
+const STOP_CMD_RE = /^\/stop\s*$/i
+const CLEAR_CMD_RE = /^\/clear\s*$/i
 
 // ---- 历史对话列表 ----
 const showHistory = ref(false)
@@ -1237,7 +1239,7 @@ const handleSend = async (opts = {}) => {
   const { stopPrevious } = opts
   const text = inputText.value.trim()
   if (!text && !hasActiveSlash.value && pendingAttachments.value.length === 0) return
-  if (!stopPrevious && isStreaming.value) return
+  if (!stopPrevious && isStreaming.value && !STOP_CMD_RE.test(text) && !CLEAR_CMD_RE.test(text)) return
 
   if (HISTORY_CMD_RE.test(text)) {
     inputText.value = ''
@@ -1254,6 +1256,39 @@ const handleSend = async (opts = {}) => {
     } catch {
       messages.value.push({ role: 'assistant', content: '读取历史记忆失败。' })
     }
+    return
+  }
+
+  // /stop：停止当前正在进行的生成（不发送新消息）
+  if (STOP_CMD_RE.test(text)) {
+    inputText.value = ''
+    adjustTextareaHeight()
+    clearSlash()
+    try {
+      await useAIChatInstance.stopChat()
+    } catch { /* ignore */ }
+    nextTick(() => forceScrollToBottom())
+    return
+  }
+
+  // /clear：清空当前会话的 UI 消息，并重置 sessionId（不做 /new 的归档/进化）
+  if (CLEAR_CMD_RE.test(text)) {
+    inputText.value = ''
+    adjustTextareaHeight()
+    clearSlash()
+    try {
+      await useAIChatInstance.stopChat()
+    } catch { /* ignore */ }
+
+    showHistory.value = false
+    carrySummaryForNextSession.value = ''
+    error.value = ''
+    useAIChatInstance.clearMessages()
+    currentSessionId.value = null
+    useAIChatInstance.setCurrentSessionId(null) // 同步 composable 内 sessionId
+    syncSessionName()
+    emit('session-created', null)
+    nextTick(() => forceScrollToBottom())
     return
   }
 
@@ -1567,6 +1602,29 @@ onMounted(async () => {
       }
     }
     const text = String(data?.text || '').trim()
+    // 飞书端也支持指令：/stop 停止生成；/clear 清空当前会话 UI（不发送给模型）
+    if (STOP_CMD_RE.test(text)) {
+      try {
+        useAIChatInstance.setCurrentSessionId(incomingSessionId)
+        await useAIChatInstance.stopChat()
+      } catch { /* ignore */ }
+      nextTick(() => forceScrollToBottom())
+      return
+    }
+    if (CLEAR_CMD_RE.test(text)) {
+      try {
+        useAIChatInstance.setCurrentSessionId(incomingSessionId)
+        await useAIChatInstance.stopChat()
+      } catch { /* ignore */ }
+      showHistory.value = false
+      carrySummaryForNextSession.value = ''
+      error.value = ''
+      useAIChatInstance.clearMessages()
+      currentSessionId.value = incomingSessionId
+      syncSessionName()
+      nextTick(() => forceScrollToBottom())
+      return
+    }
     let attachmentText = ''
     if (Array.isArray(data?.attachments) && data.attachments.length > 0) {
       const lines = []

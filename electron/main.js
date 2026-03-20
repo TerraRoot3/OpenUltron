@@ -2832,6 +2832,25 @@ function getAIConfigLegacy() {
   return aiConfigFile.toLegacyConfig(data)
 }
 
+/** 合并 openultron.json 中的 ai.contextCompression 与代码默认 */
+function mergeContextCompressionFromLegacy(legacy) {
+  const { DEFAULT_CONFIG } = require('./ai/context-compressor')
+  const raw = legacy && legacy.raw && legacy.raw.contextCompression
+  return { ...DEFAULT_CONFIG, ...(raw && typeof raw === 'object' ? raw : {}) }
+}
+
+/** 合并 ai.toolDefinitions（发给 LLM 前是否裁剪工具描述/schema） */
+function mergeToolDefinitionsFromLegacy(legacy) {
+  const defaults = {
+    slimMode: 'openrouter',
+    maxDescriptionChars: 400,
+    stripSchemaExamples: true,
+    maxPropertyDescriptionChars: 90
+  }
+  const raw = legacy && legacy.raw && legacy.raw.toolDefinitions
+  return raw && typeof raw === 'object' ? { ...defaults, ...raw } : defaults
+}
+
 // 启动时确保 <appRoot>/openultron.json 存在（含 AI + 飞书，首次可从原 ai-config.json / feishu.json 合并）
 aiConfigFile.ensureAIConfigFile(app, store)
 // 确保 <appRoot>/prompts/ 存在且缺失的提示词文件写入默认（可被 AI 通过 file_operation 修改）
@@ -3218,7 +3237,9 @@ function getResolvedAIConfig() {
         defaultModel: m,
         temperature: (legacy.config && legacy.config.temperature) ?? 0,
         maxTokens: (legacy.config && legacy.config.maxTokens) ?? 0,
-        maxToolIterations: (legacy.config && legacy.config.maxToolIterations) ?? 0
+        maxToolIterations: (legacy.config && legacy.config.maxToolIterations) ?? 0,
+        contextCompression: mergeContextCompressionFromLegacy(legacy),
+        toolDefinitions: mergeToolDefinitionsFromLegacy(legacy)
       }
     }
     if (m !== defaultModel) fallbackRoutes.push(route)
@@ -3233,7 +3254,9 @@ function getResolvedAIConfig() {
           defaultModel,
           temperature: (legacy.config && legacy.config.temperature) ?? 0,
           maxTokens: (legacy.config && legacy.config.maxTokens) ?? 0,
-          maxToolIterations: (legacy.config && legacy.config.maxToolIterations) ?? 0
+          maxToolIterations: (legacy.config && legacy.config.maxToolIterations) ?? 0,
+          contextCompression: mergeContextCompressionFromLegacy(legacy),
+          toolDefinitions: mergeToolDefinitionsFromLegacy(legacy)
         }
       }
     : null
@@ -3247,7 +3270,9 @@ function getResolvedAIConfig() {
     modelBindings: bindings,
     temperature: (legacy.config && legacy.config.temperature) ?? 0,
     maxTokens: (legacy.config && legacy.config.maxTokens) ?? 0,
-    maxToolIterations: (legacy.config && legacy.config.maxToolIterations) ?? 0
+    maxToolIterations: (legacy.config && legacy.config.maxToolIterations) ?? 0,
+    contextCompression: mergeContextCompressionFromLegacy(legacy),
+    toolDefinitions: mergeToolDefinitionsFromLegacy(legacy)
   }
 }
 
@@ -3420,7 +3445,9 @@ function getResolvedAIConfigForProvider(providerKey) {
     modelBindings: bindings,
     temperature: (legacy.config && legacy.config.temperature) ?? 0,
     maxTokens: (legacy.config && legacy.config.maxTokens) ?? 0,
-    maxToolIterations: (legacy.config && legacy.config.maxToolIterations) ?? 0
+    maxToolIterations: (legacy.config && legacy.config.maxToolIterations) ?? 0,
+    contextCompression: mergeContextCompressionFromLegacy(legacy),
+    toolDefinitions: mergeToolDefinitionsFromLegacy(legacy)
   }
 }
 

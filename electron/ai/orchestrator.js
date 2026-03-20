@@ -6,7 +6,8 @@ const http = require('http')
 const path = require('path')
 const { URL } = require('url')
 const { SSEParser } = require('./stream-parser')
-const { shouldCompress, compressMessages, flushMemoryBeforeCompaction } = require('./context-compressor')
+const { estimateTokens, shouldCompress, compressMessages, flushMemoryBeforeCompaction, DEFAULT_CONFIG: COMPRESSION_DEFAULTS } = require('./context-compressor')
+const { slimToolsForChat, shouldSlimToolDefinitions } = require('./slim-tool-definitions')
 const { getTopMemoriesForProject, saveMemory, readGlobalMemoryMd, readSoulMd, readIdentityMd, readAgentDisplayName, readUserMd, readBootMd, readAgentsMd, readToolsMd, readLessonsLearned, appendToDiary } = require('./memory-store')
 const { loadPrompt } = require('./system-prompts')
 const { sanitizeAssistantIdentityWording, sanitizeAssistantModelIdentity } = require('./identity-wording')
@@ -362,8 +363,25 @@ class Orchestrator {
       return cleaned
     }
 
+    // 工具定义瘦身（默认仅 OpenRouter）：削减 description / schema 示例，显著降低每轮请求体积
+    const toolDefMerged = {
+      slimMode: 'openrouter',
+      maxDescriptionChars: 400,
+      stripSchemaExamples: true,
+      maxPropertyDescriptionChars: 90,
+      ...(config.toolDefinitions && typeof config.toolDefinitions === 'object' ? config.toolDefinitions : {})
+    }
+    const toolsForSanitize = slimToolsForChat(tools || [], toolDefMerged, config.apiBaseUrl)
+    if (shouldSlimToolDefinitions(config.apiBaseUrl, toolDefMerged.slimMode)) {
+      try {
+        const b = Buffer.byteLength(JSON.stringify(tools || []))
+        const a = Buffer.byteLength(JSON.stringify(toolsForSanitize))
+        if (a < b) appLogger?.info?.('[AI] 工具定义瘦身', { count: toolsForSanitize.length, jsonBytesBefore: b, jsonBytesAfter: a, savedBytes: b - a })
+      } catch (_) { /* ignore */ }
+    }
+
     // 清洗工具 schema
-    const sanitizedTools = (tools || []).map(t => {
+    const sanitizedTools = toolsForSanitize.map(t => {
       const fn = t.function || t
       const params = fn.parameters
       return {
@@ -378,8 +396,15 @@ class Orchestrator {
     console.log('[AI] startChat →', isAnthropic ? 'Anthropic' : 'OpenAI', 'model:', useModel, 'baseUrl:', config.apiBaseUrl, 'tools:', sanitizedTools.length)
     if (sanitizedTools.length === 0) console.warn('[AI] 无可用工具，本轮仅会文本回复，不会执行 MCP/浏览器等')
 
-    // 上下文压缩：仅在本轮对话开始前检查一次，超阈值才压缩，避免单轮内多次压缩
-    const compressionConfig = config.contextCompression || {}
+    // 上下文压缩：在每次调用 LLM 前检查（含工具多轮），避免 prompt 先撑爆再失败
+    let compressionConfig = { ...COMPRESSION_DEFAULTS, ...(config.contextCompression && typeof config.contextCompression === 'object' ? config.contextCompression : {}) }
+    if (this._isOpenRouterBaseUrl(config.apiBaseUrl)) {
+      const soft = Number(compressionConfig.openRouterSoftBudget)
+      if (Number.isFinite(soft) && soft > 0) {
+        const th = Number(compressionConfig.threshold) || COMPRESSION_DEFAULTS.threshold
+        compressionConfig = { ...compressionConfig, threshold: Math.min(th, soft) }
+      }
+    }
     const fakeSender = { send: () => {} }
     const callForSummary = async (msgs, maxTokens) => {
       const callFn = isAnthropic ? this._callAnthropicLLM.bind(this) : this._callOpenAILLM.bind(this)
@@ -389,11 +414,61 @@ class Orchestrator {
       )
       return result?.content || ''
     }
-    const maybeCompress = async () => {
-      if (!shouldCompress(currentMessages, compressionConfig)) return
-      console.log('[AI] 触发上下文压缩...')
-      flushMemoryBeforeCompaction(currentMessages, callForSummary).catch(() => {})
-      currentMessages = await compressMessages(currentMessages, compressionConfig, callForSummary)
+    let compressNoticeSent = false
+    let compressCooldownUntilIteration = 0
+    const ensurePromptCompressed = async (opts = {}) => {
+      const maxPasses = opts.maxPasses != null ? Number(opts.maxPasses) : 2
+      const notify = !!opts.notify
+      const bypassCooldown = !!opts.bypassCooldown
+      if (!compressionConfig.enabled) return false
+
+      const coolIter = Number(compressionConfig.compressCooldownIterations)
+      const cool = Number.isFinite(coolIter) && coolIter > 0 ? coolIter : COMPRESSION_DEFAULTS.compressCooldownIterations || 2
+      if (!bypassCooldown && compressCooldownUntilIteration > 0 && iteration < compressCooldownUntilIteration) {
+        const dialogTok = estimateTokens(currentMessages.filter(m => m && m.role !== 'system'))
+        const th = Number(compressionConfig.threshold) || COMPRESSION_DEFAULTS.threshold
+        if (dialogTok <= th * 1.4) return false
+      }
+
+      let changed = false
+      let pass = 0
+      const passesLimit = Math.max(1, Math.min(3, maxPasses || 2))
+      while (pass < passesLimit) {
+        if (!shouldCompress(currentMessages, compressionConfig)) break
+        pass++
+        const baseKeep = Number(compressionConfig.keepRecent) || COMPRESSION_DEFAULTS.keepRecent
+        const aggKeep = Number(compressionConfig.aggressiveKeepRecent) || 8
+        const cfg = pass >= 2
+          ? { ...compressionConfig, keepRecent: Math.min(aggKeep, baseKeep) }
+          : compressionConfig
+        const dialogEst = estimateTokens(currentMessages.filter(m => m && m.role !== 'system'))
+        appLogger?.info?.(`[AI] 触发上下文压缩 第 ${pass} 次${pass >= 2 ? '（紧缩）' : ''}，对话估算 tokens≈${dialogEst}（总估算≈${estimateTokens(currentMessages)}）`)
+        if (compressionConfig.flushMemoryBeforeCompress) {
+          flushMemoryBeforeCompaction(currentMessages, callForSummary).catch(() => {})
+        }
+        const tokBeforeTotal = estimateTokens(currentMessages)
+        currentMessages = await compressMessages(currentMessages, cfg, callForSummary)
+        const tokAfterTotal = estimateTokens(currentMessages)
+        const minSave = Number(compressionConfig.minCompressSavingsTokens) || COMPRESSION_DEFAULTS.minCompressSavingsTokens || 1200
+        if (tokAfterTotal < tokBeforeTotal - minSave * 0.5) {
+          changed = true
+          compressCooldownUntilIteration = iteration + cool
+        }
+        // 若压缩后几乎没有下降（估算误差/摘要过长等），避免在同一轮内继续白做
+        if (tokAfterTotal >= tokBeforeTotal - minSave * 0.2) {
+          break
+        }
+        const afterDialog = estimateTokens(currentMessages.filter(m => m && m.role !== 'system'))
+        appLogger?.info?.(`[AI] 压缩后对话估算 tokens≈${afterDialog}（总≈${tokAfterTotal}）`)
+      }
+      if (notify && changed && !compressNoticeSent && canSend(sender)) {
+        compressNoticeSent = true
+        wrappedSender.send('ai-chat-token', {
+          sessionId,
+          token: '\n\n> 📎 **上下文过长**：已自动将早期对话总结压缩为摘要并延续当前任务（等效「干净延续」，无需手动开新会话）。\n\n'
+        })
+      }
+      return changed
     }
 
     try {
@@ -411,6 +486,9 @@ class Orchestrator {
         }
 
         iteration++
+
+        // 在调用模型前压缩，保证工具多轮后也不会因 prompt 过长而 402/超限
+        await ensurePromptCompressed({ maxPasses: 2, notify: true })
 
         const lastUserContent = (() => {
           for (let i = currentMessages.length - 1; i >= 0; i--) {
@@ -623,13 +701,17 @@ class Orchestrator {
           // ---- 循环检测：不终止会话，注入一条系统提示让 AI 看到后换思路继续 ----
           const loopError = this._detectLoop(loopDetector, normalizedToolCalls, toolResults)
 
-          // 工具结果过长时截断，避免单次工具输出撑爆上下文、浪费 token
+          // 工具结果过长时截断；浏览器 MCP（快照/DOM/网络等）单条常极大，单独收紧
           const TOOL_RESULT_MAX_LEN = 12000
+          const TOOL_RESULT_BROWSER_MAX_LEN = 6500
           for (let i = 0; i < toolResults.length; i++) {
             const { toolCall, resultStr } = toolResults[i]
+            const toolName = String(toolCall?.function?.name || toolCall?.name || '')
+            const browserHeavy = /mcp__chrome|snapshot|take_snapshot|evaluate|get_console|network|performance|wait_for|scroll|fill|click/i.test(toolName)
+            const maxLen = browserHeavy ? TOOL_RESULT_BROWSER_MAX_LEN : TOOL_RESULT_MAX_LEN
             let content = resultStr
-            if (typeof resultStr === 'string' && resultStr.length > TOOL_RESULT_MAX_LEN) {
-              content = resultStr.slice(0, TOOL_RESULT_MAX_LEN) + `\n...(已截断，共 ${resultStr.length} 字)`
+            if (typeof resultStr === 'string' && resultStr.length > maxLen) {
+              content = resultStr.slice(0, maxLen) + `\n...(已截断，共 ${resultStr.length} 字)`
             }
             // 部分上游（如 StepFun/OpenRouter）要求 tool_call_id 必填，流式可能未返回 id，用占位 id
             const toolCallId = (toolCall.id && String(toolCall.id).trim()) || `call_${i}_${Date.now()}`
@@ -693,8 +775,8 @@ class Orchestrator {
         })
       }
 
-      // 仅在本轮会话结束后做一次上下文压缩，再落盘/推送
-      await maybeCompress()
+      // 会话结束再压一轮（若中途已压过，shouldCompress 为 false 则跳过）
+      await ensurePromptCompressed({ maxPasses: 2, notify: false, bypassCooldown: true })
       wrappedSender.send('ai-chat-complete', { sessionId, messages: currentMessages })
       sessionRegistry.markComplete(registryId)
       this._extractMemoriesAsync(currentMessages, projectPath, config, useModel, isAnthropic)
@@ -703,7 +785,7 @@ class Orchestrator {
     } catch (error) {
       if (abortController.signal.aborted) {
         appLogger?.info?.('[Orchestrator] 会话因中止结束', { sessionId: String(sessionId).slice(0, 24) })
-        await maybeCompress()
+        await ensurePromptCompressed({ maxPasses: 2, notify: false, bypassCooldown: true })
         wrappedSender.send('ai-chat-complete', { sessionId, messages: currentMessages })
         sessionRegistry.markComplete(registryId)
         this._extractMemoriesAsync(currentMessages, projectPath, config, useModel, isAnthropic)
@@ -1103,6 +1185,12 @@ class Orchestrator {
     const base = String(err && err.message ? err.message : err || '未知错误')
     const status = Number(err && err.httpStatus) || 0
     const lower = base.toLowerCase()
+    // OpenRouter 402「Prompt tokens limit exceeded」：是**输入/上下文**超限（与 max_tokens 输出上限不是一回事）
+    const isOpenRouterPromptTooLarge =
+      /prompt tokens limit exceeded|input tokens.*exceed|context length exceeded|maximum context|token limit.*prompt/i.test(base)
+    if (isOpenRouterPromptTooLarge) {
+      return `${base}\n\n💡 说明：这是**输入侧（Prompt / 上下文）**超限，不是「最大输出 Tokens」设太大。报错里「A > B」表示：本次请求累计的 prompt 约 A tokens，而当前账户/模型允许的 prompt 上限约 B。\n\n建议：① **开启新会话**并避免一次粘贴超大内容；② 缩短历史、减少技能/MCP/工作区注入；③ 换更长上下文的模型或升级 OpenRouter 方案。`
+    }
     const looksLikeOpenRouterMaxOrCredits =
       status === 402 ||
       /fewer max_tokens|more credits|can only afford|max_tokens.*afford/.test(lower) ||

@@ -4,9 +4,64 @@
 
 const DEFAULT_CONFIG = {
   enabled: true,
-  threshold: 52000,   // token 估算超过此值才触发压缩，避免过早压缩
-  keepRecent: 20,     // 保留最近 N 条消息原文（不含 system）
-  summaryMaxTokens: 600
+  /** 仅统计「对话消息」（user/assistant/tool，不含 system）的估算 tokens；不把注入的大段 system 算进去，避免首轮就误触发 */
+  threshold: 52000,
+  /** 保留最近 N 条对话原文；工具多轮会迅速占满条数，宜略大以减少「同一轮用户请求内」过早压缩 */
+  keepRecent: 24,
+  summaryMaxTokens: 600,
+  /** 首轮压缩后仍超阈值时，第二轮保留的最近对话条数（更小 = 更激进） */
+  aggressiveKeepRecent: 10,
+  /**
+   * OpenRouter：与 threshold 取 min，作为「对话部分」的触发上限（仍为粗估 char/3）。
+   * 过低会导致工具多轮尚未收尾就压缩；可根据账号 prompt 上限在 openultron.json 微调。
+   */
+  openRouterSoftBudget: 18000,
+  /**
+   * 估算节省的 tokens 低于此值则放弃本次压缩（避免摘要比原文还长、白耗一次模型调用）。
+   */
+  minCompressSavingsTokens: 1200,
+  /**
+   * 成功压缩后，若干轮 LLM 调用内不再压缩（除非对话体量远超阈值×1.4），减轻工具循环里反复压缩。
+   */
+  compressCooldownIterations: 2,
+  /**
+   * 压缩前是否发起「记忆刷新」LLM（编排层未接 executeTool 时多为无效额外请求，默认关闭）
+   */
+  flushMemoryBeforeCompress: false,
+  /** 最多保留几条「对话摘要」system 消息，多轮压缩时丢弃更早的摘要以控制体积 */
+  maxCompressionSummaryStack: 2
+}
+
+const COMPRESSION_SUMMARY_MARKER = '[对话摘要（早期消息已压缩）]'
+
+/** 限制堆叠的「对话摘要」system 条数，避免反复压缩越压 system 越大 */
+function capCompressionSystemMessages(systemMsgs, maxKeep = 2) {
+  const list = Array.isArray(systemMsgs) ? systemMsgs : []
+  const compressionIdx = []
+  for (let i = 0; i < list.length; i++) {
+    const m = list[i]
+    if (m && m.role === 'system' && String(m.content || '').startsWith(COMPRESSION_SUMMARY_MARKER)) {
+      compressionIdx.push(i)
+    }
+  }
+  if (compressionIdx.length <= maxKeep) return list
+  const drop = compressionIdx.slice(0, compressionIdx.length - maxKeep)
+  const dropSet = new Set(drop)
+  return list.filter((_, i) => !dropSet.has(i))
+}
+
+/** 供摘要模型阅读的对话行（含 tool 的极短摘录，避免大段 JSON 进 prompt） */
+function dialogMessageForSummaryLine(m, sliceLen) {
+  if (!m) return ''
+  if (m.role === 'user' || m.role === 'assistant') {
+    const text = typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
+    return `[${m.role}]: ${text.slice(0, sliceLen)}`
+  }
+  if (m.role === 'tool') {
+    const c = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '')
+    return `[tool]: ${c.slice(0, Math.min(sliceLen, 520))}`
+  }
+  return `[${m.role}]: ${String(m.content || '').slice(0, sliceLen)}`
 }
 
 /**
@@ -27,12 +82,15 @@ function estimateTokens(messages) {
 }
 
 /**
- * 判断是否需要压缩
+ * 判断是否需要压缩（只看对话体量：system 注入再大也不单独触发，与 compressMessages 可裁剪范围一致）
  */
 function shouldCompress(messages, config = {}) {
   const cfg = { ...DEFAULT_CONFIG, ...config }
   if (!cfg.enabled) return false
-  return estimateTokens(messages) > cfg.threshold
+  const dialogMsgs = (messages || []).filter(m => m && m.role !== 'system')
+  if (dialogMsgs.length <= cfg.keepRecent) return false
+  const dialogTok = estimateTokens(dialogMsgs)
+  return dialogTok > cfg.threshold
 }
 
 /**
@@ -84,7 +142,13 @@ async function compressMessages(messages, config = {}, callLLM) {
   const toCompress = dialogMsgs.slice(0, dialogMsgs.length - cfg.keepRecent)
   const recentMsgs = dialogMsgs.slice(dialogMsgs.length - cfg.keepRecent)
 
-  // 构造摘要请求
+  const sliceLen = 1800
+  let dialogBody = toCompress.map(m => dialogMessageForSummaryLine(m, sliceLen)).filter(Boolean).join('\n\n')
+  const MAX_SUMMARY_INPUT_CHARS = 30000
+  if (dialogBody.length > MAX_SUMMARY_INPUT_CHARS) {
+    dialogBody = dialogBody.slice(0, MAX_SUMMARY_INPUT_CHARS) + '\n\n(历史过长，仅前部送入摘要模型；更早细节已省略)'
+  }
+  // 构造摘要请求（含 tool 的短摘录，避免仅 user/assistant 时丢失「执行过什么工具」的语义）
   const summaryPrompt = [
     '请将以下对话历史压缩为简洁摘要（不超过 ' + cfg.summaryMaxTokens + ' 字），保留：',
     '- 用户的核心需求和目标',
@@ -94,13 +158,7 @@ async function compressMessages(messages, config = {}, callLLM) {
     '直接输出摘要内容，不需要其他说明。',
     '',
     '对话内容：',
-    toCompress
-      .filter(m => m.role === 'user' || m.role === 'assistant')
-      .map(m => {
-        const text = typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
-        return `[${m.role}]: ${text.slice(0, 2000)}`
-      })
-      .join('\n\n')
+    dialogBody
   ].join('\n')
 
   let summaryText = ''
@@ -114,17 +172,40 @@ async function compressMessages(messages, config = {}, callLLM) {
     return messages  // 失败时回退原消息
   }
 
+  const maxSummaryChars = Math.min(
+    9000,
+    Math.max(250, (Number(cfg.summaryMaxTokens) || 600) * 7)
+  )
+  summaryText = String(summaryText || '').trim().slice(0, maxSummaryChars)
+
   const summaryMessage = {
     role: 'system',
-    content: '[对话摘要（早期消息已压缩）]\n' + summaryText
+    content: `${COMPRESSION_SUMMARY_MARKER}\n` + summaryText
   }
 
-  const compressed = [...systemMsgs, summaryMessage, ...recentMsgs]
+  const maxStack = Math.max(1, Math.min(4, Number(cfg.maxCompressionSummaryStack) || 2))
+  const trimmedSystem = capCompressionSystemMessages(systemMsgs, maxStack)
+  const compressed = [...trimmedSystem, summaryMessage, ...recentMsgs]
   const before = estimateTokens(messages)
   const after = estimateTokens(compressed)
-  console.log(`[ContextCompressor] 压缩完成：${before} → ${after} tokens，节省 ${before - after}`)
+  const saved = before - after
+  const minSave = Number(cfg.minCompressSavingsTokens) || 1200
+  if (saved < minSave) {
+    console.warn(
+      `[ContextCompressor] 压缩效果不足（${before} → ${after}，节省 ${saved}，门槛 ${minSave}），保留原消息`
+    )
+    return messages
+  }
+  console.log(`[ContextCompressor] 压缩完成：${before} → ${after} tokens，节省 ${saved}`)
 
   return compressed
 }
 
-module.exports = { estimateTokens, shouldCompress, compressMessages, flushMemoryBeforeCompaction, DEFAULT_CONFIG }
+module.exports = {
+  estimateTokens,
+  shouldCompress,
+  compressMessages,
+  flushMemoryBeforeCompaction,
+  DEFAULT_CONFIG,
+  COMPRESSION_SUMMARY_MARKER
+}
