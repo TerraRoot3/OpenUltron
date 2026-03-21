@@ -307,7 +307,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     saveSession: (data) => ipcRenderer.invoke('ai-save-session', data),
     deleteSession: (data) => ipcRenderer.invoke('ai-delete-session', data),
     // 技能管理
-    getSkills: () => ipcRenderer.invoke('ai-get-skills'),
+    getSkills: (opts) => ipcRenderer.invoke('ai-get-skills', opts || {}),
     saveSkill: (skill) => ipcRenderer.invoke('ai-save-skill', skill),
     deleteSkill: (data) => ipcRenderer.invoke('ai-delete-skill', data),
     /** 监听技能列表变更（如 AI 安装技能后），返回取消订阅函数 */

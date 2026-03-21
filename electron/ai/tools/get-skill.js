@@ -4,6 +4,7 @@
 const https = require('https')
 const http = require('http')
 const { URL } = require('url')
+const { applyBaseDir } = require('../skill-pack')
 
 function createGetSkillTool(getSkills, getSkillsSources, getSandboxSkills) {
   // getSkills: () => Skill[]  — 从调用方注入，返回最新缓存的技能列表
@@ -109,7 +110,7 @@ function createGetSkillTool(getSkills, getSkillsSources, getSandboxSkills) {
 
     if (action === 'list_remote') {
       const sources = typeof getSkillsSources === 'function' ? getSkillsSources() : []
-      const enabled = sources.filter(s => s.enabled !== false && s.url)
+      const enabled = sources.filter(s => s && s.enabled !== false && (s.url || s.type === 'clawhub'))
       if (enabled.length === 0) {
         return { success: true, skills: [], sources: [], note: '未配置远程技能源，请在 openultron.json 的 skills.sources 中配置 name、url、enabled。' }
       }
@@ -117,6 +118,33 @@ function createGetSkillTool(getSkills, getSkillsSources, getSandboxSkills) {
       const errors = []
       for (const src of enabled) {
         try {
+          const isClawHub =
+            src.type === 'clawhub' ||
+            /clawhub\.ai/i.test(String(src.url || '')) ||
+            /clawdhub\.com/i.test(String(src.url || ''))
+          if (isClawHub) {
+            const q = (search && String(search).trim()) ? String(search).trim() : 'skill'
+            const searchUrl = `https://clawhub.ai/api/v1/search?q=${encodeURIComponent(q)}&limit=80`
+            const data = await fetchJson(searchUrl)
+            const results = Array.isArray(data.results) ? data.results : []
+            for (const r of results) {
+              const id = r.slug || r.id || ''
+              if (!id) continue
+              const name = r.displayName || id
+              const desc = r.summary || r.description || ''
+              all.push({
+                id,
+                name,
+                description: desc,
+                category: 'remote',
+                projectType: 'all',
+                source: src.name || 'ClawHub',
+                install_url: `https://clawhub.ai/api/v1/download?slug=${encodeURIComponent(id)}`
+              })
+            }
+            continue
+          }
+
           const data = await fetchJson(src.url)
           const list = Array.isArray(data.skills) ? data.skills : (Array.isArray(data) ? data : [])
           const baseUrl = src.url.replace(/\/[^/]*$/, '/')
@@ -156,6 +184,7 @@ function createGetSkillTool(getSkills, getSkillsSources, getSandboxSkills) {
       const list = fromSandbox ? sandboxSkills : skills
       const skill = list.find(s => s.id === skill_id)
       if (skill) {
+        const skillDir = skill.skillDir || ''
         return {
           success: true,
           skill: {
@@ -163,8 +192,9 @@ function createGetSkillTool(getSkills, getSkillsSources, getSandboxSkills) {
             name: skill.name,
             description: skill.description || '',
             type: skill.type || 'markdown',
-            prompt: skill.prompt || '',
-            source: fromSandbox ? 'sandbox' : 'app'
+            prompt: applyBaseDir(skill.prompt || '', skillDir),
+            source: fromSandbox ? 'sandbox' : (skill.source || 'app'),
+            skill_dir: skillDir || undefined
           }
         }
       }

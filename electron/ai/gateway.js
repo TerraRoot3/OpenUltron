@@ -1,5 +1,5 @@
 /**
- * OpenClaw-style Gateway：中央 WebSocket 入口，单实例。
+ * 中央 WebSocket 入口（Gateway），单实例。
  * 端口默认 28790（与前端 UI 端口 28789 分离，避免 EADDRINUSE），客户端连接后发送 JSON 消息，AI 事件通过 WebSocket 回传。
  *
  * 协议（JSON）：

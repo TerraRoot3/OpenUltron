@@ -92,7 +92,7 @@ const allSkillsRaw = ref([])
 const editing = ref(null)
 
 // ── 计算属性 ──────────────────────────────────────────────
-// 展示全部技能（含内置如 agent-browser），内置技能带「内置」标签且不可删除
+// 展示全部技能；若有内置技能则带「内置」标签且不可删除
 const allSkills = computed(() => allSkillsRaw.value)
 
 const groupedSkills = computed(() => {

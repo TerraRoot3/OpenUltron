@@ -276,7 +276,7 @@ function createInstallSkillTool(skillsDir, onChanged, getSkillsSources) {
         }
         if (!source_name) return { error: '缺少 source_name 参数（远程源名称）' }
         if (!skill_id) return { error: '缺少 skill_id 参数（从 get_skill list_remote 获得的技能 id）' }
-        const sources = getSkillsSources().filter(s => s.enabled !== false && s.url)
+        const sources = getSkillsSources().filter(s => s && s.enabled !== false && (s.url || s.type === 'clawhub'))
         const src = sources.find(s => (s.name || '').trim() === String(source_name).trim())
         if (!src) return { error: `未找到名为 "${source_name}" 的远程源，请检查 openultron.json 的 skills.sources` }
         const slug = String(skill_id).trim()

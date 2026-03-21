@@ -101,8 +101,34 @@ const DEFAULT_HARDWARE = {
   notify: { enabled: true }
 }
 
-/** 技能远程源：url 为 skills 列表 JSON 的完整 URL（返回 { skills: [{ id, name, description, install_url?, ... }] }） */
-const DEFAULT_SKILLS_SOURCES = []
+/** 默认含 ClawHub；list_remote 对 type=clawhub 走搜索 API（见 get-skill.js） */
+const DEFAULT_SKILLS_SOURCES = [
+  { name: 'ClawHub', url: 'https://clawhub.ai/', enabled: true, type: 'clawhub' }
+]
+
+function normalizeSkillsBlock(data) {
+  const sk = data.skills && typeof data.skills === 'object' ? data.skills : {}
+  let sources
+  if (!Array.isArray(sk.sources)) {
+    sources = DEFAULT_SKILLS_SOURCES.map((s) => ({ ...s }))
+  } else {
+    sources = sk.sources.filter(
+      (s) => s && typeof s.name === 'string' && (typeof s.url === 'string' || s.type === 'clawhub')
+    )
+  }
+  const load = sk.load && typeof sk.load === 'object' ? sk.load : {}
+  const extraDirs = Array.isArray(load.extraDirs) ? load.extraDirs.map((x) => String(x || '').trim()).filter(Boolean) : []
+  const entries = sk.entries && typeof sk.entries === 'object' ? sk.entries : {}
+  return {
+    sources,
+    load: {
+      extraDirs,
+      watch: !!load.watch,
+      watchDebounceMs: load.watchDebounceMs
+    },
+    entries
+  }
+}
 
 /** 合并默认供应商与已保存列表：默认列表保证全部展示，已保存的 apiKey 保留；保存里多出的自定义供应商追加到末尾 */
 function normalizeModelPool(pool, fallbackModel = '') {
@@ -163,9 +189,7 @@ function readAll() {
       const hardware = data.hardware && typeof data.hardware === 'object'
         ? { screen: { ...DEFAULT_HARDWARE.screen, ...data.hardware.screen }, notify: { ...DEFAULT_HARDWARE.notify, ...data.hardware.notify } }
         : { ...DEFAULT_HARDWARE }
-      const skillsSources = Array.isArray(data.skills?.sources)
-        ? data.skills.sources.filter(s => s && typeof s.name === 'string' && typeof s.url === 'string')
-        : DEFAULT_SKILLS_SOURCES
+      const skillsBlock = normalizeSkillsBlock(data)
       let ai = data.ai && Array.isArray(data.ai.providers) ? data.ai : { ...DEFAULT_AI, ...data.ai }
       ai = { ...ai, providers: mergeProviders(DEFAULT_AI.providers, ai.providers) }
       ai.modelPool = normalizeModelPool(ai.modelPool, ai.defaultModel)
@@ -177,7 +201,7 @@ function readAll() {
         dingtalk,
         webhooks,
         hardware,
-        skills: { sources: skillsSources }
+        skills: skillsBlock
       }
     } catch (e) {
       console.warn('[openultron-config] 读取失败，使用默认:', e.message)
@@ -203,7 +227,15 @@ function readAll() {
       feishu = { ...feishu, ...d }; didMerge = true
     } catch (_) {}
   }
-  const merged = { ai, feishu, telegram: { ...DEFAULT_TELEGRAM }, dingtalk: { ...DEFAULT_DINGTALK }, webhooks: [], hardware: { ...DEFAULT_HARDWARE }, skills: { sources: [] } }
+  const merged = {
+    ai,
+    feishu,
+    telegram: { ...DEFAULT_TELEGRAM },
+    dingtalk: { ...DEFAULT_DINGTALK },
+    webhooks: [],
+    hardware: { ...DEFAULT_HARDWARE },
+    skills: normalizeSkillsBlock({})
+  }
   writeAll(merged)
   if (didMerge) {
     try { if (fs.existsSync(aiPath)) fs.unlinkSync(aiPath) } catch (e) { console.warn('[openultron-config] 删除旧文件 ai-config.json 失败:', e.message) }
@@ -354,13 +386,24 @@ function setDingtalk(partial) {
 /** 技能远程源：{ name, url, enabled }[] */
 function getSkillsSources() {
   const all = readAll()
-  return Array.isArray(all.skills?.sources) ? all.skills.sources : []
+  const src = all.skills?.sources
+  return Array.isArray(src) ? src : []
+}
+
+function getSkillsLoadConfig() {
+  const all = readAll()
+  return all.skills?.load || { extraDirs: [] }
+}
+
+function getSkillsEntries() {
+  const all = readAll()
+  return all.skills?.entries && typeof all.skills.entries === 'object' ? all.skills.entries : {}
 }
 
 function setSkillsSources(sources) {
   const all = readAll()
-  all.skills = all.skills && typeof all.skills === 'object' ? all.skills : {}
-  all.skills.sources = Array.isArray(sources) ? sources : []
+  const sk = all.skills && typeof all.skills === 'object' ? all.skills : {}
+  all.skills = normalizeSkillsBlock({ skills: { ...sk, sources: Array.isArray(sources) ? sources : [] } })
   writeAll(all)
 }
 
@@ -402,6 +445,9 @@ module.exports = {
   setDingtalk,
   getSkillsSources,
   setSkillsSources,
+  getSkillsLoadConfig,
+  getSkillsEntries,
+  normalizeSkillsBlock,
   getHardware,
   getWebhooks,
   setWebhooks,

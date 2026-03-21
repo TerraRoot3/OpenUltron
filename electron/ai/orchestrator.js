@@ -64,6 +64,8 @@ class Orchestrator {
     this.registerImageBase64 = typeof opts.registerImageBase64 === 'function' ? opts.registerImageBase64 : null
     /** 可选：将截图工具的 file_path 复制到应用目录并返回 file_url，供前端展示 */
     this.registerScreenshotPath = typeof opts.registerScreenshotPath === 'function' ? opts.registerScreenshotPath : null
+    /** 可选：每轮会话注入「技能 id 列表」到 system，与 ~/.openultron/skills 磁盘一致，避免前端未刷新导致模型看不到技能 */
+    this.getSkillsForPrompt = typeof opts.getSkillsForPrompt === 'function' ? opts.getSkillsForPrompt : null
   }
 
   getConfig() {
@@ -238,6 +240,25 @@ class Orchestrator {
       const realtimeText = loadPrompt('realtime-info')
       if (realtimeText) memParts.push(realtimeText)
 
+      // 0.61 本机技能索引（含 workspace/skills；优先级见 docs/SKILLS-PACK-COMPAT.md）
+      if (typeof this.getSkillsForPrompt === 'function') {
+        try {
+          const proj = String(session?.projectPath || '').trim()
+          const skillRows = this.getSkillsForPrompt(proj) || []
+          const lines = skillRows.filter(s => s && s.id).map(s => `- [${s.id}] ${s.name || s.id}`)
+          if (lines.length > 0) {
+            memParts.push(
+              '[本机已安装技能]\n' +
+              `以下共 ${lines.length} 个；**get_skill 的 skill_id 必须为方括号内的完整 id**（例如 weather 技能目录常为 weather-1.0.0，不能用简称 weather）。\n` +
+              lines.join('\n') +
+              '\n\n**何时必须用技能**：用户要求「用某技能 / 按 xxx 技能 / 查天气」等时，必须先 **get_skill(action="get", skill_id="完整id")** 再按其步骤执行（常见为 execute_command 调用 curl 等），禁止跳过 get_skill 凭记忆编造天气或步骤。'
+            )
+          }
+        } catch (e) {
+          console.warn('[AI] 技能索引注入失败:', e.message)
+        }
+      }
+
       // 0.65 浏览器自动化（prompts/browser-automation.md）
       const browserText = loadPrompt('browser-automation')
       if (browserText) memParts.push(browserText)
@@ -291,8 +312,8 @@ class Orchestrator {
       const learnFlowText = loadPrompt('learn-skill-flow')
       if (learnFlowText) memParts.push(learnFlowText)
 
-      // 2.6 从网上学习 OpenClaw 玩家新能力（prompts/learn-from-web-openclaw.md）
-      const learnWebText = loadPrompt('learn-from-web-openclaw')
+      // 2.6 从网上学习社区技能与玩法（prompts/learn-skills-from-web.md）
+      const learnWebText = loadPrompt('learn-skills-from-web')
       if (learnWebText) memParts.push(learnWebText)
 
       // 2.7 OpenUltron 可配置能力与引导用户获取参数（prompts/openultron-config-guide.md）
@@ -1767,6 +1788,16 @@ class Orchestrator {
     const tool = this.toolRegistry.getTool(name)
     if (!tool) {
       return { error: `未知工具: ${name}` }
+    }
+
+    if (name === 'get_skill' && appLogger?.info) {
+      try {
+        appLogger.info('[AI][Tool] get_skill', {
+          action: args && args.action,
+          skill_id: args && args.skill_id,
+          sandbox: args && args.sandbox
+        })
+      } catch (_) { /* ignore */ }
     }
 
     // 身份文件路径兜底：避免 AI 把 IDENTITY/SOUL 写到 /tmp 等错误目录

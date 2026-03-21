@@ -60,10 +60,10 @@ function getDefaultPrompts() {
 6) 回复用户「已学会技能 xxx，已晋升，可用 get_skill 获取或在对话中选用」。
 沙箱技能列表用 get_skill action=list_sandbox；获取沙箱技能内容用 get_skill action=get skill_id=xxx sandbox=true。`,
 
-    'learn-from-web-openclaw': `[从网上学习 OpenClaw 玩家新能力]
-当用户要求「从网上爬取信息看看 OpenClaw 玩家有哪些新能力」「让 AI 自己从网上学习实现」「从网上学 OpenClaw 新技能」「爬取 OpenClaw 社区学新能力」等时，按以下步骤执行：
-1) **搜索**：用 web_search（或已配置的 MCP 搜索工具）搜索多组关键词，例如：openclaw skills、OpenClaw 玩家 技巧、openclaw github skills、openclaw 新能力、openclaw 社区 技能。
-2) **抓取**：从搜索结果中选取与 OpenClaw 能力/技能/玩法相关的链接（如 GitHub openclaw/openclaw、README、skills 目录、社区讨论、博客），用 web_fetch 抓取页面正文，汇总「玩家在用或文档里提到的能力/技能」。
+    'learn-skills-from-web': `[从网上学习 AI 技能与社区玩法]
+当用户要求「从网上看看别人有哪些 AI 技能/玩法」「让 AI 从网上学新技能」「爬社区学能力」等时，按以下步骤执行：
+1) **搜索**：用 web_search（或已配置的 MCP 搜索工具）搜索多组关键词，例如：AI agent skills、Claude skills、技能包 SKILL.md、ClawHub、助手工具链、GitHub skills 目录、社区讨论等。
+2) **抓取**：从搜索结果中选取与「AI 助手能力、技能包、工具链、玩法」相关的链接（README、skills 目录、博客、论坛），用 web_fetch 抓取页面正文，汇总「文档或玩家提到的能力/技能」。
 3) **对比**：调用 get_skill(action=list) 与 read_lessons_learned，了解本机已有技能与知识；找出网上有而本机尚未覆盖、且可落成 SKILL 的能力点。
 4) **实现**：对每个要学习的能力，起草一份 SKILL.md（YAML frontmatter + 正文 prompt），用 install_skill(..., sandbox=true) 写入沙箱，用 validate_skill 验证，通过后 promote_sandbox_skill 晋升。
 5) **回复**：简要列出「从网上发现了哪些能力」「已学会并晋升了哪几个技能」，以及仍可后续手动扩展的方向。
@@ -100,9 +100,11 @@ function getDefaultPrompts() {
 **6. hardware（硬件能力开关）**
 - 配置项及用途：**hardware.screen.enabled**、**hardware.notify.enabled**（默认 true）。仅开关，无鉴权；关闭后对应工具会提示已在配置中关闭。
 
-**7. skills.sources（技能远程源）**
-- 配置项及用途：**skills.sources[]**，每项 **name, url, enabled**。url 为返回 \`{ skills: [...] }\` 的 JSON 地址；get_skill(action=list_remote) 会请求该 url 拉取可安装列表。
-- 调用方式：GET <url> 得到技能列表；无鉴权（若 url 需鉴权则由用户自管）。
+**7. skills（技能包与 ClawHub）**
+- **skills.sources[]**：远程技能源。**type: clawhub**（或 url 含 clawhub.ai）时 list_remote 走 ClawHub 搜索 API；否则 **url** 需返回 \`{ skills: [...] }\` 的 JSON。
+- **skills.load.extraDirs[]**：额外技能根目录（绝对路径），优先级低于 \`~/.openultron/skills\`，说明见仓库 **docs/SKILLS-PACK-COMPAT.md**。
+- **skills.entries.<key>**：\`enabled: false\` 可禁用某技能；key 可为目录名、frontmatter **name** 或门控元数据中的 **skillKey**。
+- 本地技能：\`~/.openultron/skills/<id>/SKILL.md\`；若聊天绑定真实项目路径，合并 **<projectPath>/skills/<id>/**（优先级更高）。
 
 **8. MCP**
 - 配置：通常在 \`~/.openultron/mcp.json\` 或设置页。每项为 MCP 服务器配置（名称、连接方式、各服务要求的 API Key 等）。
@@ -168,7 +170,7 @@ These Markdown files are injected into the AI system context. You can edit them 
 - **browser-automation.md** – chrome-devtools MCP only (no built-in webview).
 - **desktop-notification.md** – When to use show_desktop_notification.
 - **learn-skill-flow.md** – Steps for "learn a new skill" (sandbox → validate → promote).
-- **learn-from-web-openclaw.md** – Steps for learning from the web (OpenClaw community, etc.).
+- **learn-skills-from-web.md** – Steps for learning skills/playbooks from the web and community.
 - **openultron-config-guide.md** – What OpenUltron can configure (ai, feishu, telegram, webhooks, hardware, skills, MCP) and how to guide users to register/create each parameter (e.g. BotFather, Feishu console, @userinfobot).
 - **tool-gap-fallback.md** – Generic fallback when built-in tools are insufficient: read config/context, write minimal scripts/patches, execute+verify, and return results safely.
 

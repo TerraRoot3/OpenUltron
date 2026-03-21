@@ -1232,7 +1232,7 @@ async function updateTextMessage(messageId, text) {
 }
 
 /**
- * 在用户消息上添加表情回复（如 Typing 表示「敲键盘」），参考 OpenClaw 打字指示
+ * 在用户消息上添加表情回复（如 Typing 表示「敲键盘」）
  * @param {string} messageId - 用户消息的 message_id（来自 im.message.receive 事件）
  * @param {string} emojiType - 飞书 emoji_type，如 'Typing'（敲键盘）
  * @see https://open.feishu.cn/document/server-docs/im-v1/message-reaction/create

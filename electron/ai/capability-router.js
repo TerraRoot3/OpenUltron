@@ -4,7 +4,7 @@ function detectRequestedExternalRuntime(text = '') {
   // 仅在“明确指定执行引擎”时触发外派，避免把任务正文里的产品名误判为 runtime 指令
   if (/(?:用|走|指定|切到|改用|让|调用)\s*codex|use\s+codex|with\s+codex|runtime\s*[:=]\s*external:codex/.test(t)) return 'external:codex'
   if (/(?:用|走|指定|切到|改用|让|调用)\s*claude|use\s+claude|with\s+claude|runtime\s*[:=]\s*external:claude/.test(t)) return 'external:claude'
-  if (/(?:用|走|指定|切到|改用|让|调用)\s*openclaw|use\s+openclaw|with\s+openclaw|runtime\s*[:=]\s*external:openclaw/.test(t)) return 'external:openclaw'
+  if (/(?:用|走|指定|切到|改用|让|调用)\s*(?:gateway\s*cli|网关\s*助手)|use\s+gateway|runtime\s*[:=]\s*external:gateway_cli/.test(t)) return 'external:gateway_cli'
   if (/(?:用|走|指定|切到|改用|让|调用)\s*opencode|use\s+opencode|with\s+opencode|runtime\s*[:=]\s*external:opencode/.test(t)) return 'external:opencode'
   return ''
 }

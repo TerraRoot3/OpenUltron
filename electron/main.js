@@ -19,6 +19,7 @@ const aiBrowserManager = require('./ai/browser-window-manager')
 const { resolveCapabilityRoute, detectRequestedExternalRuntime } = require('./ai/capability-router')
 const { getLogPath, readTail, getForAi, logger: appLogger, patchConsole } = require('./app-logger')
 const { filterSessionsList, isRunSessionId } = require('./ai/sessions-list-filter')
+const skillPack = require('./ai/skill-pack')
 
 // 将主进程 console 同时写入 ~/.openultron/logs/app.log，便于全局排查与 AI 分析
 patchConsole()
@@ -2079,7 +2080,7 @@ app.whenReady().then(async () => {
     console.warn('OpenUltron API server failed to start:', e.message)
   }
 
-  // OpenClaw-style Gateway（开发 28792 / 正式 28790）
+  // 独立 Gateway 端口（开发 28792 / 正式 28790）
   aiGateway.start().catch(e => console.warn('[Gateway] start failed:', e.message))
 
   // 启动所有 MCP servers（app ready 后才 spawn，确保子进程环境正常）
@@ -2874,7 +2875,7 @@ function ensureSkillsDir() {
   fs.mkdirSync(_skillsDir, { recursive: true })
 }
 
-// 解析 SKILL.md 文件（支持 YAML frontmatter），id 使用目录名；AI 安装的无 frontmatter 也展示
+// 解析 SKILL.md（技能包 / AgentSkills 风格，见 docs/SKILLS-PACK-COMPAT.md）
 function parseSkillFile(skillDir) {
   const dirName = path.basename(skillDir)
   const filePath = path.join(skillDir, 'SKILL.md')
@@ -2884,39 +2885,28 @@ function parseSkillFile(skillDir) {
   } catch {
     return null
   }
-  const fm = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/)
-  if (fm) {
-    try {
-      const meta = {}
-      for (const line of fm[1].split('\n')) {
-        const idx = line.indexOf(':')
-        if (idx > 0) meta[line.slice(0, idx).trim()] = line.slice(idx + 1).trim()
-      }
-      return {
-        id: dirName,
-        name: meta.name || dirName,
-        description: meta.description || '',
-        category: meta.category || 'custom',
-        projectType: meta.projectType || 'all',
-        builtIn: meta.builtin === 'true',
-        type: meta.type || 'markdown',
-        prompt: (fm[2] || '').trim(),
-        source: 'app'
-      }
-    } catch {
-      // frontmatter 解析异常时仍展示技能，用目录名和全文内容
+  try {
+    return skillPack.parseSkillMd(raw, dirName, skillDir)
+  } catch {
+    return {
+      id: dirName,
+      name: dirName,
+      description: '',
+      category: 'custom',
+      projectType: 'all',
+      builtIn: false,
+      type: 'markdown',
+      prompt: (raw || '').trim(),
+      source: 'app',
+      skillDir,
+      skillKey: dirName,
+      skillGateMeta: null,
+      skillGateOk: true,
+      skillGateReason: '',
+      disableModelInvocation: false,
+      userInvocable: true,
+      homepage: ''
     }
-  }
-  return {
-    id: dirName,
-    name: dirName,
-    description: '',
-    category: 'custom',
-    projectType: 'all',
-    builtIn: false,
-    type: 'markdown',
-    prompt: (raw || '').trim(),
-    source: 'app'
   }
 }
 
@@ -2937,20 +2927,44 @@ function writeSkillFile(name, skill) {
   fs.writeFileSync(path.join(skillDir, 'SKILL.md'), lines.join('\n'), 'utf-8')
 }
 
-// 读取所有技能（app 目录）；不含 _sandbox 下的草稿
-function readAllSkills() {
+/**
+ * 读取技能：workspace/skills（最高）→ ~/.openultron/skills → skills.load.extraDirs（最低）
+ * @param {{ projectPath?: string }} [options]
+ */
+function readAllSkills(options = {}) {
   ensureSkillsDir()
-  const skills = []
-  for (const entry of fs.readdirSync(_skillsDir)) {
-    if (entry === '_sandbox') continue // 沙箱目录不参与正式列表
-    const entryPath = path.join(_skillsDir, entry)
-    try { if (!fs.statSync(entryPath).isDirectory()) continue } catch { continue }
-    const skillFile = path.join(entryPath, 'SKILL.md')
-    if (!fs.existsSync(skillFile)) continue
+  let config = { skills: {} }
+  try {
+    config = require('./openultron-config').readAll()
+  } catch (_) {}
+  const load = (config.skills && config.skills.load) || {}
+  const extraDirs = Array.isArray(load.extraDirs) ? load.extraDirs : []
+  const entries = (config.skills && config.skills.entries && typeof config.skills.entries === 'object')
+    ? config.skills.entries
+    : {}
+  let workspaceDir = null
+  const pp = options.projectPath != null ? String(options.projectPath).trim() : ''
+  if (pp && !pp.startsWith('__') && path.isAbsolute(pp)) {
+    const w = path.join(pp, 'skills')
     try {
-      const skill = parseSkillFile(entryPath)
-      if (skill) skills.push(skill)
-    } catch {}
+      if (fs.existsSync(w)) workspaceDir = w
+    } catch (_) {}
+  }
+  const merged = skillPack.mergeSkillRootDirs({
+    managedDir: _skillsDir,
+    workspaceDir,
+    extraDirs
+  })
+  const skills = []
+  for (const [id, info] of merged) {
+    try {
+      const skill = parseSkillFile(info.skillDir)
+      if (!skill) continue
+      skill.source = info.source === 'workspace' ? 'workspace' : info.source === 'extra' ? 'extra' : 'app'
+      if (skillPack.entryDisabled(entries, skillPack.skillEntryKeys(id, skill.name, skill.skillKey))) continue
+      if (!skill.skillGateOk) continue
+      skills.push(skill)
+    } catch (_) {}
   }
   return skills
 }
@@ -3014,27 +3028,11 @@ function initBuiltinSkills() {
       }
     } catch {}
   }
-  // 强制确保 agent-browser 存在（新增内置技能后，旧数据目录可能没有该文件；若曾被误删则从删除名单移除）
-  const agentBrowser = BUILTIN_SKILLS.find(s => s.id === 'agent-browser')
-  if (agentBrowser) {
-    const deletedList = store.get('aiDeletedBuiltinSkillIds', [])
-    if (deletedList.includes('agent-browser')) {
-      store.set('aiDeletedBuiltinSkillIds', deletedList.filter(id => id !== 'agent-browser'))
-    }
-    const abFile = path.join(_skillsDir, 'agent-browser', 'SKILL.md')
-    if (!fs.existsSync(abFile)) {
-      try {
-        writeSkillFile('agent-browser', { ...agentBrowser, builtIn: true })
-      } catch (e) {
-        console.warn('[initBuiltinSkills] agent-browser 写入失败:', e.message)
-      }
-    }
-  }
 }
 
 // 在 AI 区域初始化时写入内置技能，并预加载所有技能
 initBuiltinSkills()
-let _skillsCache = readAllSkills()
+let _skillsCache = readAllSkills({})
 
 const pendingEditorFilesRequests = new Map()
 
@@ -3113,14 +3111,14 @@ const aiToolRegistry = createDefaultRegistry({
   },
   mcpManager: aiMcpManager,
   skillsDir: _skillsDir,
-  getSkills: () => {
-    _skillsCache = readAllSkills()
+  getSkills: (opts) => {
+    _skillsCache = readAllSkills(opts || {})
     return _skillsCache
   },
   getSandboxSkills: () => readSandboxSkills(),
   getSkillsSources: () => require('./openultron-config').getSkillsSources(),
   onSkillChanged: () => {
-    _skillsCache = readAllSkills()
+    _skillsCache = readAllSkills({})
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('ai-skills-changed')
   }
 })
@@ -3180,10 +3178,17 @@ async function registerScreenshotFilePathForChat(filePath, sessionId) {
 
 const aiOrchestrator = new Orchestrator(getAIConfigLegacy, aiToolRegistry, aiMcpManager, {
   registerImageBase64: registerImageBase64ForChat,
-  registerScreenshotPath: registerScreenshotFilePathForChat
+  registerScreenshotPath: registerScreenshotFilePathForChat,
+  getSkillsForPrompt: (projectPath) => {
+    try {
+      return skillPack.filterSkillsForModelPrompt(readAllSkills({ projectPath }))
+    } catch {
+      return []
+    }
+  }
 })
 
-// OpenClaw-style Gateway：开发 28792 / 正式 28790，与 UI 端口分离且同机双装不冲突
+// Gateway：开发 28792 / 正式 28790，与 UI 端口分离
 const GATEWAY_PORT_PROD = 28790
 const GATEWAY_PORT_DEV = 28792
 const { createGateway } = require('./ai/gateway')
@@ -3470,8 +3475,8 @@ const EXTERNAL_SUBAGENT_SPECS = [
     ]
   },
   {
-    id: 'openclaw',
-    command: 'openclaw',
+    id: 'gateway_cli',
+    command: String(process.env.OPENULTRON_GATEWAY_CLI || 'claw').trim() || 'claw',
     versionArgs: ['--version'],
     runArgBuilders: [
       (prompt) => ['agent', '--local', '--json', '--message', prompt],
@@ -8745,9 +8750,9 @@ registerChannel('ai-read-agent-md', async (event, { projectPath }) => {
 })
 
 // 技能管理（基于文件 <appRoot>/skills/）
-registerChannel('ai-get-skills', async () => {
+registerChannel('ai-get-skills', async (event, opts) => {
   try {
-    _skillsCache = readAllSkills()
+    _skillsCache = readAllSkills(opts || {})
     return { success: true, skills: _skillsCache }
   } catch (error) {
     return { success: false, message: error.message, skills: _skillsCache || [] }
@@ -8759,7 +8764,7 @@ registerChannel('ai-save-skill', async (event, skill) => {
     ensureSkillsDir()
     const safeName = (skill.id || skill.name).replace(/[^a-zA-Z0-9\u4e00-\u9fa5_\-]/g, '_')
     writeSkillFile(safeName, skill)
-    _skillsCache = readAllSkills()
+    _skillsCache = readAllSkills({})
     return { success: true }
   } catch (error) {
     return { success: false, message: error.message }
@@ -8775,7 +8780,7 @@ registerChannel('ai-delete-skill', async (event, { id }) => {
     }
     const skillDir = path.join(_skillsDir, id)
     if (fs.existsSync(skillDir)) fs.rmSync(skillDir, { recursive: true, force: true })
-    _skillsCache = readAllSkills()
+    _skillsCache = readAllSkills({})
     return { success: true }
   } catch (error) {
     return { success: false, message: error.message }
@@ -9134,7 +9139,7 @@ registerChannel('ai-backup-restore', async (event, { filePath, options = {} }) =
         // 恢复完成后刷新内存态
         try {
           ensureSkillsDir()
-          _skillsCache = readAllSkills()
+          _skillsCache = readAllSkills({})
         } catch (e) { /* ignore */ }
         try {
           const mcpCfg = mcpConfigFile.readMcpConfig(store)
@@ -9220,7 +9225,7 @@ registerChannel('ai-backup-restore', async (event, { filePath, options = {} }) =
         fs.writeFileSync(destPath, entry.getData())
         if (entry.entryName.endsWith('/SKILL.md')) summary.skillsRestored++
       }
-      _skillsCache = readAllSkills()
+      _skillsCache = readAllSkills({})
     }
 
     // 4. 对话历史
@@ -9266,7 +9271,7 @@ registerChannel('ai-import-backup', async (event, { data, options }) => {
         fs.writeFileSync(path.join(skillDir, 'SKILL.md'), content, 'utf-8')
         summary.skillsImported++
       }
-      _skillsCache = readAllSkills()
+      _skillsCache = readAllSkills({})
     }
 
     // 恢复 AI 配置（写入 openultron.json 的 ai 字段）
@@ -9305,7 +9310,39 @@ registerChannel('ai-import-backup', async (event, { data, options }) => {
   }
 })
 
-// ── 仅技能包导出（ZIP，仅含 skills/ 或含 _sandbox）────────────────────
+/** 将本地技能目录下所有文件写入 zip（整包备份，兼容 ClawHub 等导出结构） */
+function zipAddTreeFromDir(zip, absRoot, zipPathPrefix) {
+  const prefix = String(zipPathPrefix || '').replace(/\/$/, '')
+  let any = false
+  const walk = (sub) => {
+    const abs = sub ? path.join(absRoot, sub) : absRoot
+    let names
+    try {
+      names = fs.readdirSync(abs)
+    } catch {
+      return
+    }
+    for (const name of names) {
+      const rel = sub ? `${sub}/${name}` : name
+      const fp = path.join(absRoot, rel)
+      let st
+      try {
+        st = fs.statSync(fp)
+      } catch {
+        continue
+      }
+      if (st.isDirectory()) walk(rel)
+      else {
+        zip.addFile(`${prefix}/${rel}`.replace(/\\/g, '/'), fs.readFileSync(fp))
+        any = true
+      }
+    }
+  }
+  walk('')
+  return any
+}
+
+// ── 仅技能包导出（ZIP，skills/ 下整目录）────────────────────────────
 registerChannel('ai-export-skills-pack', async (event, { names, includeSandbox }) => {
   try {
     const AdmZip = require('adm-zip')
@@ -9318,20 +9355,18 @@ registerChannel('ai-export-skills-pack', async (event, { names, includeSandbox }
     for (const entry of fs.readdirSync(_skillsDir, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.name === '_sandbox') continue
       if (wantNames && !wantNames.has(entry.name)) continue
-      const filePath = path.join(_skillsDir, entry.name, 'SKILL.md')
-      if (!fs.existsSync(filePath)) continue
-      zip.addFile(`skills/${entry.name}/SKILL.md`, fs.readFileSync(filePath))
-      count++
+      const skillRoot = path.join(_skillsDir, entry.name)
+      if (!fs.existsSync(path.join(skillRoot, 'SKILL.md'))) continue
+      if (zipAddTreeFromDir(zip, skillRoot, `skills/${entry.name}`)) count++
     }
     if (includeSandbox) {
       const sandboxDir = path.join(_skillsDir, '_sandbox')
       if (fs.existsSync(sandboxDir)) {
         for (const entry of fs.readdirSync(sandboxDir, { withFileTypes: true })) {
           if (!entry.isDirectory()) continue
-          const filePath = path.join(sandboxDir, entry.name, 'SKILL.md')
-          if (!fs.existsSync(filePath)) continue
-          zip.addFile(`skills/_sandbox/${entry.name}/SKILL.md`, fs.readFileSync(filePath))
-          count++
+          const skillRoot = path.join(sandboxDir, entry.name)
+          if (!fs.existsSync(path.join(skillRoot, 'SKILL.md'))) continue
+          if (zipAddTreeFromDir(zip, skillRoot, `skills/_sandbox/${entry.name}`)) count++
         }
       }
     }
@@ -9373,22 +9408,37 @@ registerChannel('ai-import-skills-pack', async (event, { filePath, toSandbox }) 
     }
     const zip = new AdmZip(zipPath)
     ensureSkillsDir()
-    let count = 0
+    const destRoot = toSandbox ? path.join(_skillsDir, '_sandbox') : _skillsDir
+    const importedRoots = new Set()
     for (const entry of zip.getEntries()) {
-      if (entry.isDirectory()) continue
-      const name = entry.entryName
-      if (!name.startsWith('skills/') || !name.endsWith('/SKILL.md')) continue
-      const inner = name.slice(7, name.length - 9).replace(/\/$/, '')
-      const parts = inner.split('/').filter(Boolean)
-      if (parts.length === 0) continue
-      const skillName = parts[parts.length - 1]
-      const destBase = toSandbox ? path.join(_skillsDir, '_sandbox') : _skillsDir
-      const skillDir = path.join(destBase, skillName)
-      fs.mkdirSync(skillDir, { recursive: true })
-      fs.writeFileSync(path.join(skillDir, 'SKILL.md'), entry.getData())
-      count++
+      if (typeof entry.isDirectory === 'function' && entry.isDirectory()) continue
+      let name = String(entry.entryName || '').replace(/\\/g, '/')
+      if (name.startsWith('./')) name = name.slice(2)
+      if (!name.startsWith('skills/')) continue
+      const rel = name.slice('skills/'.length)
+      const parts = rel.split('/').filter(Boolean)
+      if (parts.length < 2) continue
+      const top = parts[0]
+      if (top === '_sandbox') {
+        if (parts.length < 3) continue
+        const sbSkill = parts[1]
+        const innerPath = parts.slice(2).join('/')
+        const sbBase = toSandbox ? destRoot : path.join(destRoot, '_sandbox')
+        const destPath = path.join(sbBase, sbSkill, innerPath)
+        fs.mkdirSync(path.dirname(destPath), { recursive: true })
+        fs.writeFileSync(destPath, entry.getData())
+        if (innerPath === 'SKILL.md') importedRoots.add(`_sandbox/${sbSkill}`)
+        continue
+      }
+      const skillId = top
+      const innerPath = parts.slice(1).join('/')
+      const destPath = path.join(destRoot, skillId, innerPath)
+      fs.mkdirSync(path.dirname(destPath), { recursive: true })
+      fs.writeFileSync(destPath, entry.getData())
+      if (innerPath === 'SKILL.md') importedRoots.add(skillId)
     }
-    _skillsCache = readAllSkills()
+    const count = importedRoots.size
+    _skillsCache = readAllSkills({})
     return { success: true, skillsImported: count }
   } catch (error) {
     return { success: false, message: error.message }
@@ -9539,7 +9589,7 @@ registerChannel('feishu-send-message', async (event, options) => {
   }
 })
 
-// 身份与用户文件（<appRoot>/）：供 AI 注入，对标 OpenClaw
+// 身份与用户文件（<appRoot>/）：供 AI 注入
 const SOUL_MD_PATH = getAppRootPath('SOUL.md')
 const IDENTITY_MD_PATH = getAppRootPath('IDENTITY.md')
 const USER_MD_PATH = getAppRootPath('USER.md')

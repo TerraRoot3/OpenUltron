@@ -311,16 +311,26 @@ watch(() => props.model, (val) => {
   if (val && val !== currentModel.value) currentModel.value = val
 }, { immediate: true })
 
+watch(() => props.projectPath, () => {
+  loadSkills()
+  loadAgentMd()
+})
+
 // ---- 技能（自动注入，无需手动选择）----
 const skills = ref([])
 const agentMdContent = ref(null)  // 当前项目 AGENT.md 内容
 
 const loadSkills = async () => {
   try {
-    const res = await window.electronAPI.ai.getSkills()
+    const projectPath = props.projectPath && String(props.projectPath).trim() && !String(props.projectPath).startsWith('__')
+      ? String(props.projectPath).trim()
+      : undefined
+    const res = await window.electronAPI.ai.getSkills(projectPath ? { projectPath } : {})
     if (res.success) skills.value = res.skills || []
   } catch { /* ignore */ }
 }
+/** 与 SkillManager 一致：安装/更新技能后主进程会发 ai-skills-changed，否则会话里 skills 仍为空，模型看不到技能列表 */
+let unsubscribeSkillsChanged = null
 
 const loadAgentMd = async () => {
   try {
@@ -531,7 +541,7 @@ const buildSystemPrompt = () => {
     '你正在运行的应用是 **OpenUltron**（本应用）。' +
     '当用户要求修改或配置本机其他项目、某仓库或用户提到的任意名称时，你应当直接操作：用 execute_command 查找路径，用 file_operation 读取与修改配置文件；不要推脱或仅请用户提供路径。具体是什么项目、配置文件名与目录结构由你通过检索或用户表述自行判断。\n' +
     '当执行中遇到「命令不存在」「依赖缺失」（如 tesseract、ffmpeg、python 包等）时：不要只给安装建议。应直接执行最小化安装步骤并继续任务；安装命令超时或失败时，自动换一种安装方式重试一次（无需向用户弹确认），仍失败再给降级方案。\n' +
-    '**名字与身份**：当用户说「改名字」「改身份」「修改角色」等且未指明外部项目时，指本应用（OpenUltron）的 IDENTITY.md、SOUL.md。两文件在**应用根目录**（与 prompts 同级），如 ~/.openultron/IDENTITY.md、~/.openultron/SOUL.md；文件名为**大写** IDENTITY.md、SOUL.md，勿写入 prompts/ 或 identity.md（小写）。可引导用户点「编辑我的名字与角色」打开，或用 file_operation 写上述路径；勿误解为改 OpenClaw 等。'
+    '**名字与身份**：当用户说「改名字」「改身份」「修改角色」等且未指明外部项目时，指本应用（OpenUltron）的 IDENTITY.md、SOUL.md。两文件在**应用根目录**（与 prompts 同级），如 ~/.openultron/IDENTITY.md、~/.openultron/SOUL.md；文件名为**大写** IDENTITY.md、SOUL.md，勿写入 prompts/ 或 identity.md（小写）。可引导用户点「编辑我的名字与角色」打开，或用 file_operation 写上述路径；勿误解为改其它外部助手应用。'
   )
   const todayStr = currentDateLabel()
   parts.push(`当前日期：${todayStr}。回答中凡涉及「今天」「本月」「当前」等时间，必须使用此日期（${todayStr}），不得使用搜索结果或其它来源的日期。`)
@@ -543,8 +553,9 @@ const buildSystemPrompt = () => {
   )
   parts.push(
     '## 联网与实时信息\n' +
-    '1) 搜索：当用户询问天气、新闻、股价、实时事件、技术文档等时，**必须调用已配置的 MCP 搜索工具**（如 Serper、Brave Search 等）。若未配置任何搜索 MCP，告知用户需在设置中添加搜索类 MCP（如 serper-mcp）。禁止对同一问题重复多次调用；获得结果后立即作答。\n' +
-    '2) 抓取链接：当用户给出具体 URL 时，优先用 `web_fetch` 抓取正文；需登录或动态渲染时，**必须使用 chrome-devtools MCP**（打开/截屏/点击/填表/执行 JS 等）。无内置 webview 兜底，请确保 chrome-devtools MCP 已启用。'
+    '1) 搜索：询问新闻、股价、实时事件、技术文档等时，**优先**已配置的 MCP 搜索工具（如 Serper、Brave Search）。**若未配置搜索 MCP，必须使用内置 `web_search`（必要时再 `web_fetch`）作答**，禁止仅回复「请去设置里添加搜索 MCP」而不尝试查询。\n' +
+    '2) **天气**：用户问天气、或要求用 weather/查气温时，若上方技能列表中有 `[weather-…] weather` 等条目，必须先 `get_skill(action="get", skill_id="<方括号内的完整 id>")`（例如 `weather-1.0.0`，不要用简称 `weather`），再按技能正文用 **`execute_command` 执行其中的 curl（如 wttr.in）**；该路径不依赖搜索 MCP。无对应技能时再用 `web_search` / `web_fetch`。\n' +
+    '3) 抓取链接：当用户给出具体 URL 时，优先用 `web_fetch` 抓取正文；需登录或动态渲染时，**必须使用 chrome-devtools MCP**（打开/截屏/点击/填表/执行 JS 等）。无内置 webview 兜底，请确保 chrome-devtools MCP 已启用。禁止对同一问题重复多次搜索造成死循环；获得结果后立即作答。'
   )
   parts.push(
     '## 经验总结与知识库\n' +
@@ -1544,6 +1555,9 @@ onMounted(async () => {
 
   await loadModels()
   await loadSkills()
+  if (window.electronAPI?.ai?.onSkillsChanged) {
+    unsubscribeSkillsChanged = window.electronAPI.ai.onSkillsChanged(() => { loadSkills() })
+  }
   await loadAgentMd()
   if (props.initialSessionId) currentSessionId.value = props.initialSessionId
   await persistLoad()
@@ -1673,7 +1687,17 @@ onMounted(async () => {
     if (!data?.sessionId || data?.projectPath == null) return
     const proj = historyProjectPath()
     if (data.projectPath !== proj || data.sessionId !== currentSessionId.value) return
-    messages.value.push({ role: 'user', content: data.userContent || '' })
+    const normalizeRemoteContent = (s) => String(s || '')
+      .replace(/\r/g, '\n')
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
+    const remoteText = normalizeRemoteContent(data.userContent || '')
+    const last = messages.value[messages.value.length - 1]
+    // 去重：若最后一条本地已是同内容 user（常见于从App窗口触发但仍收到remote同步时），忽略远端重复入队
+    if (last?.role === 'user' && normalizeRemoteContent(last.content) === remoteText) return
+
+    messages.value.push({ role: 'user', content: remoteText })
     useAIChatInstance.setCurrentSessionId(data.sessionId)
     useAIChatInstance.startStreamingPlaceholder()
     nextTick(() => persistSave())
@@ -1701,8 +1725,13 @@ onMounted(async () => {
 onActivated(() => {
   // 从其他 tab/路由回到聊天时重新拉取 Agent 名字（用户可能刚改过 IDENTITY.md）
   refetchAgentDisplayName()
+  loadSkills()
 })
 onUnmounted(() => {
+  if (typeof unsubscribeSkillsChanged === 'function') {
+    unsubscribeSkillsChanged()
+    unsubscribeSkillsChanged = null
+  }
   window.removeEventListener('focus', onWindowFocusRefetchName)
   stopMarquee()
   document.removeEventListener('mousedown', onSlashPaletteClickOutside)
