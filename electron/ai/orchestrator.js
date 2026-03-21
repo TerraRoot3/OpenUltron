@@ -15,6 +15,15 @@ const fs = require('fs')
 const { getAppRootPath, getWorkspaceRoot } = require('../app-root')
 const sessionRegistry = require('./session-registry')
 const { logger: appLogger } = require('../app-logger')
+const {
+  buildResponsesRequestBody,
+  handleResponsesStreamEvent,
+  getOpenAiResponsesPostUrl,
+  isCodexChatgptResponsesUrl,
+  shouldUseOpenAiResponses,
+  shouldFallbackResponsesToChat,
+  extractResponsesOutputText
+} = require('./openai-responses')
 
 /** 是否为相对路径（与仅以 `/` 开头区分，兼容 Windows 绝对路径） */
 function isRelativeFilePath(p) {
@@ -62,6 +71,21 @@ function canSend(sender) {
   if (!sender) return false
   if (typeof sender.isDestroyed === 'function' && sender.isDestroyed()) return false
   return true
+}
+
+/**
+ * Codex CLI 默认走 OpenAI Responses API（/v1/responses）；本应用走 Chat Completions（/v1/chat/completions）。
+ * 同一 OAuth 在 Codex 可用 ≠ 对 chat/completions 有 Platform 额度；429 时勿只理解为「欠费」。
+ */
+function appendOpenAiPlatformBillingHint(statusCode, hostname, message) {
+  const code = Number(statusCode)
+  if (code !== 429 && code !== 402) return String(message || '')
+  const h = String(hostname || '').toLowerCase()
+  if (!h.includes('openai.com')) return String(message || '')
+  const m = String(message || '')
+  const lower = m.toLowerCase()
+  if (!/(quota|billing|exceeded|insufficient|credit|payment|plan|afford|limit)/.test(lower)) return m
+  return `${m}\n\n[OpenUltron] 说明：**Codex 能正常使用 ≠ 本应用「发消息」走同一接口**。Codex 官方默认使用 **Responses API**；本应用使用 **chat/completions**。若从 Codex 导入 access_token，对 Platform 的 chat/completions 可能无额度或权限不同。请优先在 platform.openai.com/api-keys 使用 **sk-… API Key**，或改用兼容 chat/completions 的网关。详见仓库 docs/OPENAI-CODEX-AND-CHAT-COMPLETIONS.md`
 }
 
 // Claude 模型前缀
@@ -454,7 +478,20 @@ class Orchestrator {
       }
     })
 
-    console.log('[AI] startChat →', isAnthropic ? 'Anthropic' : 'OpenAI', 'model:', useModel, 'baseUrl:', config.apiBaseUrl, 'tools:', sanitizedTools.length)
+    let openAiKind = ''
+    if (!isAnthropic) {
+      if (shouldUseOpenAiResponses(config.apiBaseUrl, config.openAiWireMode, config.apiKey)) {
+        try {
+          const u = getOpenAiResponsesPostUrl(config.apiBaseUrl, config.openAiWireMode, config.apiKey)
+          openAiKind = isCodexChatgptResponsesUrl(u) ? 'OpenAI-Codex(chatgpt.com)' : 'OpenAI-Responses(platform)'
+        } catch {
+          openAiKind = 'OpenAI-Responses'
+        }
+      } else {
+        openAiKind = 'OpenAI-Chat'
+      }
+    }
+    console.log('[AI] startChat →', isAnthropic ? 'Anthropic' : openAiKind, 'model:', useModel, 'baseUrl:', config.apiBaseUrl, 'tools:', sanitizedTools.length)
     if (sanitizedTools.length === 0) console.warn('[AI] 无可用工具，本轮仅会文本回复，不会执行 MCP/浏览器等')
 
     // 上下文压缩：在每次调用 LLM 前检查（含工具多轮），避免 prompt 先撑爆再失败
@@ -468,7 +505,7 @@ class Orchestrator {
     }
     const fakeSender = { send: () => {} }
     const callForSummary = async (msgs, maxTokens) => {
-      const callFn = isAnthropic ? this._callAnthropicLLM.bind(this) : this._callOpenAILLM.bind(this)
+      const callFn = this._pickOpenAiLlmCaller(config, isAnthropic)
       const result = await callFn(
         { messages: msgs, model: useModel, tools: undefined, temperature: 0, max_tokens: maxTokens || 1000 },
         config, fakeSender, `summary-${sessionId}`, new AbortController().signal
@@ -575,7 +612,7 @@ class Orchestrator {
             const tryModel = modelCandidates[mi].model
             const tryConfig = modelCandidates[mi].routeConfig || config
             const tryAnthropic = this._isClaudeModel(tryModel)
-            const callFn = tryAnthropic ? this._callAnthropicLLM.bind(this) : this._callOpenAILLM.bind(this)
+            const callFn = this._pickOpenAiLlmCaller(tryConfig, tryAnthropic)
             try {
               const messagesToSend = tryAnthropic ? currentMessages : this._sanitizeOpenAIMessages(currentMessages)
               const toolModes = sanitizedTools.length > 0
@@ -999,7 +1036,7 @@ class Orchestrator {
 
     try {
       const fakeSender = { send: () => {} }
-      const callFn = isAnthropic ? this._callAnthropicLLM.bind(this) : this._callOpenAILLM.bind(this)
+      const callFn = this._pickOpenAiLlmCaller(config, isAnthropic)
       const result = await callFn(
         { messages: [{ role: 'user', content: extractPrompt }], model, tools: undefined, temperature: 0, max_tokens: 500 },
         config, fakeSender, `memory-extract-${Date.now()}`, new AbortController().signal
@@ -1088,7 +1125,28 @@ class Orchestrator {
   }
 
   // ---------- 单轮非流式文本生成（用于 commit message 等简单场景）----------
-  async generateText({ prompt, model: overrideModel, systemPrompt, config: externalConfig } = {}) {
+  async generateText(opts = {}) {
+    try {
+      return await this._generateTextOnce(opts)
+    } catch (e) {
+      const cfg = opts.config || this.getConfig()
+      let codexUrl = null
+      try {
+        codexUrl = getOpenAiResponsesPostUrl(cfg.apiBaseUrl, cfg.openAiWireMode, cfg.apiKey)
+      } catch { /* ignore */ }
+      // ChatGPT Codex 后端失败时不要回退到 Platform chat（无订阅额度）
+      if (codexUrl && isCodexChatgptResponsesUrl(codexUrl)) throw e
+      if (shouldFallbackResponsesToChat(e) && shouldUseOpenAiResponses(cfg.apiBaseUrl, cfg.openAiWireMode, cfg.apiKey)) {
+        return await this._generateTextOnce({
+          ...opts,
+          config: { ...cfg, openAiWireMode: 'chat' }
+        })
+      }
+      throw e
+    }
+  }
+
+  async _generateTextOnce({ prompt, model: overrideModel, systemPrompt, config: externalConfig } = {}) {
     const config = externalConfig || this.getConfig()
     if (!config.apiKey || !String(config.apiKey).trim()) {
       const isOpenRouter = /openrouter\.ai/i.test(config.apiBaseUrl || '')
@@ -1123,6 +1181,20 @@ class Orchestrator {
           'Content-Type': 'application/json',
           'x-api-key': config.apiKey,
           'anthropic-version': '2023-06-01'
+        }
+      } else if (shouldUseOpenAiResponses(config.apiBaseUrl, config.openAiWireMode, config.apiKey)) {
+        url = getOpenAiResponsesPostUrl(config.apiBaseUrl, config.openAiWireMode, config.apiKey)
+        reqBody = buildResponsesRequestBody(messages, {
+          model: useModel,
+          temperature: config.temperature ?? 0,
+          max_tokens: config.maxTokens || 0,
+          stream: false
+        }, {
+          codexChatgptBackend: isCodexChatgptResponsesUrl(url)
+        })
+        headers = {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${config.apiKey}`
         }
       } else {
         url = new URL(`${config.apiBaseUrl}/chat/completions`)
@@ -1166,18 +1238,31 @@ class Orchestrator {
           if (res.statusCode !== 200) {
             try {
               const err = JSON.parse(body)
-              reject(new Error(err.error?.message || err.message || `HTTP ${res.statusCode}`))
+              let msg = err.error?.message || err.message || `HTTP ${res.statusCode}`
+              msg = appendOpenAiPlatformBillingHint(res.statusCode, url.hostname, msg)
+              const e = new Error(msg)
+              e.httpStatus = res.statusCode
+              reject(e)
             } catch {
-              reject(new Error(`HTTP ${res.statusCode}: ${body.substring(0, 200)}`))
+              let msg = `HTTP ${res.statusCode}: ${body.substring(0, 200)}`
+              msg = appendOpenAiPlatformBillingHint(res.statusCode, url.hostname, msg)
+              const e = new Error(msg)
+              e.httpStatus = res.statusCode
+              reject(e)
             }
             return
           }
           try {
             const data = JSON.parse(body)
-            const content = isAnthropic
-              ? (data.content?.[0]?.text || '')
-              : (data.choices?.[0]?.message?.content || '')
-            resolve(content.trim())
+            let content = ''
+            if (isAnthropic) {
+              content = data.content?.[0]?.text || ''
+            } else if (shouldUseOpenAiResponses(config.apiBaseUrl, config.openAiWireMode, config.apiKey)) {
+              content = extractResponsesOutputText(data)
+            } else {
+              content = data.choices?.[0]?.message?.content || ''
+            }
+            resolve(String(content || '').trim())
           } catch (e) {
             reject(new Error('响应格式错误'))
           }
@@ -1243,6 +1328,15 @@ class Orchestrator {
 
   _isOpenRouterBaseUrl(apiBaseUrl) {
     return /openrouter\.ai/i.test(String(apiBaseUrl || ''))
+  }
+
+  /** OpenAI：Chat Completions vs Responses（Codex/OAuth JWT 默认走 Responses） */
+  _pickOpenAiLlmCaller(config, tryAnthropic) {
+    if (tryAnthropic) return this._callAnthropicLLM.bind(this)
+    if (shouldUseOpenAiResponses(config.apiBaseUrl, config.openAiWireMode, config.apiKey)) {
+      return this._callOpenAIResponsesLLM.bind(this)
+    }
+    return this._callOpenAILLM.bind(this)
   }
 
   /**
@@ -1470,6 +1564,110 @@ class Orchestrator {
     })
 
     return attemptOnce(0)
+  }
+
+  /**
+   * Responses 形态：JWT+自动 或 codex 模式 → `chatgpt.com/backend-api/codex/responses`；
+   * responses(Platform) 模式 → `api.openai.com/v1/responses`。
+   * 仅 Platform Responses 无权限时回退 Chat Completions；ChatGPT Codex 失败不回退。
+   */
+  _callOpenAIResponsesLLM(body, config, sender, sessionId, signal) {
+    const { maxRetries, baseDelayMs, maxDelayMs } = this._getRetryConfig(config)
+    const responsesPostUrl = getOpenAiResponsesPostUrl(config.apiBaseUrl, config.openAiWireMode, config.apiKey)
+
+    const attemptOnce = (attempt) => new Promise((resolve, reject) => {
+      if (signal.aborted) { reject(new Error('已取消')); return }
+
+      const url = responsesPostUrl
+      const reqBody = buildResponsesRequestBody(body.messages, body, {
+        codexChatgptBackend: isCodexChatgptResponsesUrl(responsesPostUrl)
+      })
+      const postData = JSON.stringify(reqBody)
+
+      const onError = (err) => {
+        if (this._shouldRetryError(err, attempt, maxRetries)) {
+          const delay = this._getRetryDelayMs(attempt, baseDelayMs, maxDelayMs)
+          console.warn(`[AI] Responses API 调用失败，将在 ${delay}ms 后重试 (${attempt + 1}/${maxRetries})：`, err.message)
+          this._sleep(delay, signal)
+            .then(() => attemptOnce(attempt + 1).then(resolve, reject))
+            .catch(() => reject(err))
+          return
+        }
+        reject(err)
+      }
+
+      const req = this._makeRequest(url, 'POST', {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.apiKey}`,
+        'Content-Length': Buffer.byteLength(postData)
+      }, signal)
+      const STREAM_TIMEOUT_MS = 120000
+      req.setTimeout(STREAM_TIMEOUT_MS, () => {
+        if (!req.destroyed) req.destroy(new Error(`请求超时（${STREAM_TIMEOUT_MS / 1000} 秒内无响应）`))
+      })
+
+      const parser = new SSEParser()
+      let fullContent = ''
+      let toolCalls = []
+      const seenToolIds = new Set()
+
+      req.on('response', (res) => {
+        if (res.statusCode !== 200) {
+          this._readErrorBody(res, url, onError)
+          return
+        }
+        res.setEncoding('utf-8')
+        res.on('data', (chunk) => {
+          if (signal.aborted) { req.destroy(); return }
+          const events = parser.parse(chunk)
+          for (const event of events) {
+            if (event.type === 'done') continue
+            if (event.type !== 'data') continue
+            const parsed = event.data
+            if (!parsed || typeof parsed !== 'object') continue
+            const h = handleResponsesStreamEvent(parsed)
+            if (h.deltaText) {
+              fullContent += h.deltaText
+              if (canSend(sender)) sender.send('ai-chat-token', { sessionId, token: h.deltaText })
+            }
+            if (h.toolCalls && h.toolCalls.length) {
+              for (const tc of h.toolCalls) {
+                const id = tc.id && String(tc.id).trim()
+                if (id && !seenToolIds.has(id)) {
+                  seenToolIds.add(id)
+                  toolCalls.push(tc)
+                }
+              }
+            }
+          }
+        })
+        res.on('end', () => {
+          resolve({ content: fullContent, toolCalls })
+        })
+        res.on('error', onError)
+      })
+
+      req.on('error', onError)
+      req.write(postData)
+      req.end()
+    })
+
+    return attemptOnce(0).catch((err) => {
+      if (isCodexChatgptResponsesUrl(responsesPostUrl)) {
+        throw err
+      }
+      if (shouldFallbackResponsesToChat(err)) {
+        console.warn('[AI] Platform Responses 无权限（缺 api.responses.write 等），回退 Chat Completions:', err.message)
+        if (canSend(sender)) {
+          sender.send('ai-chat-token', {
+            sessionId,
+            token: '\n\n> ⚠️ 当前凭证无 **Platform Responses** 权限（需 `api.responses.write` 等 scope）。已自动改用 **Chat Completions**。若使用受限 API Key，请在 platform.openai.com 为该 Key 勾选 Responses 权限，或改用「接口类型：Chat」并保存。\n\n'
+          })
+        }
+        return this._callOpenAILLM(body, config, sender, sessionId, signal)
+      }
+      throw err
+    })
   }
 
   // ========== Anthropic Messages API ==========
@@ -1807,13 +2005,15 @@ class Orchestrator {
           if (extra) msg += (msg ? ' | ' : '') + (typeof extra === 'string' ? extra : JSON.stringify(extra).slice(0, 300))
         }
         if (!msg) msg = errorBody.substring(0, 200)
+        msg = appendOpenAiPlatformBillingHint(res.statusCode, url.hostname, msg)
         const e = new Error(`${detail}: ${msg}`)
         e.httpStatus = res.statusCode
         e.apiHost = url.hostname
         e.apiPath = url.pathname
         reject(e)
       } catch {
-        const msg = errorBody.substring(0, 200)
+        let msg = errorBody.substring(0, 200)
+        msg = appendOpenAiPlatformBillingHint(res.statusCode, url.hostname, msg)
         const e = new Error(`${detail}: ${msg}`)
         e.httpStatus = res.statusCode
         e.apiHost = url.hostname

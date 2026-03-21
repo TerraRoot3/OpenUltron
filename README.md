@@ -89,6 +89,7 @@ npm run release:all
 
 ## 设计文档
 
+- [OpenAI：Codex 与 Chat Completions（为何 Codex 能用但本应用报 429）](./docs/OPENAI-CODEX-AND-CHAT-COMPLETIONS.md)
 - [技能包与 ClawHub 兼容说明](./docs/SKILLS-PACK-COMPAT.md)
 - [Web 沙箱应用（可打包/安装/依赖声明）](./docs/WEB-APPS-SANDBOX-DESIGN.md)
 - [Web 应用实现清单（进度勾选）](./docs/WEB-APPS-IMPLEMENTATION-CHECKLIST.md)  

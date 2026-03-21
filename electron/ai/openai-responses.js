@@ -1,0 +1,278 @@
+/**
+ * OpenAI Responses API（/v1/responses）与 Chat Completions 的请求体/流式事件差异。
+ * @see https://platform.openai.com/docs/api-reference/responses/create
+ */
+
+function normalizeTextContent(content) {
+  if (content == null) return ''
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content
+      .map((p) => {
+        if (!p || typeof p !== 'object') return ''
+        if (p.type === 'text') return p.text || ''
+        if (p.type === 'input_text' || p.type === 'output_text') return p.text || ''
+        return ''
+      })
+      .join('')
+  }
+  return String(content)
+}
+
+/**
+ * 将 Chat Completions 风格 messages 转为 Responses 的 instructions + input 列表。
+ * @param {Array<{role:string,content?:*,tool_calls?:*,tool_call_id?:string}>} messages
+ * @param {{ model: string, temperature?: number, max_tokens?: number, tools?: Array }} body
+ * @param {{ codexChatgptBackend?: boolean }} [options] ChatGPT `…/codex/responses` 要求 `store: false`，否则会 400。
+ */
+/**
+ * Platform `api.openai.com`：user/assistant 文本块均用 `input_text`。
+ * ChatGPT `…/codex/responses`：按角色区分 —— **user** 仅允许 `input_text` / `input_image` 等；**assistant** 为 `output_text` / `refusal`。
+ */
+function textContentPart(text, options, role) {
+  const t = String(text || '')
+  const codex = !!options.codexChatgptBackend
+  if (codex && role === 'assistant') {
+    return { type: 'output_text', text: t }
+  }
+  return { type: 'input_text', text: t }
+}
+
+function buildResponsesRequestBody(messages, body, options = {}) {
+  const sys = []
+  const items = []
+  for (const m of messages || []) {
+    if (!m || !m.role) continue
+    if (m.role === 'system') {
+      sys.push(normalizeTextContent(m.content))
+      continue
+    }
+    if (m.role === 'user') {
+      items.push({
+        type: 'message',
+        role: 'user',
+        content: [textContentPart(normalizeTextContent(m.content), options, 'user')]
+      })
+      continue
+    }
+    if (m.role === 'assistant') {
+      const text = normalizeTextContent(m.content)
+      if (m.tool_calls && m.tool_calls.length) {
+        if (text) {
+          items.push({
+            type: 'message',
+            role: 'assistant',
+            content: [textContentPart(text, options, 'assistant')]
+          })
+        }
+        for (const tc of m.tool_calls) {
+          const fn = tc.function || {}
+          items.push({
+            type: 'function_call',
+            call_id: String(tc.id || '').trim() || `call_${Date.now()}`,
+            name: String(fn.name || ''),
+            arguments: typeof fn.arguments === 'string' ? fn.arguments : JSON.stringify(fn.arguments || {})
+          })
+        }
+      } else {
+        items.push({
+          type: 'message',
+          role: 'assistant',
+          content: [textContentPart(text || '', options, 'assistant')]
+        })
+      }
+      continue
+    }
+    if (m.role === 'tool') {
+      items.push({
+        type: 'function_call_output',
+        call_id: String(m.tool_call_id || '').trim() || 'unknown',
+        output: normalizeTextContent(m.content)
+      })
+    }
+  }
+
+  const req = {
+    model: body.model,
+    stream: body.stream !== undefined ? !!body.stream : true,
+    input: items.length
+      ? items
+      : [{ type: 'message', role: 'user', content: [textContentPart('', options, 'user')] }]
+  }
+  const ins = sys.filter(Boolean).join('\n\n')
+  if (ins) req.instructions = ins
+  // ChatGPT Codex `/codex/responses` 不接受 `temperature`（会 400 Unsupported parameter）
+  if (body.temperature != null && !options.codexChatgptBackend) {
+    req.temperature = body.temperature
+  }
+  const mt = Number(body.max_tokens) || 0
+  if (mt > 0) req.max_output_tokens = mt
+  if (body.tools && body.tools.length) {
+    req.tools = body.tools.map((t) => {
+      const fn = t.function || t
+      return {
+        type: 'function',
+        name: fn.name,
+        description: fn.description || '',
+        parameters: fn.parameters || { type: 'object', properties: {} }
+      }
+    })
+    req.tool_choice = body.tool_choice ?? 'auto'
+    req.parallel_tool_calls = true
+  }
+  if (options.codexChatgptBackend) {
+    req.store = false
+  }
+  return req
+}
+
+/**
+ * 解析 Responses SSE 中 data JSON，更新文本增量与工具调用。
+ * @returns {{ deltaText?: string, toolCalls?: Array<{id:string,type:string,function:{name:string,arguments:string}}>, done?: boolean }}
+ */
+function handleResponsesStreamEvent(parsed) {
+  const out = {}
+  if (!parsed || typeof parsed !== 'object') return out
+  const t = parsed.type
+  if (t === 'response.output_text.delta' && parsed.delta) {
+    out.deltaText = String(parsed.delta)
+    return out
+  }
+  if (t === 'response.output_item.done' && parsed.item) {
+    const it = parsed.item
+    if (it.type === 'function_call') {
+      out.toolCalls = [
+        {
+          id: String(it.call_id || it.id || '').trim() || `call_${Date.now()}`,
+          type: 'function',
+          function: {
+            name: String(it.name || ''),
+            arguments: typeof it.arguments === 'string' ? it.arguments : JSON.stringify(it.arguments || {})
+          }
+        }
+      ]
+    }
+    return out
+  }
+  if (t === 'response.completed' && parsed.response && Array.isArray(parsed.response.output)) {
+    const tc = []
+    for (const o of parsed.response.output) {
+      if (o && o.type === 'function_call') {
+        tc.push({
+          id: String(o.call_id || o.id || '').trim() || `call_${Date.now()}`,
+          type: 'function',
+          function: {
+            name: String(o.name || ''),
+            arguments: typeof o.arguments === 'string' ? o.arguments : JSON.stringify(o.arguments || {})
+          }
+        })
+      }
+    }
+    if (tc.length) out.toolCalls = tc
+    out.done = true
+  }
+  return out
+}
+
+/**
+ * Codex / ChatGPT 订阅额度：走 ChatGPT 后端（与 OpenClaw `openai-codex` 一致），非 api.openai.com Platform。
+ * @see https://github.com/openclaw/openclaw/blob/main/extensions/openai/openai-codex-provider.ts
+ */
+const OPENAI_CODEX_CHATGPT_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses'
+
+/**
+ * 实际发起 Responses 形态请求的 URL（stream / 非流式共用）。
+ * - **自动 + JWT + api.openai.com**：使用 ChatGPT Codex 后端（订阅额度），避免误打 Platform `/v1/responses`（缺 scope）再回退 chat 导致 429。
+ * - **codex**：始终 ChatGPT Codex 后端。
+ * - **responses**：显式 Platform：`{apiBaseUrl}/responses`。
+ * @param {string} apiBaseUrl
+ * @param {string} openAiWireMode - '' | 'auto' | 'chat' | 'responses' | 'codex'
+ * @param {string} apiKey
+ * @returns {URL}
+ */
+function getOpenAiResponsesPostUrl(apiBaseUrl, openAiWireMode, apiKey) {
+  const mode = String(openAiWireMode || '').trim().toLowerCase()
+  const key = String(apiKey || '')
+  const base = String(apiBaseUrl || '').replace(/\/$/, '')
+  const isJwt = key.startsWith('eyJ')
+  const isOpenAiCom = /api\.openai\.com/i.test(base)
+
+  if (mode === 'codex') {
+    return new URL(OPENAI_CODEX_CHATGPT_RESPONSES_URL)
+  }
+  if (mode === 'responses') {
+    if (!base) throw new Error('OpenAI Responses：需要配置 API Base URL')
+    return new URL(`${base}/responses`)
+  }
+  if (mode === 'chat') {
+    throw new Error('internal: getOpenAiResponsesPostUrl 不应在 chat 模式下调用')
+  }
+  // 自动：JWT + 官方 Platform 域名 → Codex 订阅后端（与 OpenClaw 行为对齐）
+  if (isJwt && isOpenAiCom) {
+    return new URL(OPENAI_CODEX_CHATGPT_RESPONSES_URL)
+  }
+  if (!base) throw new Error('OpenAI Responses：需要配置 API Base URL')
+  return new URL(`${base}/responses`)
+}
+
+function isCodexChatgptResponsesUrl(urlLike) {
+  const s = urlLike && typeof urlLike === 'object' && urlLike.href ? urlLike.href : String(urlLike || '')
+  return /chatgpt\.com/i.test(s) && /\/codex\/responses/i.test(s)
+}
+
+/**
+ * @param {string} apiBaseUrl
+ * @param {string} openAiWireMode - '' | 'chat' | 'responses' | 'codex'
+ * @param {string} apiKey
+ */
+function shouldUseOpenAiResponses(apiBaseUrl, openAiWireMode, apiKey) {
+  const mode = String(openAiWireMode || '').trim().toLowerCase()
+  if (mode === 'responses') return true
+  if (mode === 'codex') return true
+  if (mode === 'chat') return false
+  const base = String(apiBaseUrl || '')
+  const key = String(apiKey || '')
+  if (!/api\.openai\.com/i.test(base)) return false
+  return key.startsWith('eyJ')
+}
+
+/**
+ * Responses 返回 401/403 且缺少 api.responses.write 等：OAuth/受限 sk- 常无此 scope，可回退 Chat Completions。
+ */
+function shouldFallbackResponsesToChat(err) {
+  const status = Number(err?.httpStatus) || 0
+  const msg = String(err?.message || err || '').toLowerCase()
+  if (status !== 401 && status !== 403) return false
+  return /api\.responses\.write|responses\.write|insufficient permissions|missing scopes|restricted api key|incorrect role|not have access/.test(msg)
+}
+
+/** 非流式 Responses 返回 JSON 中抽取助手文本 */
+function extractResponsesOutputText(data) {
+  if (!data || typeof data !== 'object') return ''
+  if (typeof data.output_text === 'string') return data.output_text.trim()
+  const out = data.output
+  if (Array.isArray(out)) {
+    const parts = []
+    for (const item of out) {
+      if (item && item.type === 'message' && Array.isArray(item.content)) {
+        for (const c of item.content) {
+          if (c && c.type === 'output_text' && c.text) parts.push(c.text)
+        }
+      }
+    }
+    if (parts.length) return parts.join('\n').trim()
+  }
+  return ''
+}
+
+module.exports = {
+  buildResponsesRequestBody,
+  handleResponsesStreamEvent,
+  getOpenAiResponsesPostUrl,
+  isCodexChatgptResponsesUrl,
+  OPENAI_CODEX_CHATGPT_RESPONSES_URL,
+  shouldUseOpenAiResponses,
+  shouldFallbackResponsesToChat,
+  normalizeTextContent,
+  extractResponsesOutputText
+}

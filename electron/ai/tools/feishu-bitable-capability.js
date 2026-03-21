@@ -17,7 +17,17 @@ const definition = {
       page_size: { type: 'number', description: '分页大小，默认 100' },
       page_token: { type: 'string', description: '分页 token' },
       filter: { type: 'object', description: 'search_records 过滤条件' },
-      sort: { type: 'array', description: 'search_records 排序条件' },
+      sort: {
+        type: 'array',
+        description: 'search_records 排序条件（飞书 API：每项含 field_name、desc）',
+        items: {
+          type: 'object',
+          properties: {
+            field_name: { type: 'string', description: '列字段名' },
+            desc: { type: 'boolean', description: '是否降序，默认 false' }
+          }
+        }
+      },
       fields: { type: 'object', description: 'create/update 记录字段对象' }
     },
     required: ['action', 'app_token']

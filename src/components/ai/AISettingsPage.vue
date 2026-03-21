@@ -93,6 +93,16 @@
               <span class="hint codex-auth-hint-sub">{{ t('aiSettings.codexAuthHintSub') }}</span>
             </div>
           </div>
+          <p v-if="isOpenAIProvider" class="openai-quota-note">{{ t('aiSettings.openaiPlatformQuotaHint') }}</p>
+          <div v-if="isOpenAIProvider" class="openai-wire-row">
+            <label class="wire-label" for="openai-wire-select">{{ t('aiSettings.openAiWireMode') }}</label>
+            <select id="openai-wire-select" v-model="currentProviderOpenAiWireMode" class="wire-select">
+              <option value="">{{ t('aiSettings.openAiWireModeAuto') }}</option>
+              <option value="codex">{{ t('aiSettings.openAiWireModeCodex') }}</option>
+              <option value="chat">Chat Completions</option>
+              <option value="responses">Responses (Platform)</option>
+            </select>
+          </div>
           <div class="connection-status" v-if="connectionState !== 'idle'">
             <Loader v-if="connectionState === 'testing'" :size="13" class="spin" />
             <CheckCircle2 v-else-if="connectionState === 'success'" :size="13" />
@@ -380,6 +390,22 @@ const isOpenAIProvider = computed(() => {
   return base.includes('api.openai.com')
 })
 
+/** 当前 OpenAI 供应商：Chat / Platform Responses / Codex(chatgpt)（空=自动：JWT→Codex 后端） */
+const currentProviderOpenAiWireMode = computed({
+  get() {
+    const p = rawData.providers.find(x => x.baseUrl === config.apiBaseUrl)
+    const v = p?.openAiWireMode
+    if (v === 'responses' || v === 'chat' || v === 'codex') return v
+    return ''
+  },
+  set(v) {
+    const p = rawData.providers.find(x => x.baseUrl === config.apiBaseUrl)
+    if (!p) return
+    if (v === 'responses' || v === 'chat' || v === 'codex') p.openAiWireMode = v
+    else delete p.openAiWireMode
+  }
+})
+
 const filteredModels = computed(() => {
   if (!modelSearch.value) return models.value
   const q = modelSearch.value.toLowerCase()
@@ -398,11 +424,25 @@ function mergeProvidersWithSaved(defaultList, savedList) {
     const saved = byUrl.get(p.baseUrl)
     if (saved) {
       byUrl.delete(p.baseUrl)
-      return { name: p.name, baseUrl: p.baseUrl, apiKey: saved.apiKey ?? '' }
+      return {
+        name: p.name,
+        baseUrl: p.baseUrl,
+        apiKey: saved.apiKey ?? '',
+        ...(saved.openAiWireMode === 'responses' || saved.openAiWireMode === 'chat' || saved.openAiWireMode === 'codex'
+          ? { openAiWireMode: saved.openAiWireMode }
+          : {})
+      }
     }
     return { ...p }
   })
-  byUrl.forEach((saved) => merged.push({ name: saved.name || saved.baseUrl, baseUrl: saved.baseUrl, apiKey: saved.apiKey ?? '' }))
+  byUrl.forEach((saved) => merged.push({
+    name: saved.name || saved.baseUrl,
+    baseUrl: saved.baseUrl,
+    apiKey: saved.apiKey ?? '',
+    ...(saved.openAiWireMode === 'responses' || saved.openAiWireMode === 'chat' || saved.openAiWireMode === 'codex'
+      ? { openAiWireMode: saved.openAiWireMode }
+      : {})
+  }))
   return merged
 }
 
@@ -810,6 +850,9 @@ function buildRawPayload() {
     name: p.name,
     baseUrl: p.baseUrl,
     apiKey: p.baseUrl === config.apiBaseUrl ? (config.apiKey ?? p.apiKey ?? '') : (p.apiKey ?? ''),
+    ...(p.openAiWireMode === 'responses' || p.openAiWireMode === 'chat' || p.openAiWireMode === 'codex'
+      ? { openAiWireMode: p.openAiWireMode }
+      : {})
   }))
   const modelPool = normalizePool(config.modelPool)
   if (config.defaultModel && !modelPool.includes(config.defaultModel)) modelPool.unshift(config.defaultModel)
@@ -957,6 +1000,37 @@ const saveConfig = async () => {
 .codex-auth-hint-sub {
   font-size: 12px;
   opacity: 0.9;
+}
+.openai-quota-note {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ou-text-muted);
+  background: var(--ou-bg-elevated, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--ou-border);
+  border-radius: 8px;
+}
+.openai-wire-row {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.openai-wire-row .wire-label {
+  font-size: 12px;
+  color: var(--ou-text-muted);
+  flex-shrink: 0;
+}
+.openai-wire-row .wire-select {
+  min-width: 200px;
+  padding: 6px 10px;
+  font-size: 13px;
+  border-radius: 6px;
+  border: 1px solid var(--ou-border);
+  background: var(--ou-bg-main);
+  color: var(--ou-text);
 }
 .codex-auth-row {
   margin-top: 8px;

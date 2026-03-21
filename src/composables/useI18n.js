@@ -165,6 +165,11 @@ const messages = {
       codexAuthLoaded: '已从 Codex 授权导入 OpenAI Key',
       codexAuthLoadedByAccessToken: '已从 Codex 登录态导入 access_token（ChatGPT 授权）',
       codexAuthLoadFailed: '读取 Codex 授权失败',
+      openaiPlatformQuotaHint:
+        'JWT 自动模式已走 ChatGPT Codex 后端（chatgpt.com/backend-api/codex/responses，与 Codex 订阅额度一致）。若仍失败请检查 token；Platform 用量请使用 sk-…。详见 docs/OPENAI-CODEX-AND-CHAT-COMPLETIONS.md',
+      openAiWireMode: 'OpenAI 接口类型',
+      openAiWireModeAuto: '自动（JWT→ChatGPT Codex 后端，sk-→Chat）',
+      openAiWireModeCodex: 'Codex 订阅（chatgpt.com 后端，与 OpenClaw 一致）',
       retest: '重新验证',
       advanced: '高级参数',
       currentModel: '当前模型',
@@ -507,6 +512,11 @@ const messages = {
       codexAuthLoaded: 'OpenAI key imported from Codex auth',
       codexAuthLoadedByAccessToken: 'Imported access_token from Codex login session (ChatGPT auth)',
       codexAuthLoadFailed: 'Failed to load Codex auth',
+      openaiPlatformQuotaHint:
+        'Auto mode with JWT uses the ChatGPT Codex backend (chatgpt.com/.../codex/responses), same billing family as Codex. Use sk-… for Platform API quota. See docs/OPENAI-CODEX-AND-CHAT-COMPLETIONS.md',
+      openAiWireMode: 'OpenAI wire API',
+      openAiWireModeAuto: 'Auto (JWT→ChatGPT Codex backend, sk-→Chat)',
+      openAiWireModeCodex: 'Codex subscription (chatgpt.com backend, same as OpenClaw)',
       retest: 'Retest',
       advanced: 'Advanced',
       currentModel: 'Current Model',

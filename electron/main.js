@@ -3397,6 +3397,14 @@ registerChannel('get-gateway-ws-url', () => {
   const port = isDev ? GATEWAY_PORT_DEV : GATEWAY_PORT_PROD
   return `ws://127.0.0.1:${port}`
 })
+/** OpenAI 专用：chat / responses；空字符串表示自动（JWT→responses） */
+function getProviderOpenAiWireMode(legacy, baseUrl) {
+  const p = legacy?.raw?.providers?.find((x) => x && x.baseUrl === baseUrl)
+  const v = p?.openAiWireMode
+  if (v === 'responses' || v === 'chat' || v === 'codex') return v
+  return ''
+}
+
 function getResolvedAIConfig() {
   const legacy = getAIConfigLegacy()
   const configuredBaseUrl = (legacy.config && legacy.config.apiBaseUrl) || 'https://api.qnaigc.com/v1'
@@ -3433,6 +3441,7 @@ function getResolvedAIConfig() {
         apiKey: key,
         apiBaseUrl: routeProvider,
         defaultModel: m,
+        openAiWireMode: getProviderOpenAiWireMode(legacy, routeProvider),
         temperature: (legacy.config && legacy.config.temperature) ?? 0,
         maxTokens: (legacy.config && legacy.config.maxTokens) ?? 0,
         maxToolIterations: (legacy.config && legacy.config.maxToolIterations) ?? 0,
@@ -3450,6 +3459,7 @@ function getResolvedAIConfig() {
           apiKey: primaryApiKey || ((legacy.providerKeys && legacy.config && legacy.providerKeys[configuredBaseUrl]) || (legacy.config && legacy.config.apiKey) || ''),
           apiBaseUrl: baseUrl,
           defaultModel,
+          openAiWireMode: getProviderOpenAiWireMode(legacy, baseUrl),
           temperature: (legacy.config && legacy.config.temperature) ?? 0,
           maxTokens: (legacy.config && legacy.config.maxTokens) ?? 0,
           maxToolIterations: (legacy.config && legacy.config.maxToolIterations) ?? 0,
@@ -3462,6 +3472,7 @@ function getResolvedAIConfig() {
     apiKey: primary?.config?.apiKey || ((legacy.providerKeys && legacy.config && legacy.providerKeys[legacy.config.apiBaseUrl]) || (legacy.config && legacy.config.apiKey) || ''),
     apiBaseUrl: baseUrl,
     defaultModel,
+    openAiWireMode: getProviderOpenAiWireMode(legacy, baseUrl),
     modelPool: [defaultModel, ...fallbackModels].filter(Boolean),
     fallbackModels,
     fallbackRoutes,
@@ -3524,6 +3535,36 @@ async function verifyProviderModel(providerKey, modelId) {
       let err = r.body
       try { err = JSON.parse(r.body)?.error?.message || r.body } catch { /* ignore */ }
       return { success: false, error: `HTTP ${r.status}: ${(err || '').toString().slice(0, 200)}` }
+    }
+    const {
+      shouldUseOpenAiResponses,
+      buildResponsesRequestBody,
+      shouldFallbackResponsesToChat,
+      getOpenAiResponsesPostUrl,
+      isCodexChatgptResponsesUrl
+    } = require('./ai/openai-responses')
+    if (shouldUseOpenAiResponses(baseUrl, config.openAiWireMode, config.apiKey)) {
+      const urlObj = getOpenAiResponsesPostUrl(baseUrl, config.openAiWireMode, config.apiKey)
+      const url = urlObj.href
+      const rb = buildResponsesRequestBody(
+        [{ role: 'user', content: 'hi' }],
+        { model, max_tokens: 16, stream: false, temperature: 0 },
+        { codexChatgptBackend: isCodexChatgptResponsesUrl(urlObj) }
+      )
+      const r = await doPost(url, rb, { Authorization: `Bearer ${config.apiKey}` })
+      if (r.status === 200) return { success: true }
+      let err = r.body
+      try { err = JSON.parse(r.body)?.error?.message || r.body } catch { /* ignore */ }
+      const msgStr = `HTTP ${r.status}: ${(err || '').toString().slice(0, 200)}`
+      const fakeErr = new Error(msgStr)
+      fakeErr.httpStatus = r.status
+      if (isCodexChatgptResponsesUrl(urlObj)) {
+        return { success: false, error: msgStr }
+      }
+      if (!shouldFallbackResponsesToChat(fakeErr)) {
+        return { success: false, error: msgStr }
+      }
+      // 无 api.responses.write 等：回退 Chat Completions 校验
     }
     const url = `${baseUrl}/chat/completions`
     const r = await doPost(url, {
@@ -3639,6 +3680,7 @@ function getResolvedAIConfigForProvider(providerKey) {
     apiKey: String(apiKey).trim(),
     apiBaseUrl: p.baseUrl,
     defaultModel,
+    openAiWireMode: getProviderOpenAiWireMode(legacy, p.baseUrl),
     modelPool: [defaultModel, ...fallbackModels].filter(Boolean),
     fallbackModels,
     modelBindings: bindings,
