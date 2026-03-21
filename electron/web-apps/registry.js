@@ -11,6 +11,12 @@ const { getAppRootPath } = require('../app-root')
 
 const TEMPLATE_DIR = path.join(__dirname, 'hello-webapp-template')
 const { checkHostOpenUltronRange } = require('./host-openultron')
+const {
+  ensureWebAppService,
+  getWebAppServiceStatus,
+  stopWebAppService,
+  getWebAppServiceLogs
+} = require('./process-manager')
 const WEBAPP_ID_RE = /^[a-zA-Z0-9._-]{1,120}$/
 const WEBAPP_VERSION_RE = /^[a-zA-Z0-9._-]{1,64}$/
 const ZIP_MAX_FILES = 5000
@@ -47,6 +53,25 @@ function validateMvpManifest(m, options = {}) {
   if (host.protocol == null) return { ok: false, error: '缺少 host.protocol' }
   const entry = m.entry || {}
   const html = String(entry.html || 'index.html').trim() || 'index.html'
+  let service = null
+  if (entry.service != null) {
+    if (typeof entry.service !== 'object' || Array.isArray(entry.service)) {
+      return { ok: false, error: 'entry.service 必须是对象' }
+    }
+    const cmd = String(entry.service.command || '').trim()
+    if (!cmd) return { ok: false, error: 'entry.service.command 不能为空' }
+    const cwd = String(entry.service.cwd || '.').trim() || '.'
+    const portEnv = String(entry.service.portEnv || 'PORT').trim() || 'PORT'
+    const startupTimeoutMs = Number.isFinite(Number(entry.service.startupTimeoutMs))
+      ? Math.max(3000, Math.min(120000, Number(entry.service.startupTimeoutMs)))
+      : 30000
+    service = {
+      command: cmd,
+      cwd,
+      portEnv,
+      startupTimeoutMs
+    }
+  }
 
   let runtime = m.runtime
   if (runtime == null) {
@@ -73,7 +98,7 @@ function validateMvpManifest(m, options = {}) {
       name,
       version,
       host: { ...host },
-      entry: { ...entry, html },
+      entry: { ...entry, html, ...(service ? { service } : {}) },
       runtime: { browser, node }
     }
   }
@@ -151,6 +176,75 @@ function escapeHtml(t) {
     .replace(/"/g, '&quot;')
 }
 
+function buildSandboxReadme({ name, id, version, entryHtml = 'index.html', serviceCommand = '' }) {
+  const appName = String(name || '未命名应用').trim() || '未命名应用'
+  const appId = String(id || '').trim()
+  const appVersion = String(version || '').trim()
+  const html = String(entryHtml || 'index.html').trim() || 'index.html'
+  const svc = String(serviceCommand || '').trim()
+  return `# ${appName}
+
+这是一个 OpenUltron 沙盒应用（Web App）。
+
+## 应用信息
+
+- id: \`${appId}\`
+- version: \`${appVersion}\`
+- 入口页面: \`${html}\`
+${svc ? `- 服务命令: \`${svc}\`` : '- 服务命令:（未配置，使用内置静态服务）'}
+
+## 目录约定
+
+- \`manifest.json\`: 应用元数据、运行时与服务配置
+- \`${html}\`: 页面入口
+- \`README.md\`: 本开发文档
+
+## 开发方式（推荐）
+
+1. 在 OpenUltron 的「应用工作室」打开该应用。
+2. 左侧预览默认会尝试启动服务并打开本地服务地址（localhost）。
+3. 右侧 AI 可在应用目录执行命令与改写文件。
+
+## manifest 关键字段
+
+\`\`\`json
+{
+  "entry": {
+    "html": "${html}",
+    "service": {
+      "command": "${svc || "node server.js"}",
+      "cwd": ".",
+      "portEnv": "PORT",
+      "startupTimeoutMs": 20000
+    }
+  },
+  "runtime": {
+    "browser": true,
+    "node": true
+  }
+}
+\`\`\`
+
+## 调试建议
+
+- Node 检查:
+\`\`\`bash
+node --check server.js
+\`\`\`
+
+- Python（如需）:
+\`\`\`bash
+python3 -c "print('python ok')"
+\`\`\`
+
+## 注意事项
+
+- 仅在应用目录内读写文件，避免越界到主程序目录。
+- 若服务启动失败，可先检查服务命令、端口环境变量和日志输出。
+- 可通过版本号管理多个应用版本目录。
+`
+}
+
 /**
  * 新建空白应用：唯一 id、版本 0.1.0、manifest + 最小 index.html
  * @param {{ name?: string }} opts
@@ -178,11 +272,30 @@ function createBlankWebApp(opts = {}) {
       openUltron: '>=1.0.0',
       protocol: 1
     },
-    entry: { html: 'index.html' },
-    runtime: { browser: true, node: false }
+    entry: {
+      html: 'index.html',
+      service: {
+        command: 'node service.js',
+        cwd: '.',
+        portEnv: 'PORT',
+        startupTimeoutMs: 20000
+      }
+    },
+    runtime: { browser: true, node: true }
   }
   fs.mkdirSync(dest, { recursive: true })
   fs.writeFileSync(path.join(dest, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf-8')
+  fs.writeFileSync(
+    path.join(dest, 'README.md'),
+    buildSandboxReadme({
+      name,
+      id,
+      version,
+      entryHtml: manifest.entry?.html || 'index.html',
+      serviceCommand: manifest.entry?.service?.command || ''
+    }),
+    'utf-8'
+  )
   const safeName = escapeHtml(name)
   const indexHtml = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -199,11 +312,67 @@ function createBlankWebApp(opts = {}) {
 </head>
 <body>
   <h1>${safeName}</h1>
-  <p>在 <strong>应用工作室</strong> 右侧用 AI 协助，或直接编辑本目录下的 <code>index.html</code> 与 <code>manifest.json</code>。</p>
+  <p>在 <strong>应用工作室</strong> 右侧用 AI 协助，或直接编辑本目录下的 <code>index.html</code>、<code>service.js</code> 与 <code>manifest.json</code>。</p>
 </body>
 </html>
 `
   fs.writeFileSync(path.join(dest, 'index.html'), indexHtml, 'utf-8')
+  const serviceJs = `'use strict'
+
+const http = require('http')
+const fs = require('fs')
+const path = require('path')
+
+const host = '127.0.0.1'
+const port = Number(process.env.PORT || 3000)
+const root = __dirname
+
+function sendJson(res, status, payload) {
+  const body = JSON.stringify(payload)
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body)
+  })
+  res.end(body)
+}
+
+function sendFile(res, fp) {
+  const ext = path.extname(fp).toLowerCase()
+  const contentType = ext === '.html'
+    ? 'text/html; charset=utf-8'
+    : ext === '.js'
+      ? 'application/javascript; charset=utf-8'
+      : ext === '.css'
+        ? 'text/css; charset=utf-8'
+        : 'application/octet-stream'
+  res.writeHead(200, { 'Content-Type': contentType })
+  fs.createReadStream(fp).pipe(res)
+}
+
+const server = http.createServer((req, res) => {
+  const reqUrl = String(req.url || '/')
+  if (reqUrl === '/health' || reqUrl === '/api/health') {
+    return sendJson(res, 200, { ok: true, service: 'new-webapp', ts: new Date().toISOString() })
+  }
+  const pathname = reqUrl.split('?')[0]
+  const rel = pathname === '/' ? 'index.html' : pathname.replace(/^\\/+/, '')
+  const abs = path.resolve(root, rel)
+  if (abs !== root && !abs.startsWith(root + path.sep)) {
+    res.writeHead(403)
+    return res.end('Forbidden')
+  }
+  if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
+    res.writeHead(404)
+    return res.end('Not Found')
+  }
+  return sendFile(res, abs)
+})
+
+server.listen(port, host, () => {
+  process.stdout.write('[new-webapp] running at http://' + host + ':' + port + '\\n')
+})
+`
+  fs.writeFileSync(path.join(dest, 'service.js'), serviceJs, 'utf-8')
   return {
     success: true,
     id,
@@ -483,25 +652,102 @@ function registerWebAppsIpc(registerChannel) {
     }
   })
 
-  registerChannel('web-apps-get', (event, { id, version }) => {
+  registerChannel('web-apps-get', async (event, { id, version, ensureService = true } = {}) => {
     const dir = path.join(getWebAppsRoot(), String(id || ''), String(version || ''))
     const manifest = readManifestJson(dir)
     const v = validateMvpManifest(manifest)
     if (!v.ok) return { success: false, error: v.error || '未找到应用' }
+    let previewUrl = getPreviewUrlForApp(v.normalized, dir)
+    let service = { success: true, status: 'stopped', running: false }
+    if (ensureService !== false) {
+      const started = await ensureWebAppService(v.normalized, dir)
+      if (started && started.success && started.url) {
+        previewUrl = started.url
+      } else if (started && started.error) {
+        // 自定义服务启动失败时，自动回退到内置静态服务，避免直接访问 html
+        const fallbackManifest = { ...v.normalized, entry: { ...(v.normalized.entry || {}) } }
+        delete fallbackManifest.entry.service
+        const fallback = await ensureWebAppService(fallbackManifest, dir)
+        if (fallback && fallback.success && fallback.url) {
+          previewUrl = fallback.url
+          service = {
+            ...fallback,
+            warning: `自定义服务启动失败，已回退内置静态服务：${started.error}`
+          }
+        } else {
+          service = { ...started, running: false }
+        }
+      }
+    }
+    if (!service || !service.running) {
+      service = getWebAppServiceStatus(v.normalized.id, v.normalized.version)
+      if (service && service.url && service.running) previewUrl = service.url
+    }
     return {
       success: true,
       path: dir,
       manifest: v.normalized,
-      previewUrl: getPreviewUrlForApp(v.normalized, dir)
+      previewUrl,
+      service
     }
   })
 
-  registerChannel('web-apps-preview-url', (event, { id, version }) => {
+  registerChannel('web-apps-preview-url', async (event, { id, version, ensureService = true } = {}) => {
     const dir = path.join(getWebAppsRoot(), String(id || ''), String(version || ''))
     const manifest = readManifestJson(dir)
     const v = validateMvpManifest(manifest)
     if (!v.ok) return { success: false, error: v.error || '无效应用' }
-    return { success: true, previewUrl: getPreviewUrlForApp(v.normalized, dir) }
+    if (ensureService !== false) {
+      const started = await ensureWebAppService(v.normalized, dir)
+      if (started && started.success && started.url) {
+        return { success: true, previewUrl: started.url, service: started }
+      }
+      if (started && started.error) {
+        const fallbackManifest = { ...v.normalized, entry: { ...(v.normalized.entry || {}) } }
+        delete fallbackManifest.entry.service
+        const fallback = await ensureWebAppService(fallbackManifest, dir)
+        if (fallback && fallback.success && fallback.url) {
+          return {
+            success: true,
+            previewUrl: fallback.url,
+            service: {
+              ...fallback,
+              warning: `自定义服务启动失败，已回退内置静态服务：${started.error}`
+            }
+          }
+        }
+        return {
+          success: true,
+          previewUrl: getPreviewUrlForApp(v.normalized, dir),
+          service: { ...started, running: false }
+        }
+      }
+    }
+    const svc = getWebAppServiceStatus(v.normalized.id, v.normalized.version)
+    if (svc && svc.running && svc.url) {
+      return { success: true, previewUrl: svc.url, service: svc }
+    }
+    return { success: true, previewUrl: getPreviewUrlForApp(v.normalized, dir), service: svc }
+  })
+
+  registerChannel('web-apps-service-start', async (event, { id, version } = {}) => {
+    const dir = path.join(getWebAppsRoot(), String(id || ''), String(version || ''))
+    const manifest = readManifestJson(dir)
+    const v = validateMvpManifest(manifest)
+    if (!v.ok) return { success: false, error: v.error || '无效应用' }
+    return await ensureWebAppService(v.normalized, dir)
+  })
+
+  registerChannel('web-apps-service-status', (event, { id, version } = {}) => {
+    return getWebAppServiceStatus(String(id || ''), String(version || ''))
+  })
+
+  registerChannel('web-apps-service-stop', (event, { id, version } = {}) => {
+    return stopWebAppService(String(id || ''), String(version || ''))
+  })
+
+  registerChannel('web-apps-service-logs', (event, { id, version } = {}) => {
+    return getWebAppServiceLogs(String(id || ''), String(version || ''))
   })
 
   registerChannel('web-apps-install-sample', () => installHelloSample())
@@ -532,6 +778,47 @@ function registerWebAppsIpc(registerChannel) {
 
   registerChannel('web-apps-export-zip', async (event, { id, version }) => {
     return exportToZip(String(id || ''), String(version || ''))
+  })
+
+  registerChannel('web-apps-delete', (event, { id, version } = {}) => {
+    try {
+      const appId = String(id || '').trim()
+      const appVersion = String(version || '').trim()
+      if (!appId || !appVersion) return { success: false, error: '缺少 id 或 version' }
+
+      const root = path.resolve(ensureWebAppsRoot())
+      const appDir = path.resolve(path.join(root, appId))
+      const versionDir = path.resolve(path.join(appDir, appVersion))
+      if (!isPathInside(root, versionDir)) return { success: false, error: '删除路径非法（越界）' }
+      if (!fs.existsSync(path.join(versionDir, 'manifest.json'))) {
+        return { success: false, error: '应用不存在或已删除' }
+      }
+
+      // 若服务在跑，先停掉
+      try { stopWebAppService(appId, appVersion) } catch (_) {}
+
+      fs.rmSync(versionDir, { recursive: true, force: true })
+
+      // 清理空应用目录
+      let removedAppDir = false
+      try {
+        if (fs.existsSync(appDir)) {
+          // 仅统计“版本目录（含 manifest）”；若一个都没有，整个 app 目录删掉（强制）
+          const versionDirs = fs.readdirSync(appDir, { withFileTypes: true })
+            .filter((d) => d.isDirectory())
+            .map((d) => path.join(appDir, d.name))
+          const validVersions = versionDirs.filter((d) => fs.existsSync(path.join(d, 'manifest.json')))
+          if (validVersions.length === 0) {
+            fs.rmSync(appDir, { recursive: true, force: true })
+            removedAppDir = true
+          }
+        }
+      } catch (_) {}
+
+      return { success: true, id: appId, version: appVersion, removedAppDir }
+    } catch (e) {
+      return { success: false, error: e.message || String(e) }
+    }
   })
 }
 

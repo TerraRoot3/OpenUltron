@@ -52,6 +52,7 @@
           <button type="button" class="wam-btn" @click="openOnly(a)">打开</button>
           <button type="button" class="wam-btn primary" @click="openStudio(a)">工作室</button>
           <button type="button" class="wam-btn ghost" @click="exportZip(a)">导出 ZIP</button>
+          <button type="button" class="wam-btn danger" @click="deleteApp(a)">删除</button>
         </div>
       </li>
     </ul>
@@ -85,6 +86,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { showConfirm } from '../../composables/useConfirm.js'
 
 const router = useRouter()
 
@@ -202,6 +204,34 @@ async function exportZip(a) {
     if (!r?.success) {
       errorMsg.value = r?.error || r?.message || '导出失败'
     }
+  } catch (e) {
+    errorMsg.value = e?.message || String(e)
+  }
+}
+
+async function deleteApp(a) {
+  errorMsg.value = ''
+  if (!api?.deleteWebApp) {
+    errorMsg.value = '当前版本不支持删除应用 API'
+    return
+  }
+  const ok = await showConfirm({
+    title: '删除应用',
+    message: `确定删除「${a.name || a.id}」吗？`,
+    detail: `${a.id}@${a.version}\n此操作不可恢复。`,
+    type: 'danger',
+    confirmText: '删除',
+    cancelText: '取消'
+  })
+  if (!ok) return
+
+  try {
+    const r = await api.deleteWebApp({ id: a.id, version: a.version })
+    if (!r?.success) {
+      errorMsg.value = r?.error || '删除失败'
+      return
+    }
+    await load()
   } catch (e) {
     errorMsg.value = e?.message || String(e)
   }
@@ -362,6 +392,15 @@ defineExpose({ load, installSample, importZip })
 }
 .wam-btn.primary:hover:not(:disabled) {
   filter: brightness(1.06);
+}
+.wam-btn.danger {
+  border-color: var(--ou-danger, #f85149);
+  color: var(--ou-danger, #f85149);
+  background: transparent;
+}
+.wam-btn.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ou-danger, #f85149) 14%, transparent);
+  filter: none;
 }
 
 .wam-modal-backdrop {

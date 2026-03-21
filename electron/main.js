@@ -31,6 +31,7 @@ const { resolveCapabilityRoute, detectRequestedExternalRuntime } = require('./ai
 const { getLogPath, readTail, getForAi, logger: appLogger, patchConsole } = require('./app-logger')
 const { filterSessionsList, isRunSessionId } = require('./ai/sessions-list-filter')
 const skillPack = require('./ai/skill-pack')
+const { stopAllWebAppServices } = require('./web-apps/process-manager')
 
 // 将主进程 console 同时写入 ~/.openultron/logs/app.log，便于全局排查与 AI 分析
 patchConsole()
@@ -2231,6 +2232,7 @@ app.isQuiting = false
 
 app.on('before-quit', async () => {
   app.isQuiting = true
+  try { stopAllWebAppServices() } catch (_) {}
 
   // Cleanup MCP bridge server
   if (mcpHttpServer) {

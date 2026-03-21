@@ -84,6 +84,17 @@ function urlAllowedByAllowlist(targetUrl, hosts) {
   }
 }
 
+function isLoopbackHttpUrl(raw) {
+  try {
+    const u = new URL(raw)
+    if (!/^https?:$/i.test(u.protocol)) return false
+    const h = (u.hostname || '').toLowerCase()
+    return h === '127.0.0.1' || h === 'localhost' || h === '::1'
+  } catch {
+    return false
+  }
+}
+
 function setupWebAppGuestSession() {
   const sess = session.fromPartition(WEB_APP_GUEST_PARTITION)
 
@@ -103,6 +114,11 @@ function setupWebAppGuestSession() {
     }
 
     if (!/^https?:\/\//i.test(url)) {
+      return callback({})
+    }
+
+    // 本地服务模式：允许 loopback 访问（每个应用默认服务/自定义服务）
+    if (isLoopbackHttpUrl(url)) {
       return callback({})
     }
 

@@ -3,15 +3,155 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Hello Web App</title>
+  <title>Hello Web App Template</title>
   <style>
-    body { font-family: system-ui, sans-serif; padding: 1.5rem; background: #0f1419; color: #e6edf3; }
-    h1 { font-size: 1.25rem; margin: 0 0 0.5rem; }
-    p { margin: 0; opacity: 0.85; font-size: 0.9rem; }
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2028;
+      --text: #e6edf3;
+      --muted: #9fb0c0;
+      --ok: #3fb950;
+      --accent: #2f81f7;
+      --border: #2d3642;
+    }
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: radial-gradient(1200px 400px at 20% -10%, #1a2430 0%, var(--bg) 55%);
+      color: var(--text);
+    }
+    .wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      display: grid;
+      gap: 14px;
+    }
+    .card {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: color-mix(in srgb, var(--panel) 92%, black);
+      padding: 14px 16px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 22px;
+      letter-spacing: -0.02em;
+    }
+    p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.5;
+      font-size: 14px;
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      padding: 4px 10px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .pill.ok {
+      border-color: color-mix(in srgb, var(--ok) 45%, var(--border));
+      color: #c8f5d0;
+      background: color-mix(in srgb, var(--ok) 15%, transparent);
+    }
+    button {
+      border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+      color: #d8e9ff;
+      background: color-mix(in srgb, var(--accent) 22%, #10161f);
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    button:hover { filter: brightness(1.06); }
+    pre {
+      margin: 0;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px;
+      background: #0e1319;
+      font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+      font-size: 12px;
+      color: #c5d3e0;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      line-height: 1.45;
+    }
+    .status {
+      margin-top: 10px;
+      font-size: 13px;
+      color: var(--muted);
+      word-break: break-all;
+    }
+    .status.ok { color: #bceec6; }
   </style>
 </head>
 <body>
-  <h1>OpenUltron Web 应用</h1>
-  <p>若能看到本页，说明沙箱预览与 <code>local-resource://</code> 加载正常。</p>
+  <main class="wrap">
+    <section class="card">
+      <h1>Hello Web App Template</h1>
+      <p>这是一个服务化模板：manifest 默认通过 <code>node server.js</code> 启动本地服务，并由 OpenUltron 预览该服务地址。</p>
+      <div class="row">
+        <span id="svcMode" class="pill">service: node</span>
+        <span id="healthBadge" class="pill">health: unknown</span>
+        <button id="btnHealth" type="button">检查 /api/health</button>
+      </div>
+      <p id="healthText" class="status">尚未检查健康状态。</p>
+    </section>
+
+    <section class="card">
+      <p>在「工作室」右侧 AI 中可以直接执行命令和脚本：</p>
+      <pre>Node 示例:
+execute_command: node -e "console.log('node ok', process.version)"
+
+Python 示例:
+execute_command: python3 -c "print('python ok')"
+
+应用目录:
+~/.openultron/web-apps/com.openultron.hello/1.0.0/</pre>
+    </section>
+  </main>
+
+  <script>
+    const badge = document.getElementById('healthBadge')
+    const text = document.getElementById('healthText')
+    const btn = document.getElementById('btnHealth')
+
+    async function checkHealth() {
+      badge.textContent = 'health: checking'
+      text.textContent = '请求中...'
+      text.className = 'status'
+      try {
+        const res = await fetch('/api/health', { method: 'GET' })
+        const data = await res.json()
+        if (res.ok && data && data.ok) {
+          badge.textContent = 'health: ok'
+          badge.className = 'pill ok'
+          text.textContent = `服务在线: ${data.ts || ''}`.trim()
+          text.className = 'status ok'
+          return
+        }
+        throw new Error('health payload invalid')
+      } catch (e) {
+        badge.textContent = 'health: failed'
+        badge.className = 'pill'
+        text.textContent = `检查失败: ${e.message || String(e)}`
+        text.className = 'status'
+      }
+    }
+
+    btn.addEventListener('click', checkHealth)
+  </script>
 </body>
 </html>

@@ -7,10 +7,16 @@
     "protocol": 1
   },
   "entry": {
-    "html": "index.html"
+    "html": "index.html",
+    "service": {
+      "command": "node server.js",
+      "cwd": ".",
+      "portEnv": "PORT",
+      "startupTimeoutMs": 20000
+    }
   },
   "runtime": {
     "browser": true,
-    "node": false
+    "node": true
   }
 }

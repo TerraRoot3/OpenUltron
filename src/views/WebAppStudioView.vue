@@ -39,9 +39,16 @@
               </div>
               <p v-if="nameSaveError" class="was-name-error" role="alert">{{ nameSaveError }}</p>
               <span class="was-meta">{{ appId }} · {{ appVersion }}</span>
-              <p class="was-tagline">沙盒预览 · 展示名称写入 manifest.json · 右侧 AI 可读写本应用目录下文件</p>
+              <p class="was-tagline">服务预览 · 展示名称写入 manifest.json · 右侧 AI 可读写本应用目录下文件</p>
+              <p class="was-service-meta">
+                {{ serviceRunning ? `服务运行中 · ${serviceModeText}` : '服务未运行（可手动启动）' }}
+              </p>
             </div>
-            <button type="button" class="was-refresh" :disabled="!previewUrl" @click="bumpPreview">刷新预览</button>
+            <div class="was-actions">
+              <button type="button" class="was-refresh ghost" @click="startService">启动服务</button>
+              <button type="button" class="was-refresh ghost" @click="stopService">停止服务</button>
+              <button type="button" class="was-refresh" :disabled="!previewUrl" @click="refreshPreview">刷新预览</button>
+            </div>
           </header>
           <webview
             :key="previewKey"
@@ -98,6 +105,8 @@ const appVersion = ref('')
 const entryHtml = ref('index.html')
 const loadError = ref('')
 const previewKey = ref(0)
+const serviceRunning = ref(false)
+const serviceMode = ref('')
 let previewRefreshTimer = null
 /** AI 写入 manifest.json 后需从磁盘同步展示名称到输入框 */
 let studioManifestNeedsSync = false
@@ -105,6 +114,13 @@ let studioManifestNeedsSync = false
 const studioSessionLabel = computed(() =>
   appName.value ? `应用 · ${appName.value}` : '应用'
 )
+
+const serviceModeText = computed(() => {
+  const m = String(serviceMode.value || '').trim()
+  if (m === 'managed') return '自定义命令'
+  if (m === 'static') return '默认静态服务'
+  return '未知模式'
+})
 
 /** 带版本戳，避免 webview/协议层对同一 URL 强缓存导致「已写入磁盘但画面不更新」 */
 const previewSrc = computed(() => {
@@ -141,6 +157,11 @@ const studioSystemPrompt = computed(() => {
 
 function bumpPreview() {
   previewKey.value += 1
+}
+
+async function refreshPreview() {
+  await loadApp()
+  bumpPreview()
 }
 
 function onStudioPreviewRefreshEvent() {
@@ -282,6 +303,8 @@ async function loadApp() {
     }
     appPath.value = r.path || ''
     previewUrl.value = r.previewUrl || ''
+    serviceRunning.value = !!r?.service?.running
+    serviceMode.value = String(r?.service?.mode || '')
     appId.value = id
     appVersion.value = version
     appName.value = r.manifest?.name || id
@@ -293,6 +316,29 @@ async function loadApp() {
   } catch (e) {
     loadError.value = e?.message || String(e)
   }
+}
+
+async function startService() {
+  if (!api?.startWebAppService) return
+  if (!appId.value || !appVersion.value) return
+  const r = await api.startWebAppService({ id: appId.value, version: appVersion.value })
+  if (r?.success && r?.url) {
+    previewUrl.value = r.url
+    serviceRunning.value = true
+    serviceMode.value = String(r.mode || '')
+    bumpPreview()
+    return
+  }
+  await loadApp()
+}
+
+async function stopService() {
+  if (!api?.stopWebAppService) return
+  if (!appId.value || !appVersion.value) return
+  await api.stopWebAppService({ id: appId.value, version: appVersion.value })
+  serviceRunning.value = false
+  serviceMode.value = ''
+  await loadApp()
 }
 
 function goBack() {
@@ -477,6 +523,16 @@ onBeforeUnmount(() => {
   color: var(--ou-text-muted);
   line-height: 1.35;
 }
+.was-service-meta {
+  margin: 0;
+  font-size: 11px;
+  color: var(--ou-text-muted);
+}
+.was-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .was-refresh {
   padding: 6px 12px;
   font-size: 12px;
@@ -485,6 +541,9 @@ onBeforeUnmount(() => {
   background: var(--ou-bg-main);
   color: var(--ou-text);
   cursor: pointer;
+}
+.was-refresh.ghost {
+  background: transparent;
 }
 .was-refresh:disabled {
   opacity: 0.5;

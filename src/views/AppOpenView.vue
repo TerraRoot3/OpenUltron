@@ -10,11 +10,16 @@
         <div class="aopen-title-block">
           <span class="aopen-title">{{ appName }}</span>
           <span class="aopen-meta">{{ appId }} · {{ appVersion }}</span>
-          <p class="aopen-tagline">仅预览 · 全屏沙盒渲染</p>
+          <p class="aopen-tagline">服务预览 · 全屏沙盒渲染</p>
+          <p class="aopen-service-meta">
+            {{ serviceRunning ? `服务运行中 · ${serviceModeText}` : '服务未运行（可手动启动）' }}
+          </p>
         </div>
         <div class="aopen-actions">
+          <button type="button" class="aopen-btn" @click="startService">启动服务</button>
+          <button type="button" class="aopen-btn" @click="stopService">停止服务</button>
           <button type="button" class="aopen-btn secondary" @click="goStudio">工作室</button>
-          <button type="button" class="aopen-btn" :disabled="!previewUrl" @click="bumpPreview">刷新</button>
+          <button type="button" class="aopen-btn" :disabled="!previewUrl" @click="refreshPreview">刷新</button>
         </div>
       </header>
       <webview
@@ -45,6 +50,15 @@ const appVersion = ref('')
 const previewUrl = ref('')
 const loadError = ref('')
 const previewKey = ref(0)
+const serviceRunning = ref(false)
+const serviceMode = ref('')
+
+const serviceModeText = computed(() => {
+  const m = String(serviceMode.value || '').trim()
+  if (m === 'managed') return '自定义命令'
+  if (m === 'static') return '默认静态服务'
+  return '未知模式'
+})
 
 const previewSrc = computed(() => {
   const u = previewUrl.value
@@ -77,12 +91,46 @@ async function loadApp() {
       return
     }
     previewUrl.value = r.previewUrl || ''
+    serviceRunning.value = !!r?.service?.running
+    serviceMode.value = String(r?.service?.mode || '')
     appId.value = id
     appVersion.value = version
     appName.value = r.manifest?.name || id
   } catch (e) {
     loadError.value = e?.message || String(e)
   }
+}
+
+async function startService() {
+  if (!api?.startWebAppService) return
+  const id = String(route.query.appId || '').trim()
+  const version = String(route.query.version || '').trim()
+  if (!id || !version) return
+  const r = await api.startWebAppService({ id, version })
+  if (r?.success && r?.url) {
+    previewUrl.value = r.url
+    serviceRunning.value = true
+    serviceMode.value = String(r.mode || '')
+    bumpPreview()
+    return
+  }
+  await loadApp()
+}
+
+async function stopService() {
+  if (!api?.stopWebAppService) return
+  const id = String(route.query.appId || '').trim()
+  const version = String(route.query.version || '').trim()
+  if (!id || !version) return
+  await api.stopWebAppService({ id, version })
+  serviceRunning.value = false
+  serviceMode.value = ''
+  await loadApp()
+}
+
+async function refreshPreview() {
+  await loadApp()
+  bumpPreview()
 }
 
 function goBack() {
@@ -167,6 +215,11 @@ watch(
 }
 .aopen-tagline {
   margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--ou-text-muted);
+}
+.aopen-service-meta {
+  margin: 0;
   font-size: 11px;
   color: var(--ou-text-muted);
 }
