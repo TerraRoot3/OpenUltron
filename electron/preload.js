@@ -277,6 +277,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     readAgentMd: (data) => ipcRenderer.invoke('ai-read-agent-md', data),
     // 流式事件监听
     onToken: (cb) => { ipcRenderer.on('ai-chat-token', (e, d) => cb(d)) },
+    onUsage: (cb) => { ipcRenderer.on('ai-chat-usage', (e, d) => cb(d)) },
     onToolCall: (cb) => { ipcRenderer.on('ai-chat-tool-call', (e, d) => cb(d)) },
     onToolResult: (cb) => { ipcRenderer.on('ai-chat-tool-result', (e, d) => cb(d)) },
     onComplete: (cb) => { ipcRenderer.on('ai-chat-complete', (e, d) => cb(d)) },
@@ -288,6 +289,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     removeAIConfigUpdatedListener: () => ipcRenderer.removeAllListeners('ai-config-updated'),
     removeAllListeners: () => {
       ipcRenderer.removeAllListeners('ai-chat-token')
+      ipcRenderer.removeAllListeners('ai-chat-usage')
       ipcRenderer.removeAllListeners('ai-chat-tool-call')
       ipcRenderer.removeAllListeners('ai-chat-tool-result')
       ipcRenderer.removeAllListeners('ai-chat-complete')

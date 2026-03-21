@@ -284,6 +284,7 @@ export function installBrowserPolyfill(baseUrl = DEFAULT_API_BASE) {
       getUsage: (params) => invoke('ai-get-usage', [params]),
       getBilling: (params) => invoke('ai-get-billing', [params]),
       onToken: noopOn('ai-chat-token'),
+      onUsage: noopOn('ai-chat-usage'),
       onToolCall: noopOn('ai-chat-tool-call'),
       onToolResult: noopOn('ai-chat-tool-result'),
       onComplete: noopOn('ai-chat-complete'),

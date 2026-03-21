@@ -73,6 +73,66 @@ function canSend(sender) {
   return true
 }
 
+function pickRecentUserIntentText(messages, maxUserMessages = 3, maxChars = 3200) {
+  const list = Array.isArray(messages) ? messages : []
+  const users = list.filter(m => m && m.role === 'user').slice(-Math.max(1, maxUserMessages))
+  const text = users.map((m) => {
+    const c = m.content
+    if (typeof c === 'string') return c
+    if (Array.isArray(c)) return c.map(x => (typeof x === 'string' ? x : (x?.text || ''))).join('\n')
+    return c ? JSON.stringify(c) : ''
+  }).join('\n')
+  return String(text || '').slice(0, Math.max(800, maxChars))
+}
+
+function hasAnyKeyword(text, keywords) {
+  const t = String(text || '').toLowerCase()
+  return (keywords || []).some(k => t.includes(String(k).toLowerCase()))
+}
+
+function detectPromptIntentFlags(userText) {
+  const t = String(userText || '')
+  return {
+    learnSkill: hasAnyKeyword(t, ['学习技能', '新技能', '孵化技能', 'skill', 'skill.md']),
+    learnFromWeb: hasAnyKeyword(t, ['网上', '社区', 'github', 'clawhub', '爬', 'web', '搜索']) &&
+      hasAnyKeyword(t, ['技能', '玩法', 'skill', 'agent']),
+    configGuide: hasAnyKeyword(t, ['配置', '参数', 'api key', 'apikey', 'token', 'provider', 'openrouter', 'openai', '飞书', 'telegram', 'dingtalk', 'webhook'])
+  }
+}
+
+function clipInjectedSection(text, maxChars) {
+  const s = String(text || '').trim()
+  const lim = Number(maxChars) || 0
+  if (!s || lim <= 0 || s.length <= lim) return s
+  return `${s.slice(0, lim)}\n\n...(已截断，原始长度 ${s.length} 字)`
+}
+
+function estimateTokenBreakdown(messages) {
+  const list = Array.isArray(messages) ? messages : []
+  const buckets = { system: 0, dialog: 0, tool: 0, other: 0 }
+  for (const m of list) {
+    if (!m) continue
+    const one = estimateTokens([m])
+    if (m.role === 'system') buckets.system += one
+    else if (m.role === 'tool') buckets.tool += one
+    else if (m.role === 'user' || m.role === 'assistant') buckets.dialog += one
+    else buckets.other += one
+  }
+  const total = buckets.system + buckets.dialog + buckets.tool + buckets.other
+  const ratio = (n) => total > 0 ? Number(((n / total) * 100).toFixed(1)) : 0
+  return {
+    total,
+    system: buckets.system,
+    dialog: buckets.dialog,
+    tool: buckets.tool,
+    other: buckets.other,
+    systemPct: ratio(buckets.system),
+    dialogPct: ratio(buckets.dialog),
+    toolPct: ratio(buckets.tool),
+    otherPct: ratio(buckets.other)
+  }
+}
+
 /**
  * Codex CLI 默认走 OpenAI Responses API（/v1/responses）；本应用走 Chat Completions（/v1/chat/completions）。
  * 同一 OAuth 在 Codex 可用 ≠ 对 chat/completions 有 Platform 额度；429 时勿只理解为「欠费」。
@@ -232,6 +292,8 @@ class Orchestrator {
         : content
     let iteration = 0
     let currentMessages = [...messages]
+    const intentText = pickRecentUserIntentText(currentMessages)
+    const promptIntentFlags = detectPromptIntentFlags(intentText)
 
     // 循环检测状态
     const loopDetector = {
@@ -251,28 +313,26 @@ class Orchestrator {
       if (webAppSandbox) {
         memParts.push(
           '[当前应用 - 应用工作室沙箱 · 最高优先级]\n' +
-          '你正在 **应用工作室** 中协助用户编辑 **一个已安装的 Web 沙箱应用**（**不是** OpenUltron 主程序仓库）。\n' +
+          '你正在 **应用工作室** 中编辑 **一个已安装的 Web 沙箱应用**（不是 OpenUltron 主程序仓库）。\n' +
           `本会话 **projectPath**（沙箱应用根目录，绝对路径）为：\n\`${sandboxRoot}\`\n` +
-          '**所有** file_operation、apply_patch 的相对路径均相对于上述根目录自动拼接；修改 **index.html**、**.css**、**manifest.json** 等会直接影响左侧预览。\n' +
-          '**实现功能时必须实际调用工具写入上述目录**：不要只输出「已创建/已实现」的长文说明；新增页面/脚本请用 **file_operation(action=write)** 或 **apply_patch** 写入 `index.html` 等真实文件；邮件/Excel 等也需落在本目录或 **execute_command(cwd=上述根目录)** 生成。\n' +
-          '用户说「改应用名」「改展示名称」时：优先改 **`manifest.json` 的 `name` 字段**（应用库列表标题）；用户说「改 Hello」「改标题」「改页面上的字」时，指 **该沙箱应用目录内** 的页面资源（通常先读再改 **index.html** 或 manifest 指定的入口 HTML），**禁止** 因「Hello」字样去修改 ~/.openultron/IDENTITY.md、SOUL.md 或 OpenUltron 安装目录下的身份文件。\n' +
-          '**禁止虚假声称**：仅当 file_operation / apply_patch **明确返回** success 时，才能说已写入或已修改。\n' +
-          '**回复风格**：不要写「我来帮你…」等固定话术；直接调用工具改文件并简短说明修改点。'
+          '相对路径默认基于该目录；修改 index.html/css/manifest.json 会直接影响预览。\n' +
+          '必须实际写文件后再汇报结果（file_operation/apply_patch/execute_command），不要只给方案。\n' +
+          '改应用展示名优先改 manifest.json 的 name；改页面文字优先改应用目录内入口页面，禁止改 ~/.openultron/IDENTITY.md、SOUL.md。\n' +
+          '仅当工具返回成功才能宣称“已完成”。'
         )
       } else {
         memParts.push(
           '[当前应用]\n' +
           '你正在运行并直接操作的应用是 **OpenUltron**（本应用）。\n' +
-          '当用户要求修改或配置**本机其他项目**、某仓库或用户提到的任意名称时：自行决定用 execute_command 执行哪些命令定位，用 file_operation 读改配置；不要未执行就称找不到或向用户索要路径。可先调用 query_command_log 查看当前项目下已执行命令的成功/失败与已查看路径，再决定本次命令，实现自我进化。具体项目名称、常见路径与配置文件名由你自行检索或根据用户表述判断，提示词中不预设。\n' +
-          '**安装类命令（npm/pip/brew/pnpm/yarn install 等）**：执行前必须先调用 query_command_log(query=recent_successful_commands) 查看本项目下已执行成功的命令；若列表中已有相同或等价的安装命令（如同一包、同一工具），则**不要重复执行**，直接说明「此前已安装过」并继续后续步骤。避免每次会话都重新安装已成功的依赖。\n' +
-          '当执行中遇到「命令不存在」「依赖缺失」（如 tesseract、ffmpeg、python 包等）时：先使用内置工具（ffmpeg_run、edge_tts_synthesize 等）；若内置工具失败，可用 execute_command 安装系统依赖或直接执行系统命令重试，execute_command 不拦截 TTS/ffmpeg/安装类命令。安装命令超时或失败时，自动换一种安装方式重试一次（无需向用户弹确认），仍失败再给降级方案。\n' +
-          'TTS/语音与音视频：优先使用内置工具。TTS：tts_voice_manager(list_voices/list_aliases) 查询音色，edge_tts_synthesize(text, voice) 合成 mp3，feishu_send_voice_message(audio_text=... 或 audio_file_path=...) 发送。音视频：ffmpeg_run(args) 使用内置 ffmpeg。若内置失败，可用 execute_command 调用系统 edge-tts/ffmpeg 或安装依赖，execute_command 不拦截 TTS/ffmpeg 类命令。\n' +
-          '**用户明确要求「用语音」「语音介绍」「发语音」时，必须实际调用工具**（如 feishu_send_message 的 audio_text、或 execute_command 生成音频后 audio_file_path 发送），不得仅用文字回复声称已完成而未调用任何工具。\n' +
+          '用户要求改外部项目时，先执行命令定位项目与文件，再改；不要在未执行时声称“找不到”。\n' +
+          '安装命令前先查 query_command_log(recent_successful_commands)，已装过则不重复安装。\n' +
+          '缺依赖时优先内置工具（如 ffmpeg_run、edge_tts_synthesize），失败再 execute_command 安装或重试一次。\n' +
+          '用户明确要求语音时必须真实调用语音相关工具，不得只文字声称完成。\n' +
           `默认工作空间：${getWorkspaceRoot()}。\n` +
           `当无真实项目路径时：脚本优先写入 ${path.join(getWorkspaceRoot(), 'scripts')}，新建项目优先放入 ${path.join(getWorkspaceRoot(), 'projects')}，避免散落在其他目录。\n` +
-          '**生成 PPT/PDF/Excel 等二进制文件**：必须用 execute_command 运行实际生成工具（如 npx slidev build、python-pptx、pandoc 等），不可用 file_operation 写 .pptx/.pdf；生成后从命令输出或 list_dir 确认输出路径，在回复中给出**完整绝对路径**，避免用户找不到文件。\n' +
-          '**禁止虚假声称（必须严格遵守）**：只有当前轮工具调用**明确返回** success: true / 成功 时，才能对用户说「成功」「已创建」「已发送」。不得在未调用工具或工具返回失败/错误时声称成功。不得编造或臆测：文件路径、文件大小、页数、message_id、飞书消息ID 等必须**仅来自工具返回结果**；若工具返回 success: false 或 error，必须如实告诉用户失败并给出原因，不得改写为成功。\n' +
-          '**回复风格**：不要写「我来帮你…」「让我执行…」等固定话术；不要输出「可能的原因和建议」「请提供以下任一信息」等模板式列表。直接执行、根据结果继续或简短说明已尝试与下一步。未明确要求修改外部项目时，默认在 OpenUltron 内完成。'
+          '生成 PPT/PDF/Excel 等二进制文件必须用 execute_command 实际生成，并返回绝对路径。\n' +
+          '只有工具明确成功才能说“已完成”；失败必须如实反馈错误。\n' +
+          '默认直接执行并给结果，减少模板化空话。'
         )
       }
 
@@ -302,17 +362,23 @@ class Orchestrator {
       const realtimeText = loadPrompt('realtime-info')
       if (realtimeText) memParts.push(realtimeText)
 
-      // 0.61 本机技能索引（含 workspace/skills；优先级见 docs/SKILLS-PACK-COMPAT.md）
+      // 0.62 编程执行优先（prompts/coding-execution.md）
+      const codingExecutionText = loadPrompt('coding-execution')
+      if (codingExecutionText) memParts.push(codingExecutionText)
+
+      // 0.63 本机技能索引（含 workspace/skills；优先级见 docs/SKILLS-PACK-COMPAT.md）
       if (typeof this.getSkillsForPrompt === 'function') {
         try {
           const proj = String(session?.projectPath || '').trim()
           const skillRows = this.getSkillsForPrompt(proj) || []
-          const lines = skillRows.filter(s => s && s.id).map(s => `- [${s.id}] ${s.name || s.id}`)
-          if (lines.length > 0) {
+          const allLines = skillRows.filter(s => s && s.id).map(s => `- [${s.id}] ${s.name || s.id}`)
+          const lines = allLines.slice(0, 40)
+          if (allLines.length > 0) {
             memParts.push(
               '[本机已安装技能]\n' +
-              `以下共 ${lines.length} 个；**get_skill 的 skill_id 必须为方括号内的完整 id**（例如 weather 技能目录常为 weather-1.0.0，不能用简称 weather）。\n` +
+              `以下展示 ${lines.length}/${allLines.length} 个；**get_skill 的 skill_id 必须为方括号内的完整 id**（例如 weather 技能目录常为 weather-1.0.0，不能用简称 weather）。\n` +
               lines.join('\n') +
+              (allLines.length > lines.length ? `\n- ...(其余 ${allLines.length - lines.length} 个已省略)` : '') +
               '\n\n**何时必须用技能**：用户要求「用某技能 / 按 xxx 技能 / 查天气」等时，必须先 **get_skill(action="get", skill_id="完整id")** 再按其步骤执行（常见为 execute_command 调用 curl 等），禁止跳过 get_skill 凭记忆编造天气或步骤。'
             )
           }
@@ -335,16 +401,16 @@ class Orchestrator {
 
       // 1. 全局偏好文件 MEMORY.md
       const globalMd = readGlobalMemoryMd()
-      if (globalMd) memParts.push(`[全局偏好 - MEMORY.md]\n${globalMd}`)
+      if (globalMd) memParts.push(`[全局偏好 - MEMORY.md]\n${clipInjectedSection(globalMd, 1800)}`)
 
       // 2. 本应用 SOUL.md / IDENTITY.md（应用工作室沙箱会话不注入，避免与「改 Hello 页面」冲突）
       if (!webAppSandbox) {
         const soulMd = readSoulMd()
-        if (soulMd) memParts.push(`[SOUL.md - 性格与原则]\n${soulMd}`)
+        if (soulMd) memParts.push(`[SOUL.md - 性格与原则]\n${clipInjectedSection(soulMd, 1800)}`)
 
         // 2.1 IDENTITY.md（Agent 名字、形象、vibe、代词）
         const identityMd = readIdentityMd()
-        if (identityMd) memParts.push(`[IDENTITY.md]\n${identityMd}`)
+        if (identityMd) memParts.push(`[IDENTITY.md]\n${clipInjectedSection(identityMd, 1500)}`)
         // 回复与自我介绍：仅用 IDENTITY/SOUL，禁止通用话术（尤其飞书等渠道）
         memParts.push(
           '[回复与自我介绍]\n' +
@@ -360,29 +426,29 @@ class Orchestrator {
 
       // 2.2 USER.md（用户信息：姓名、时区、工作、偏好等）
       const userMd = readUserMd()
-      if (userMd) memParts.push(`[USER.md]\n${userMd}`)
+      if (userMd) memParts.push(`[USER.md]\n${clipInjectedSection(userMd, 1200)}`)
 
       // 2.3 BOOT.md（会话启动时简短指令）
       const bootMd = readBootMd()
-      if (bootMd) memParts.push(`[BOOT.md - 启动指令]\n${bootMd}`)
+      if (bootMd) memParts.push(`[BOOT.md - 启动指令]\n${clipInjectedSection(bootMd, 900)}`)
 
       // 2.4 AGENTS.md / TOOLS.md（工作区 Agent 与工具说明，若存在则注入）
       const agentsMd = readAgentsMd()
-      if (agentsMd) memParts.push(`[AGENTS.md - 工作区 Agent 说明]\n${agentsMd}`)
+      if (agentsMd) memParts.push(`[AGENTS.md - 工作区 Agent 说明]\n${clipInjectedSection(agentsMd, 1200)}`)
       const toolsMd = readToolsMd()
-      if (toolsMd) memParts.push(`[TOOLS.md - 工作区工具说明]\n${toolsMd}`)
+      if (toolsMd) memParts.push(`[TOOLS.md - 工作区工具说明]\n${clipInjectedSection(toolsMd, 1200)}`)
 
       // 2.5 学习新技能流程（prompts/learn-skill-flow.md）
       const learnFlowText = loadPrompt('learn-skill-flow')
-      if (learnFlowText) memParts.push(learnFlowText)
+      if (learnFlowText && promptIntentFlags.learnSkill) memParts.push(clipInjectedSection(learnFlowText, 1800))
 
       // 2.6 从网上学习社区技能与玩法（prompts/learn-skills-from-web.md）
       const learnWebText = loadPrompt('learn-skills-from-web')
-      if (learnWebText) memParts.push(learnWebText)
+      if (learnWebText && promptIntentFlags.learnFromWeb) memParts.push(clipInjectedSection(learnWebText, 1800))
 
       // 2.7 OpenUltron 可配置能力与引导用户获取参数（prompts/openultron-config-guide.md）
       const configGuideText = loadPrompt('openultron-config-guide')
-      if (configGuideText) memParts.push(configGuideText)
+      if (configGuideText && promptIntentFlags.configGuide) memParts.push(clipInjectedSection(configGuideText, 2200))
 
       // 2.8 可用供应商与模型（主会话 vs 子任务；先验证再切换）
       memParts.push(
@@ -396,7 +462,7 @@ class Orchestrator {
       if (projectPath) {
         const topMemories = getTopMemoriesForProject(projectPath, 5)
         if (topMemories.length > 0) {
-          const memText = topMemories.map((m, i) => `${i + 1}. ${m.content}`).join('\n')
+          const memText = topMemories.map((m, i) => `${i + 1}. ${clipInjectedSection(m.content, 220)}`).join('\n')
           memParts.push(`[项目记忆]\n${memText}`)
         }
       }
@@ -404,7 +470,7 @@ class Orchestrator {
       // 4. 知识库经验教训（自动注入，无需再调 read_lessons_learned 即可直接利用）
       const lessonsContent = readLessonsLearned()
       if (lessonsContent && lessonsContent.trim()) {
-        memParts.push(`[知识库 - 经验教训]\n${lessonsContent.trim()}\n\n**使用方式**：上述经验已直接给到你，后续同类任务请优先按其中「正确做法/可复用步骤」执行，避免重复试错。写 lesson_save 时须写详细：含具体场景、失败原因或成功做法、可复用的命令/路径/步骤（便于下次直接套用），不要只写一句话概括。`)
+        memParts.push(`[知识库 - 经验教训]\n${clipInjectedSection(lessonsContent.trim(), 2200)}\n\n**使用方式**：优先复用上述经验，避免重复试错；写 lesson_save 时记录具体场景、原因、命令或路径。`)
       }
 
       const memSystemMsg = {
@@ -448,12 +514,12 @@ class Orchestrator {
       return cleaned
     }
 
-    // 工具定义瘦身（默认仅 OpenRouter）：削减 description / schema 示例，显著降低每轮请求体积
+    // 工具定义瘦身（默认全供应商开启）：削减 description / schema 示例，降低每轮请求体积
     const toolDefMerged = {
-      slimMode: 'openrouter',
-      maxDescriptionChars: 400,
+      slimMode: 'always',
+      maxDescriptionChars: 240,
       stripSchemaExamples: true,
-      maxPropertyDescriptionChars: 90,
+      maxPropertyDescriptionChars: 60,
       ...(config.toolDefinitions && typeof config.toolDefinitions === 'object' ? config.toolDefinitions : {})
     }
     const toolsForSanitize = slimToolsForChat(tools || [], toolDefMerged, config.apiBaseUrl)
@@ -587,6 +653,13 @@ class Orchestrator {
 
         // 在调用模型前压缩，保证工具多轮后也不会因 prompt 过长而 402/超限
         await ensurePromptCompressed({ maxPasses: 2, notify: true })
+        if (canSend(sender)) {
+          wrappedSender.send('ai-chat-usage', {
+            sessionId,
+            iteration,
+            usage: estimateTokenBreakdown(currentMessages)
+          })
+        }
 
         const lastUserContent = (() => {
           for (let i = currentMessages.length - 1; i >= 0; i--) {
@@ -806,8 +879,8 @@ class Orchestrator {
           const loopError = this._detectLoop(loopDetector, normalizedToolCalls, toolResults)
 
           // 工具结果过长时截断；浏览器 MCP（快照/DOM/网络等）单条常极大，单独收紧
-          const TOOL_RESULT_MAX_LEN = 12000
-          const TOOL_RESULT_BROWSER_MAX_LEN = 6500
+          const TOOL_RESULT_MAX_LEN = 6000
+          const TOOL_RESULT_BROWSER_MAX_LEN = 3000
           for (let i = 0; i < toolResults.length; i++) {
             const { toolCall, resultStr } = toolResults[i]
             const toolName = String(toolCall?.function?.name || toolCall?.name || '')

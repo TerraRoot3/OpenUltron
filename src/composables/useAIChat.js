@@ -9,6 +9,7 @@ export function useAIChat(hooks = {}) {
   const isStreaming = ref(false)
   const currentStreamContent = ref('')
   const error = ref('')
+  const tokenUsage = ref(null) // { iteration, usage: { total/system/dialog/tool/... } }
   const pendingConfirm = ref(null) // { confirmId, message, severity }
 
   let currentSessionId = null
@@ -69,6 +70,14 @@ export function useAIChat(hooks = {}) {
       const last = messages.value[messages.value.length - 1]
       if (last && last.role === 'assistant') {
         last.content = currentStreamContent.value
+      }
+    })
+
+    window.electronAPI.ai.onUsage((data) => {
+      if (!isCurrentSession(data)) return
+      tokenUsage.value = {
+        iteration: Number(data?.iteration) || 0,
+        usage: data?.usage || null
       }
     })
 
@@ -187,6 +196,7 @@ export function useAIChat(hooks = {}) {
   // 发送消息（是否先停掉当前任务由后端 AI 根据消息内容识别，或由前端传 stopPrevious 显式指定）
   const sendMessage = async (content, { model, systemPrompt, projectPath, displayContent, userContentParts, panelId, sessionId: passedSessionId, stopPrevious } = {}) => {
     error.value = ''
+    tokenUsage.value = null
 
     // 添加用户消息（展示用 displayContent，发给 AI 用 content）
     messages.value.push({ role: 'user', content: displayContent || content, _uiKey: genUiKey() })
@@ -492,6 +502,7 @@ export function useAIChat(hooks = {}) {
   const clearMessages = () => {
     messages.value = []
     error.value = ''
+    tokenUsage.value = null
     currentStreamContent.value = ''
     pendingConfirm.value = null
   }
@@ -513,6 +524,7 @@ export function useAIChat(hooks = {}) {
     messages,
     isStreaming,
     error,
+    tokenUsage,
     pendingConfirm,
     sendMessage,
     stopChat,

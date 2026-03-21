@@ -5,21 +5,21 @@
 const DEFAULT_CONFIG = {
   enabled: true,
   /** 仅统计「对话消息」（user/assistant/tool，不含 system）的估算 tokens；不把注入的大段 system 算进去，避免首轮就误触发 */
-  threshold: 52000,
+  threshold: 24000,
   /** 保留最近 N 条对话原文；工具多轮会迅速占满条数，宜略大以减少「同一轮用户请求内」过早压缩 */
-  keepRecent: 24,
-  summaryMaxTokens: 600,
+  keepRecent: 20,
+  summaryMaxTokens: 420,
   /** 首轮压缩后仍超阈值时，第二轮保留的最近对话条数（更小 = 更激进） */
   aggressiveKeepRecent: 10,
   /**
    * OpenRouter：与 threshold 取 min，作为「对话部分」的触发上限（仍为粗估 char/3）。
    * 过低会导致工具多轮尚未收尾就压缩；可根据账号 prompt 上限在 openultron.json 微调。
    */
-  openRouterSoftBudget: 18000,
+  openRouterSoftBudget: 12000,
   /**
    * 估算节省的 tokens 低于此值则放弃本次压缩（避免摘要比原文还长、白耗一次模型调用）。
    */
-  minCompressSavingsTokens: 1200,
+  minCompressSavingsTokens: 800,
   /**
    * 成功压缩后，若干轮 LLM 调用内不再压缩（除非对话体量远超阈值×1.4），减轻工具循环里反复压缩。
    */
@@ -29,7 +29,7 @@ const DEFAULT_CONFIG = {
    */
   flushMemoryBeforeCompress: false,
   /** 最多保留几条「对话摘要」system 消息，多轮压缩时丢弃更早的摘要以控制体积 */
-  maxCompressionSummaryStack: 2
+  maxCompressionSummaryStack: 1
 }
 
 const COMPRESSION_SUMMARY_MARKER = '[对话摘要（早期消息已压缩）]'

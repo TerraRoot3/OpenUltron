@@ -4,9 +4,9 @@
  */
 
 const DEFAULT_SLIM_OPTS = {
-  maxDescriptionChars: 400,
+  maxDescriptionChars: 240,
   stripSchemaExamples: true,
-  maxPropertyDescriptionChars: 90
+  maxPropertyDescriptionChars: 60
 }
 
 function shouldSlimToolDefinitions(apiBaseUrl, slimMode) {

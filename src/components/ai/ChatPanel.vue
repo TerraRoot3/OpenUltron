@@ -14,6 +14,30 @@
         </div>
         <pre class="compression-notice-body">{{ compressionSummaryText }}</pre>
       </div>
+      <div v-if="usageCard" class="chat-usage-card">
+        <div class="chat-usage-head">
+          <span>Context Tokens</span>
+          <em>#{{ usageCard.iteration }}</em>
+        </div>
+        <div class="chat-usage-total">≈ {{ usageCard.total }}</div>
+        <div class="chat-usage-bars">
+          <div class="chat-usage-row">
+            <span>System</span>
+            <strong>{{ usageCard.system }}</strong>
+            <em>{{ usageCard.systemPct }}%</em>
+          </div>
+          <div class="chat-usage-row">
+            <span>Dialog</span>
+            <strong>{{ usageCard.dialog }}</strong>
+            <em>{{ usageCard.dialogPct }}%</em>
+          </div>
+          <div class="chat-usage-row">
+            <span>Tool</span>
+            <strong>{{ usageCard.tool }}</strong>
+            <em>{{ usageCard.toolPct }}%</em>
+          </div>
+        </div>
+      </div>
       <div v-if="displayMessages.length === 0 && !compressionSummaryText" class="chat-empty">
         <img :src="logoUrl" alt="" class="empty-icon avatar-logo-large" />
         <p>{{ t('chat.emptyWelcome', { name: agentDisplayName || 'Ultron' }) }}</p>
@@ -270,7 +294,7 @@ const useAIChatInstance = useAIChat({
     props.afterToolResult?.(data)
   }
 })
-const { messages, isStreaming, error, pendingConfirm, sendMessage, stopChat, loadMessages, respondConfirm } = useAIChatInstance
+const { messages, isStreaming, error, tokenUsage, pendingConfirm, sendMessage, stopChat, loadMessages, respondConfirm } = useAIChatInstance
 const seenFeishuMessageIds = new Set()
 const feishuReloadPending = ref(false)
 
@@ -332,6 +356,22 @@ const compressionSummaryText = computed(() => {
     }
   }
   return parts.length ? parts.join('\n\n') : ''
+})
+
+const usageCard = computed(() => {
+  const item = tokenUsage.value
+  const usage = item?.usage
+  if (!usage || !usage.total) return null
+  return {
+    iteration: Number(item?.iteration) || 0,
+    total: Number(usage.total) || 0,
+    system: Number(usage.system) || 0,
+    dialog: Number(usage.dialog) || 0,
+    tool: Number(usage.tool) || 0,
+    systemPct: Number(usage.systemPct) || 0,
+    dialogPct: Number(usage.dialogPct) || 0,
+    toolPct: Number(usage.toolPct) || 0,
+  }
 })
 
 // ---- 模型：使用配置默认或会话保存的模型，不再提供底部切换 UI ----
@@ -2024,6 +2064,46 @@ defineExpose({ clearMessages, loadMessages, messages, handleExternalSend, isStre
   max-height: 40vh;
   overflow-y: auto;
 }
+.chat-usage-card {
+  margin: 8px 16px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--ou-border);
+  border-radius: 8px;
+  background: var(--ou-bg-elevated, color-mix(in srgb, var(--ou-bg-main) 90%, #fff 10%));
+}
+.chat-usage-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--ou-text-muted);
+}
+.chat-usage-head em {
+  font-style: normal;
+  color: var(--ou-text-secondary);
+}
+.chat-usage-total {
+  margin-top: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ou-text);
+}
+.chat-usage-bars {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.chat-usage-row {
+  display: grid;
+  grid-template-columns: 56px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.chat-usage-row span { color: var(--ou-text-muted); }
+.chat-usage-row strong { color: var(--ou-text); font-weight: 600; }
+.chat-usage-row em { color: var(--ou-text-secondary); font-style: normal; }
 .streaming-indicator {
   display: flex;
   align-items: center;

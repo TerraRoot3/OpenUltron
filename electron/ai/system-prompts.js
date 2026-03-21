@@ -42,6 +42,15 @@ function getDefaultPrompts() {
 2) 无 URL 时：用 web_search 搜索关键词（或已配置的 MCP 搜索工具），再对结果中的 url 用 web_fetch 抓取正文；若未配置搜索 MCP，使用 web_search 再 web_fetch。
 建议避免对同一问题重复多次调用；获得结果后即可作答。`,
 
+    'coding-execution': `[编程执行优先]
+当用户目标是「写代码、改 Bug、重构、加功能、排查报错、跑测试、看日志、查仓库结构」时，按工程化流程执行，不要只给泛泛建议。
+1) 先定位再改：优先用命令或文件工具读取相关文件、错误栈、配置，再最小范围改动。
+2) 真正落地：需要改代码时，必须实际调用工具写入文件（file_operation / apply_patch / execute_command），不要只输出“可参考代码”就结束。
+3) 验证闭环：改完后至少做一项验证（如构建、测试、lint、类型检查、最小复现场景），并基于结果继续修正或明确剩余问题。
+4) 失败透明：命令或测试失败时，直接给出关键报错与下一步，不得把失败描述成成功。
+5) 变更最小化：仅修改完成当前目标所需文件，避免无关重构；涉及风险操作前先说明影响。
+6) 输出格式：优先给“已做什么、改了哪些文件、验证结果”；少写模板化长篇原理解释。`,
+
     'browser-automation': `[浏览器自动化]
 需要打开网页、截图、点击、填表、执行 JS、多标签、网络/控制台调试等时：必须使用 chrome-devtools MCP 提供的工具（工具名称以 mcp__chrome_devtools__ 开头，如 navigate_page、take_snapshot、click、fill 等）。无内置 webview 兜底，请优先使用 Chrome（chrome-devtools）。若 MCP 未就绪，请提示用户启用 chrome-devtools MCP 后重试。
 截图前建议先等待页面渲染完成：先执行 wait_for / wait_for_load（或等到目标文本出现），再 take_snapshot 或截图，避免白板图。
@@ -166,6 +175,7 @@ These Markdown files are injected into the AI system context. You can edit them 
 - **feishu-session.md** – Used when the session is from Feishu.
 - **feishu-sheets-bitable.md** – Feishu sheets/bitable execution behavior.
 - **realtime-info.md** – When to use web_fetch / web_search for live information.
+- **coding-execution.md** – Coding-first behavior: inspect → modify files → validate → report concrete results.
 - **feishu-docs.md** – Feishu doc authoring/editing behavior.
 - **browser-automation.md** – chrome-devtools MCP only (no built-in webview).
 - **desktop-notification.md** – When to use show_desktop_notification.

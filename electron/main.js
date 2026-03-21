@@ -2977,10 +2977,10 @@ function mergeContextCompressionFromLegacy(legacy) {
 /** 合并 ai.toolDefinitions（发给 LLM 前是否裁剪工具描述/schema） */
 function mergeToolDefinitionsFromLegacy(legacy) {
   const defaults = {
-    slimMode: 'openrouter',
-    maxDescriptionChars: 400,
+    slimMode: 'always',
+    maxDescriptionChars: 240,
     stripSchemaExamples: true,
-    maxPropertyDescriptionChars: 90
+    maxPropertyDescriptionChars: 60
   }
   const raw = legacy && legacy.raw && legacy.raw.toolDefinitions
   return raw && typeof raw === 'object' ? { ...defaults, ...raw } : defaults
