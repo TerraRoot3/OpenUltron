@@ -77,7 +77,8 @@ export function useAIChat(hooks = {}) {
       if (!isCurrentSession(data)) return
       tokenUsage.value = {
         iteration: Number(data?.iteration) || 0,
-        usage: data?.usage || null
+        usage: data?.usage || null,
+        runId: data?.runId != null && String(data.runId).trim() ? String(data.runId).trim() : null
       }
     })
 

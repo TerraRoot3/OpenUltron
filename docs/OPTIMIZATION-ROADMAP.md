@@ -46,7 +46,7 @@
 
 ## P2 — 可观测性与运维
 
-- 为每次 `startChat` 生成 **`runId`**（`electron/ai/run-id.js`）：已写入 **`ai-chat-usage`**、**`ai-chat-tool-call` / `ai-chat-tool-result`**、**`[AI] chatRun.start`**；**`sessions_spawn` → `runSubChat`** 接收 **`parentRunId`**，**`execution-envelope.metrics`** 含 **`parent_run_id` / `sub_session_id`**，**`[SubAgentDispatch]`** 日志同字段。  
+- 为每次 `startChat` 生成 **`runId`**（`electron/ai/run-id.js`）：**`wrappedSender`** 对 token / tool / usage / complete / error 统一注入；**Gateway WebSocket** 转发 **`runId`**，并修正 **`tool_result`** 字段（与 IPC 一致）；**`sessions_spawn` → `runSubChat`** 的 **`parentRunId`** 与 **`execution-envelope.metrics`** 见上文。  
 - 错误分类（已有 `_classifyLlmError`）可 **落盘统计**，便于看「哪家供应商、哪类模型」故障率高。  
 - `main.js` **按域拆分**（渠道、Gateway、配置、MCP），降低单文件认知成本。  
   - 实施指南：**`docs/MAIN-PROCESS-MODULARIZATION.md`**（分阶段迁出 `main-process/ipc/*`，避免循环依赖）。  

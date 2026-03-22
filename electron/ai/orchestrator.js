@@ -250,7 +250,7 @@ class Orchestrator {
       const hint = isOpenRouter
         ? '请先在「设置 → 配置」中为 OpenRouter 填写并保存 API Key（可在 https://openrouter.ai/keys 获取）'
         : '请先配置 API Key'
-      if (canSend(sender)) sender.send('ai-chat-error', { sessionId, error: hint })
+      if (canSend(sender)) sender.send('ai-chat-error', { sessionId, error: hint, runId: chatRunId })
       return { success: false, error: hint }
     }
 
@@ -282,15 +282,31 @@ class Orchestrator {
       appLogger.info('[AI][WebAppSandbox] startChat', { runId: chatRunId, projectPath: String(projectPath || '').trim(), sessionId })
     }
 
-    // 包装 sender，拦截关键事件更新注册表（HTTP 调用时 sender 为 null，不推送）
+    // 包装 sender：为可观测性统一注入 runId（含流式 LLM 内部直接调的 sender.send）
+    const RUN_ID_CHANNELS = new Set([
+      'ai-chat-token',
+      'ai-chat-tool-call',
+      'ai-chat-tool-result',
+      'ai-chat-usage',
+      'ai-chat-complete',
+      'ai-chat-error'
+    ])
     const wrappedSender = {
       send: (channel, data) => {
-        if (canSend(sender)) sender.send(channel, data)
-        if (channel === 'ai-chat-token' && data.sessionId === sessionId) {
-          sessionRegistry.updateToken(registryId, data.token || '')
+        const payload =
+          data &&
+          typeof data === 'object' &&
+          data.sessionId === sessionId &&
+          RUN_ID_CHANNELS.has(channel) &&
+          data.runId == null
+            ? { ...data, runId: chatRunId }
+            : data
+        if (canSend(sender)) sender.send(channel, payload)
+        if (channel === 'ai-chat-token' && payload && payload.sessionId === sessionId) {
+          sessionRegistry.updateToken(registryId, payload.token || '')
         }
-        if (channel === 'ai-chat-tool-call' && data.sessionId === sessionId) {
-          sessionRegistry.updateToolCall(registryId, data.toolCall || {})
+        if (channel === 'ai-chat-tool-call' && payload && payload.sessionId === sessionId) {
+          sessionRegistry.updateToolCall(registryId, payload.toolCall || {})
         }
       },
       isDestroyed: () => !canSend(sender)
@@ -821,7 +837,6 @@ class Orchestrator {
           for (const toolCall of normalizedToolCalls) {
             wrappedSender.send('ai-chat-tool-call', {
               sessionId,
-              runId: chatRunId,
               toolCall: {
                 id: toolCall.id,
                 name: toolCall.function.name,
@@ -842,7 +857,7 @@ class Orchestrator {
                 if (isScreenshotTool) {
                   appLogger?.info?.('[AI][ToolCall] 执行截图相关工具', { name: toolName, sessionId, argsPreview: JSON.stringify(args).slice(0, 200) })
                 }
-                result = await this._executeTool(toolCall.function.name, args, wrappedSender, sessionId, toolCall.id, chatRunId)
+                result = await this._executeTool(toolCall.function.name, args, wrappedSender, sessionId, toolCall.id)
               } catch (e) {
                 result = {
                   error: e.message,
@@ -894,7 +909,6 @@ class Orchestrator {
               }
               wrappedSender.send('ai-chat-tool-result', {
                 sessionId,
-                runId: chatRunId,
                 toolCallId: toolCall.id,
                 name: toolCall.function.name,
                 result: resultStr
@@ -2301,7 +2315,7 @@ class Orchestrator {
     })
   }
 
-  async _executeTool(name, args, sender, sessionId, toolCallId = '', runId = '') {
+  async _executeTool(name, args, sender, sessionId, toolCallId = '') {
     if (!this.toolRegistry) {
       return { error: `工具系统未初始化` }
     }
@@ -2467,7 +2481,7 @@ class Orchestrator {
       sessionId,
       projectPath,
       toolCallId,
-      runId: String(runId || session?.chatRunId || '').trim(),
+      runId: String(session?.chatRunId || '').trim(),
       channel: session?.feishuChatId ? 'feishu' : 'main',
       remoteId: session?.feishuChatId || '',
       feishuChatId: session?.feishuChatId || '',

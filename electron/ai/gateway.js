@@ -6,7 +6,7 @@
  * - 客户端 -> 服务端: { type: 'chat', id?, sessionId?, messages, model?, tools?, projectPath? }
  *                     { type: 'ping' }
  *                     { type: 'config' } | { type: 'cron' } | { type: 'presence' }  // 查询配置/定时任务/在线状态
- * - 服务端 -> 客户端: { event: 'token'|'tool_call'|'tool_result'|'complete'|'error', sessionId, ...data }
+ * - 服务端 -> 客户端: { event: 'token'|'tool_call'|'tool_result'|'usage'|'complete'|'error', sessionId, runId?, requestId?, ... }
  *                     { event: 'config'|'cron'|'presence', data } | { event: 'pong' }
  */
 
@@ -246,11 +246,35 @@ function createGateway(opts) {
     const projectPath = msgProjectPath != null && String(msgProjectPath).trim() !== '' ? String(msgProjectPath).trim() : '__gateway__'
     const wsSender = {
       send: (channel, data) => {
-        if (channel === 'ai-chat-token') send(ws, { event: 'token', sessionId, token: data.token })
-        else if (channel === 'ai-chat-tool-call') send(ws, { event: 'tool_call', sessionId, toolCall: data.toolCall })
-        else if (channel === 'ai-chat-tool-result') send(ws, { event: 'tool_result', sessionId, toolResult: data.toolResult })
-        else if (channel === 'ai-chat-complete') send(ws, { event: 'complete', sessionId, messages: data.messages, requestId: id })
-        else if (channel === 'ai-chat-error') send(ws, { event: 'error', sessionId, error: data.error, requestId: id })
+        const rid = data && data.runId != null ? data.runId : undefined
+        if (channel === 'ai-chat-token') {
+          send(ws, { event: 'token', sessionId, requestId: id, runId: rid, token: data.token })
+        } else if (channel === 'ai-chat-tool-call') {
+          send(ws, { event: 'tool_call', sessionId, requestId: id, runId: rid, toolCall: data.toolCall })
+        } else if (channel === 'ai-chat-tool-result') {
+          send(ws, {
+            event: 'tool_result',
+            sessionId,
+            requestId: id,
+            runId: rid,
+            toolCallId: data.toolCallId,
+            name: data.name,
+            result: data.result
+          })
+        } else if (channel === 'ai-chat-usage') {
+          send(ws, {
+            event: 'usage',
+            sessionId,
+            requestId: id,
+            runId: rid,
+            iteration: data.iteration,
+            usage: data.usage
+          })
+        } else if (channel === 'ai-chat-complete') {
+          send(ws, { event: 'complete', sessionId, requestId: id, runId: rid, messages: data.messages })
+        } else if (channel === 'ai-chat-error') {
+          send(ws, { event: 'error', sessionId, requestId: id, runId: rid, error: data.error })
+        }
       }
     }
     runChat({ sessionId, projectPath, messages, model, tools, fromAppWindow }, wsSender).catch((e) => {
