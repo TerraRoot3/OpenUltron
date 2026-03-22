@@ -48,13 +48,10 @@ electron/
       fs-dialog-basic.js           # 已存在：show-open/save-dialog、read-file、save-file、read-image-as-base64
       shell-spawn-command.js       # 已存在：execute-command、execute-command-realtime、kill-command-process、Git index.lock
       external-open.js             # 已存在：open-cursor、open-terminal、get-available-terminals、open-in-finder、open-external
-      browser-favorites-passwords.js # 已存在：浏览器收藏 CRUD/导入导出、密码相关 IPC
       browser-extensions.js          # 已存在：Chrome 扩展加载/列表/开关/卸载（persist:main）
       window-shell.js        # （可选后续）与上并列时再细分
       fs-dialog.js           # （命名占位）更多文件类 IPC 可并入或拆出
       terminal-process.js    # execute-command、PTY、kill
-      browser-favorites.js   # 收藏夹 CRUD
-      browser-passwords.js   # 密码管理
       extensions.js          # 扩展加载
       coze.js                # 扣子相关 IPC
       ai-config.js           # ai-get/save-config、模型列表缓存、proxy
@@ -81,9 +78,8 @@ electron/
 | **窗口/UI** | `window-*`, `toggle-maximize`, `send-refresh-on-focus`, `show-system-notification` | `BrowserWindow`、主窗口引用 |
 | **配置快照** | `get/set-current-config`, `delete-saved-config` | store、路径 |
 | **文件/对话框** | `show-open-dialog`, `read-file`, `save-file`, `read-image-as-base64` | `dialog`, `fs` |
-| **命令/终端** | `execute-command*`, `kill-command-process`, `open-terminal`, `open-cursor`, `open-in-finder`, `open-external` | `child_process`, `pty`, 路径 |
-| **内置浏览器** | `get-browser-favorites`, 密码相关、导入导出 | store / 加密存储 |
-| **扩展** | `get-extensions`, `load-extension-*`, `toggle/remove-extension` | session、路径 |
+| **命令/终端** | `execute-command*`, `kill-command-process`, `open-terminal`, `open-cursor`, `open-in-finder`, `open-external` | `child_process`、路径（已移除 node-pty / 嵌入式终端） |
+| **扩展 / Webview** | `get-extensions`, `load-extension-*`, `toggle/remove-extension`（内置浏览器收藏/密码已移除） | session、路径 |
 | **Coze** | `get/save-coze-config`, `coze-generate-commit-message` | HTTP、配置 |
 | **AI 核心** | `ai-verify-model`, `ai-fetch-models`, `ai-get-models`, `ai-save-config`, `ai-chat-*`, session 系列, Gateway URL, MCP 相关 | `Orchestrator`、配置文件、`store`、多窗口广播 |
 | **渠道/IM** | `feishu-*`, `telegram-*`, 钉钉等 | 与 AI、会话文件、artifact 强耦合，**宜后置**或子模块内再分层 |
@@ -128,7 +124,7 @@ main.js
    - 文件对话框、单次读写（注意与现有 `registerChannel` + `invokeRegistry` 双注册保持一致）。
 
 3. **第二批**  
-   - 浏览器收藏夹/密码、扩展加载（依赖 `session`、路径工具）。
+   - 扩展加载（依赖 `session`、路径工具）；内置浏览器收藏/密码已移除。
 
 4. **第三批**  
    - Coze、Proxy、AI 配置类 IPC（与 `aiConfigFile`、`store` 强相关，但边界仍清晰）。
@@ -193,11 +189,11 @@ require('./main-process/ipc/ai-config').register({ app, store, registerChannel, 
 | 2026-03-19 | `main-process/ipc/fs-dialog-basic.js` | `show-open-dialog`、`show-save-dialog`、`read-file`、`save-file`、`read-image-as-base64` |
 | 2026-03-19 | `main-process/ipc/shell-spawn-command.js` | `execute-command`、`execute-command-realtime`、`kill-command-process`；进程 Map 与 `checkAndRemoveGitLock` 内聚于模块（另导出 `isGitWriteCommand` / `checkAndRemoveGitLock` 供测试复用） |
 | 2026-03-19 | `main-process/ipc/external-open.js` | Cursor / 终端 / 已装终端列表 / 访达 / `openExternal`；注入 `shell`、`getAppRoot` |
-| 2026-03-19 | `main-process/ipc/browser-favorites-passwords.js` | 内置浏览器收藏与密码 IPC；注入 `store`、`dialog`、`getMainWindow`、`safeLog`/`safeError` |
 | 2026-03-19 | `main-process/ipc/browser-extensions.js` | `get-extensions`、`load-extension-*`、`toggle-extension`、`remove-extension`；`loadedExtensions` Map 内聚于模块 |
+| 2026-03-20 | （已删除）原 `browser-favorites-passwords.js` | 内置浏览器收藏/密码 IPC、菜单「收藏」、`preload` / `browserPolyfill` 对应 API 已移除；electron-store 默认项 `browserFavorites`/`browserPasswords`/`gitlab*` 已清理 |
 | 2026-03-19 | `main-process/register-channel.js` | `createRegisterChannel(ipcMain, invokeRegistry)`，与原先 `registerChannel` 行为一致 |
 | 2026-03-19 | `main-process/ipc/coze-ipc.js`、`electron/coze/commit-message.js` | 扣子配置、commit message、check-auth、logout |
-| 2026-03-19 | `main-process/ipc/workspace-ipc.js` | `workspace-*` |
+| 2026-03-19 | `main-process/ipc/workspace-ipc.js` | `workspace-*`、`workspace-search-files` |
 | 2026-03-19 | `main-process/ipc/web-apps-settings-ipc.js` | Web 应用 AI 设置、`web-apps-update-name` |
 | 2026-03-19 | `main-process/ipc/agent-md-ipc.js` | Agent / SOUL / USER / BOOT / IDENTITY 等 MD 路径与打开 |
 | 2026-03-19 | `main-process/ipc/cron-ipc.js` | `cron-*` |
@@ -213,7 +209,8 @@ require('./main-process/ipc/ai-config').register({ app, store, registerChannel, 
 | 2026-03-19 | `main-process/ipc/ai/ai-config-proxy-ipc.js` | `ai-generate-commit-message`、`ai-get/save-config`、Codex key、proxy、onboarding、备份恢复、用量/账单 |
 | 2026-03-19 | `main-process/ipc/ai/ai-models-ipc.js` | `ai-fetch-models`、`ai-get-models` |
 | 2026-03-19 | `main-process/ipc/ai/ai-tools-attachments-ipc.js` | `ai-get-tools`、`ai-model-supports-vision`、`ai-upload-attachments` |
-| 2026-03-19 | `main-process/ipc/ai/ai-chat-session-ipc.js` | `ai-chat-start/stop`、session 视图/元数据/注入、`ai-editor-open-files-response` |
+| 2026-03-19 | `main-process/ipc/ai/ai-chat-session-ipc.js` | `ai-chat-start/stop`、session 视图/元数据/注入 |
+| 2026-03-20 | （删除）`terminal_session`、`editor_open_files`；预加载 `terminal`/`editor` | 移除 `node-pty`；`@` 提及改用 `workspace-search-files` + 顶层 `read-file` |
 | 2026-03-19 | `main-process/ipc/ai/ai-external-subagents-ipc.js` | `ai-list-external-subagents` |
 | 2026-03-19 | `electron/ai/inbound-message-text.js` | `createInboundMessageTextHelpers`：入站回复文本清洗、截图路径/base64 解析、`getAssistantText` / `extractLatestVisibleText` 等（main 注入 path/fs/appRoot/stripRawToolCallXml） |
 | 2026-03-19 | `main-process/ipc/ai/gateway-side-effects.js` | `createGatewaySideEffectHandlers`：`onToolResult`、`onChatCompleteAny`（应用内飞书）、`forwardToMainWindow`、`onRemoteUserMessage`、`onChatComplete`（`eventBus` 由 main 提前创建后注入） |

@@ -16,11 +16,10 @@
 | `main-process/ipc/fs-dialog-basic.js` | 基础打开保存对话框、小文件读写 |
 | `main-process/ipc/shell-spawn-command.js` | `execute-command*`、`kill-command-process`、Git lock |
 | `main-process/ipc/external-open.js` | Cursor、终端、访达、`openExternal` |
-| `main-process/ipc/browser-favorites-passwords.js` | 内置浏览器收藏与密码 |
 | `main-process/ipc/browser-extensions.js` | Chrome 扩展加载/列表/开关（`persist:main`） |
 | `main-process/register-channel.js` | `createRegisterChannel`（IPC + invokeRegistry） |
 | `main-process/ipc/coze-ipc.js` + `electron/coze/commit-message.js` | 扣子配置、commit、auth |
-| `main-process/ipc/workspace-ipc.js` | `workspace-*` |
+| `main-process/ipc/workspace-ipc.js` | `workspace-*`（含 `workspace-search-files`） |
 | `main-process/ipc/web-apps-settings-ipc.js` | Web 应用 AI 设置、`web-apps-update-name` |
 | `main-process/ipc/agent-md-ipc.js` | Agent / 记忆 MD 路径与打开 |
 | `main-process/ipc/cron-ipc.js` | `cron-*` |
@@ -36,7 +35,7 @@
 | `main-process/ipc/ai/ai-config-proxy-ipc.js` | 配置 / 代理 / onboarding / 备份 / 用量 / `ai-generate-commit-message` |
 | `main-process/ipc/ai/ai-models-ipc.js` | `ai-fetch-models`、`ai-get-models` |
 | `main-process/ipc/ai/ai-tools-attachments-ipc.js` | 工具列表、视觉能力、附件上传 |
-| `main-process/ipc/ai/ai-chat-session-ipc.js` | 对话启停、会话注册与 `ai-editor-open-files-response` |
+| `main-process/ipc/ai/ai-chat-session-ipc.js` | 对话启停、会话注册与注入 |
 | `main-process/ipc/ai/ai-external-subagents-ipc.js` | `ai-list-external-subagents` |
 | `electron/ai/inbound-message-text.js` | 飞书/TG/钉钉 入站侧文本与截图解析（`createInboundMessageTextHelpers`） |
 | `main-process/ipc/ai/gateway-side-effects.js` | Gateway 截图缓冲、会话落库、飞书应用内完成回发、`eventBus.emit` |

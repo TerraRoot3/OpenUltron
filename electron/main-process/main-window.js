@@ -121,25 +121,6 @@ function createMainWindowController(deps) {
         ]
       },
       {
-        label: '收藏',
-        submenu: [
-          {
-            label: '导出收藏',
-            click: () => {
-              const mw = getMainWindow()
-              if (mw && mw.webContents) mw.webContents.send('export-favorites')
-            }
-          },
-          {
-            label: '导入收藏',
-            click: () => {
-              const mw = getMainWindow()
-              if (mw && mw.webContents) mw.webContents.send('import-favorites')
-            }
-          }
-        ]
-      },
-      {
         label: '窗口',
         submenu: [
           { label: '最小化', accelerator: 'Command+M', role: 'minimize' },

@@ -50,25 +50,6 @@ if [ ! -d "node_modules/electron/dist" ] || [ ! -d "node_modules/vite" ] || [ ! 
     echo "✅ 依赖安装完成"
 fi
 
-# 检查 node-pty 架构是否与 Electron 匹配
-PTY_NODE="node_modules/node-pty/build/Release/pty.node"
-if [ -f "$PTY_NODE" ]; then
-    PTY_ARCH=$(file "$PTY_NODE" | grep -o 'arm64\|x86_64' | head -1)
-    ELECTRON_ARCH=$(file "node_modules/electron/dist/Electron.app/Contents/MacOS/Electron" | grep -o 'arm64\|x86_64' | head -1)
-    
-    if [ "$PTY_ARCH" != "$ELECTRON_ARCH" ]; then
-        echo "⚠️  node-pty 架构 ($PTY_ARCH) 与 Electron ($ELECTRON_ARCH) 不匹配"
-        echo "🔄 重新编译 node-pty..."
-        npx @electron/rebuild -f -w node-pty -a $ELECTRON_ARCH
-        echo "✅ node-pty 重新编译完成"
-    fi
-else
-    echo "⚠️  node-pty 未编译，正在编译..."
-    ELECTRON_ARCH=$(file "node_modules/electron/dist/Electron.app/Contents/MacOS/Electron" | grep -o 'arm64\|x86_64' | head -1)
-    npx @electron/rebuild -f -w node-pty -a $ELECTRON_ARCH
-    echo "✅ node-pty 编译完成"
-fi
-
 # 启动开发服务器（先等 5 秒让 Vite 起来，再启动 Electron，不依赖 wait-on）
 echo "🚀 启动开发服务器..."
 npx concurrently "npm run dev" "sleep 5 && NODE_ENV=development npx electron ." --names "VITE,ELECTRON" --prefix-colors "cyan,green"

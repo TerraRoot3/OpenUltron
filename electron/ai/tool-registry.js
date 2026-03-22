@@ -78,7 +78,6 @@ function createDefaultRegistry(options = {}) {
     ['git_operation', './tools/git-operation'],
     ['file_operation', './tools/file-operation'],
     ['user_confirmation', './tools/user-confirmation'],
-    ['terminal_session', './tools/terminal-session'],
     ['hardware_invoke', './tools/hardware-invoke'],
     ['show_desktop_notification', './tools/show-desktop-notification'],
     ['sessions_list', './tools/sessions-list'],
@@ -156,16 +155,6 @@ function createDefaultRegistry(options = {}) {
       ))
     } catch (e) {
       console.warn('加载 ai_config_control 工具失败:', e.message)
-    }
-  }
-
-  // editor_open_files 需要 pendingEditorFilesRequests map（与渲染进程通信）
-  if (options.pendingEditorFilesRequests) {
-    try {
-      const { createEditorOpenFilesTool } = require('./tools/editor-open-files')
-      registry.register('editor_open_files', createEditorOpenFilesTool(options.pendingEditorFilesRequests))
-    } catch (e) {
-      console.warn('加载 editor_open_files 工具失败:', e.message)
     }
   }
 

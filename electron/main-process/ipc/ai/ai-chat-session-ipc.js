@@ -1,10 +1,10 @@
 /**
- * Gateway 对话启停、会话视图注册、编辑器文件回调
+ * Gateway 对话启停、会话视图注册
  */
 const sessionRegistry = require('../../../ai/session-registry')
 
 function registerAiChatSessionIpc (deps) {
-  const { registerChannel, aiGateway, pendingEditorFilesRequests } = deps
+  const { registerChannel, aiGateway } = deps
 
   registerChannel('ai-chat-start', async (event, { sessionId, messages, model, tools, projectPath, panelId, stopPrevious }) => {
     try {
@@ -88,18 +88,6 @@ function registerAiChatSessionIpc (deps) {
     }
     const ok = sessionRegistry.injectMessage(sessionId, message)
     return { success: ok }
-  })
-
-  registerChannel('ai-editor-open-files-response', (event, { requestId, files }) => {
-    const pending = pendingEditorFilesRequests.get(requestId)
-    if (pending) {
-      pending.resolve({
-        success: true,
-        files: files || [],
-        count: (files || []).length
-      })
-    }
-    return { ok: true }
   })
 }
 

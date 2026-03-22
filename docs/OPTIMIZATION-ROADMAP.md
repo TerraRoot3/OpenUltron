@@ -16,7 +16,6 @@
 | **`electron/main-process/ipc/fs-dialog-basic.js`** | 打开/保存对话框与基础同步文件读写 IPC。 |
 | **`electron/main-process/ipc/shell-spawn-command.js`** | bash 执行、实时输出、取消子进程与 Git `index.lock` 处理 IPC。 |
 | **`electron/main-process/ipc/external-open.js`** | Cursor、系统终端、访达、`shell.openExternal` 等 IPC。 |
-| **`electron/main-process/ipc/browser-favorites-passwords.js`** | 内置浏览器收藏与密码（electron-store）IPC。 |
 | **`electron/main-process/ipc/browser-extensions.js`** | Webview `persist:main` 的 Chrome 扩展 IPC。 |
 
 ---

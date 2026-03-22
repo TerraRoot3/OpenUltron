@@ -73,7 +73,6 @@ function bootstrapAiCoreStack(deps) {
     dialog,
     shell,
     artifactRegistry,
-    skillPack,
     cronScheduler,
     eventBus,
     isDev,
@@ -204,8 +203,6 @@ function bootstrapAiCoreStack(deps) {
     })
   }
 
-  const pendingEditorFilesRequests = new Map()
-
   const aiMcpManager = new McpManager()
   const { BUILTIN_CHROME_DEVTOOLS_MCP, parseMcpJsonConfig } = createMcpJsonConfigParsers({
     path,
@@ -253,7 +250,6 @@ function bootstrapAiCoreStack(deps) {
   })
 
   const aiToolRegistry = createDefaultRegistry({
-    pendingEditorFilesRequests,
     store,
     getAIConfig: getAIConfigLegacy,
     writeAIConfig: writeAIConfigFromTool,
@@ -508,7 +504,6 @@ function bootstrapAiCoreStack(deps) {
     skillsRt,
     getAIConfigLegacy,
     modelSupportsVision,
-    pendingEditorFilesRequests,
     conversationFile,
     sessionRegistry,
     parseInboundModelCommand,

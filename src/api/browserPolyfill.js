@@ -1,6 +1,6 @@
 /**
  * 浏览器环境完整 polyfill：无 Electron 时通过 HTTP 调用同一后端，与应用内 IPC 数据源一致。
- * 所有 invoke 类 API 均可用；事件类（onXxx、terminal 流式）在浏览器下为 no-op（需后端 WebSocket 才能实现推送）。
+ * 所有 invoke 类 API 均可用；事件类（onXxx）在浏览器下多为 no-op（需后端 WebSocket 才能实现推送）。
  * 需先启动 OpenUltron 桌面应用，API 默认 http://127.0.0.1:38472
  */
 
@@ -50,19 +50,7 @@ export function installBrowserPolyfill(baseUrl = DEFAULT_API_BASE) {
     saveSavedConfigs: (data) => invoke('save-saved-configs', [data]),
     getCurrentConfig: (data) => invoke('get-current-config', [data]),
     setCurrentConfig: (data) => invoke('set-current-config', [data]),
-    saveGitlabConfig: (data) => invoke('save-gitlab-config', [data]),
-    saveProjectGitlabConfig: (data) => invoke('save-project-gitlab-config', [data]),
-    getProjectGitlabConfig: (projectPath) => invoke('get-project-gitlab-config', [projectPath]),
-    deleteGitlabHistory: (index) => invoke('delete-gitlab-history', [index]),
     deleteSavedConfig: (index) => invoke('delete-saved-config', [index]),
-
-    // Git
-    gitClone: (data) => invoke('git-clone', [data]),
-    gitStatus: (data) => invoke('git-status', [data]),
-    gitBranch: (data) => invoke('git-branch', [data]),
-    gitCommit: (data) => invoke('git-commit', [data]),
-    gitPull: (data) => invoke('git-pull', [data]),
-    gitPush: (data) => invoke('git-push', [data]),
 
     // 文件与对话框
     showOpenDialog: (options) => invoke('show-open-dialog', [options]),
@@ -89,22 +77,6 @@ export function installBrowserPolyfill(baseUrl = DEFAULT_API_BASE) {
     logToFrontend: (message) => invoke('log-to-frontend', [message]),
     toggleMaximize: () => invoke('toggle-maximize', []),
 
-    // 浏览器收藏与密码
-    getBrowserFavorites: () => invoke('get-browser-favorites', []),
-    addBrowserFavorite: (data) => invoke('add-browser-favorite', [data]),
-    removeBrowserFavorite: (data) => invoke('remove-browser-favorite', [data]),
-    updateBrowserFavorite: (data) => invoke('update-browser-favorite', [data]),
-    saveBrowserFavoritesOrder: (orderedIds) => invoke('save-browser-favorites-order', [orderedIds]),
-    exportBrowserFavorites: () => invoke('export-browser-favorites', []),
-    importBrowserFavorites: (data) => invoke('import-browser-favorites', [data]),
-    getBrowserPasswords: () => invoke('get-browser-passwords', []),
-    saveBrowserPassword: (data) => invoke('save-browser-password', [data]),
-    getBrowserPassword: (data) => invoke('get-browser-password', [data]),
-    updateBrowserPasswordUsed: (data) => invoke('update-browser-password-used', [data]),
-    clearBrowserPasswords: () => invoke('clear-browser-passwords', []),
-    deleteBrowserPassword: (data) => invoke('delete-browser-password', [data]),
-    deleteBrowserPasswordByDomain: (data) => invoke('delete-browser-password-by-domain', [data]),
-
     openUrlInNewTab: (url) => { try { window.open(url) } catch (_) { noop() } },
 
     // 事件监听：浏览器下无 IPC 推送，提供 no-op 避免报错
@@ -112,22 +84,12 @@ export function installBrowserPolyfill(baseUrl = DEFAULT_API_BASE) {
     removeCommandProcessIdListener: noopRemove,
     onRefreshCurrentTab: noopOn('refresh-current-tab'),
     removeRefreshCurrentTabListener: noopRemove,
-    onGitOutputUpdate: noopOn('git-output-update'),
-    removeGitOutputUpdateListener: noopRemove,
     onRefreshOnFocus: noopOn('refresh-on-focus'),
     removeRefreshOnFocusListener: noopRemove,
     onRefreshComplete: noopOn('refresh-complete'),
     removeRefreshCompleteListener: noopRemove,
     onRealtimeCommandOutput: noopOn('realtime-command-output'),
     removeRealtimeCommandOutputListener: noopRemove,
-    onBranchStatusCacheUpdated: noopOn('branch-status-cache-updated'),
-    removeBranchStatusCacheUpdatedListener: noopRemove,
-    onProjectsUpdated: noopOn('projects-updated'),
-    removeProjectsUpdatedListener: noopRemove,
-    onExportFavorites: noopOn('export-favorites'),
-    removeExportFavoritesListener: noopRemove,
-    onImportFavorites: noopOn('import-favorites'),
-    removeImportFavoritesListener: noopRemove,
     onOpenUrlInNewTab: noopOn('open-url-in-new-tab'),
     removeOpenUrlInNewTabListener: noopRemove,
     onOpenWebviewDevTools: noopOn('open-webview-devtools'),
@@ -137,41 +99,13 @@ export function installBrowserPolyfill(baseUrl = DEFAULT_API_BASE) {
     onMcpOpenDiff: (cb) => noopOn('mcp-open-diff')(cb),
     removeMcpOpenDiffListener: noopRemove,
 
-    // 终端（create/destroy 可 invoke；write/resize 为 send，浏览器下 no-op）
-    terminal: {
-      create: (options) => invoke('terminal-create', [options]),
-      write: (data) => { /* send-only, no-op in browser */ },
-      resize: (data) => { /* send-only, no-op in browser */ },
-      destroy: (data) => invoke('terminal-destroy', [data]),
-      onOutput: noopOn('terminal-output'),
-      removeOutputListener: noopRemove,
-      onExit: noopOn('terminal-exit'),
-      removeExitListener: noopRemove,
-      onTitleChange: noopOn('terminal-title'),
-      removeTitleChangeListener: noopRemove
-    },
-
-    editor: {
-      readDir: (data) => invoke('editor-read-dir', [data]),
-      readFile: (data) => invoke('editor-read-file', [data]),
-      writeFile: (data) => invoke('editor-write-file', [data]),
-      searchFiles: (data) => invoke('editor-search-files', [data]),
-      getSettings: () => invoke('editor-get-settings', []),
-      setSettings: (data) => invoke('editor-set-settings', [data]),
-      watchStart: (data) => invoke('editor-watch-start', [data]),
-      watchStop: (data) => invoke('editor-watch-stop', [data]),
-      onFileChanged: (cb) => noopOn('editor-file-changed')(cb),
-      removeFileChangedListener: noopRemove,
-      onGetOpenFiles: (cb) => noopOn('ai-get-editor-open-files')(cb),
-      respondOpenFiles: (data) => invoke('ai-editor-open-files-response', [data])
-    },
-
     workspace: {
       getDefaults: () => invoke('workspace-get-defaults', []),
       load: (data) => invoke('workspace-load', [data]),
       save: (data) => invoke('workspace-save', [data]),
       pickFolder: () => invoke('workspace-pick-folder', []),
-      resolvePath: (data) => invoke('workspace-resolve-path', [data])
+      resolvePath: (data) => invoke('workspace-resolve-path', [data]),
+      searchFiles: (data) => invoke('workspace-search-files', [data])
     },
 
     getExtensions: () => invoke('get-extensions', []),
@@ -181,28 +115,6 @@ export function installBrowserPolyfill(baseUrl = DEFAULT_API_BASE) {
     loadExtensionById: (extensionId) => invoke('load-extension-by-id', [extensionId]),
     toggleExtension: (extensionId, enabled) => invoke('toggle-extension', [extensionId, enabled]),
     removeExtension: (extensionId) => invoke('remove-extension', [extensionId]),
-
-    // GitLab / GitHub / Gitee
-    gitlabTest: (data) => invoke('gitlab-test', [data]),
-    gitlabGroups: (data) => invoke('gitlab-groups', [data]),
-    gitlabGroupDetails: (data) => invoke('gitlab-group-details', [data]),
-    gitlabGroupProjects: (data) => invoke('gitlab-group-projects', [data]),
-    gitlabClone: (data) => invoke('gitlab-clone', [data]),
-    gitlabCreateMR: (data) => invoke('gitlab-create-mr', [data]),
-    gitlabProjectMRs: (data) => invoke('gitlab-project-mrs', [data]),
-    gitlabSearchProjects: (data) => invoke('gitlab-search-projects', [data]),
-    githubTest: (data) => invoke('github-test', [data]),
-    githubOrgs: (data) => invoke('github-orgs', [data]),
-    githubUserRepos: (data) => invoke('github-user-repos', [data]),
-    githubOrgRepos: (data) => invoke('github-org-repos', [data]),
-    githubClone: (data) => invoke('github-clone', [data]),
-    githubSearchRepos: (data) => invoke('github-search-repos', [data]),
-    giteeTest: (data) => invoke('gitee-test', [data]),
-    giteeOrgs: (data) => invoke('gitee-orgs', [data]),
-    giteeUserRepos: (data) => invoke('gitee-user-repos', [data]),
-    giteeOrgRepos: (data) => invoke('gitee-org-repos', [data]),
-    giteeClone: (data) => invoke('gitee-clone', [data]),
-    giteeSearchRepos: (data) => invoke('gitee-search-repos', [data]),
 
     // AI
     ai: {

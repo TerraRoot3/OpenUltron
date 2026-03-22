@@ -49,15 +49,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   removeRefreshCurrentTabListener: (callback) => {
     ipcRenderer.removeListener('refresh-current-tab', callback)
   },
-  
-  // 实时Git输出监听
-  onGitOutputUpdate: (callback) => {
-    ipcRenderer.on('git-output-update', callback)
-  },
-  removeGitOutputUpdateListener: (callback) => {
-    ipcRenderer.removeListener('git-output-update', callback)
-  },
-  
+
   // 窗口焦点事件监听（用于刷新待定文件检查）
   onRefreshOnFocus: (callback) => {
     ipcRenderer.on('refresh-on-focus', callback)
@@ -90,22 +82,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   removeRealtimeCommandOutputListener: (callback) => {
     ipcRenderer.removeListener('realtime-command-output', callback)
   },
-  
-  // 分支状态缓存更新监听
-  onBranchStatusCacheUpdated: (callback) => {
-    ipcRenderer.on('branch-status-cache-updated', callback)
-  },
-  removeBranchStatusCacheUpdatedListener: (callback) => {
-    ipcRenderer.removeListener('branch-status-cache-updated', callback)
-  },
-
-  // 项目列表更新监听（后台扫描完成后通知）
-  onProjectsUpdated: (callback) => {
-    ipcRenderer.on('projects-updated', callback)
-  },
-  removeProjectsUpdatedListener: (callback) => {
-    ipcRenderer.removeListener('projects-updated', callback)
-  },
 
   // 前端调试日志
   logToFrontend: (message) => ipcRenderer.invoke('log-to-frontend', message),
@@ -121,37 +97,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   windowMinimize: () => ipcRenderer.invoke('window-minimize'),
   windowClose: () => ipcRenderer.invoke('window-close'),
   toggleMaximize: () => ipcRenderer.invoke('toggle-maximize'),
-  
-  // 浏览器功能
-  getBrowserFavorites: () => ipcRenderer.invoke('get-browser-favorites'),
-  addBrowserFavorite: (data) => ipcRenderer.invoke('add-browser-favorite', data),
-  removeBrowserFavorite: (data) => ipcRenderer.invoke('remove-browser-favorite', data),
-  updateBrowserFavorite: (data) => ipcRenderer.invoke('update-browser-favorite', data),
-  saveBrowserFavoritesOrder: (orderedIds) => ipcRenderer.invoke('save-browser-favorites-order', orderedIds),
-  exportBrowserFavorites: () => ipcRenderer.invoke('export-browser-favorites'),
-  importBrowserFavorites: () => ipcRenderer.invoke('import-browser-favorites'),
-  getBrowserPasswords: () => ipcRenderer.invoke('get-browser-passwords'),
-  saveBrowserPassword: (data) => ipcRenderer.invoke('save-browser-password', data),
-  getBrowserPassword: (data) => ipcRenderer.invoke('get-browser-password', data),
-  updateBrowserPasswordUsed: (data) => ipcRenderer.invoke('update-browser-password-used', data),
-  clearBrowserPasswords: () => ipcRenderer.invoke('clear-browser-passwords'),
-  deleteBrowserPassword: (data) => ipcRenderer.invoke('delete-browser-password', data),
-  deleteBrowserPasswordByDomain: (data) => ipcRenderer.invoke('delete-browser-password-by-domain', data),
-  
-  // 收藏导入导出事件监听
-  onExportFavorites: (callback) => {
-    ipcRenderer.on('export-favorites', callback)
-  },
-  removeExportFavoritesListener: (callback) => {
-    ipcRenderer.removeListener('export-favorites', callback)
-  },
-  onImportFavorites: (callback) => {
-    ipcRenderer.on('import-favorites', callback)
-  },
-  removeImportFavoritesListener: (callback) => {
-    ipcRenderer.removeListener('import-favorites', callback)
-  },
-  
+
   // 监听主进程发来的新标签页打开请求
   onOpenUrlInNewTab: (callback) => {
     ipcRenderer.on('open-url-in-new-tab', (event, url) => callback(url))
@@ -185,54 +131,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.removeAllListeners('open-webview-devtools')
   },
   
-  // ==================== 终端 ====================
-  terminal: {
-    create: (options) => ipcRenderer.invoke('terminal-create', options),
-    write: (data) => ipcRenderer.send('terminal-write', data),
-    resize: (data) => ipcRenderer.send('terminal-resize', data),
-    destroy: (data) => ipcRenderer.invoke('terminal-destroy', data),
-    onOutput: (callback) => {
-      ipcRenderer.on('terminal-output', (event, data) => callback(data))
-    },
-    removeOutputListener: () => {
-      ipcRenderer.removeAllListeners('terminal-output')
-    },
-    onExit: (callback) => {
-      ipcRenderer.on('terminal-exit', (event, data) => callback(data))
-    },
-    removeExitListener: () => {
-      ipcRenderer.removeAllListeners('terminal-exit')
-    },
-    onTitleChange: (callback) => {
-      ipcRenderer.on('terminal-title', (event, data) => callback(data))
-    },
-    removeTitleChangeListener: () => {
-      ipcRenderer.removeAllListeners('terminal-title')
-    }
-  },
-
   // ==================== MCP 事件监听 ====================
   onMcpOpenFile: (cb) => { ipcRenderer.on('mcp-open-file', (e, d) => cb(d)) },
   removeMcpOpenFileListener: () => { ipcRenderer.removeAllListeners('mcp-open-file') },
   onMcpOpenDiff: (cb) => { ipcRenderer.on('mcp-open-diff', (e, d) => cb(d)) },
   removeMcpOpenDiffListener: () => { ipcRenderer.removeAllListeners('mcp-open-diff') },
-
-  // ==================== 代码编辑器 ====================
-  editor: {
-    readDir: (data) => ipcRenderer.invoke('editor-read-dir', data),
-    readFile: (data) => ipcRenderer.invoke('editor-read-file', data),
-    writeFile: (data) => ipcRenderer.invoke('editor-write-file', data),
-    searchFiles: (data) => ipcRenderer.invoke('editor-search-files', data),
-    getSettings: () => ipcRenderer.invoke('editor-get-settings'),
-    setSettings: (data) => ipcRenderer.invoke('editor-set-settings', data),
-    watchStart: (data) => ipcRenderer.invoke('editor-watch-start', data),
-    watchStop: (data) => ipcRenderer.invoke('editor-watch-stop', data),
-    onFileChanged: (cb) => { ipcRenderer.on('editor-file-changed', (e, d) => cb(d)) },
-    removeFileChangedListener: () => { ipcRenderer.removeAllListeners('editor-file-changed') },
-    // AI 工具请求编辑器打开文件列表
-    onGetOpenFiles: (cb) => { ipcRenderer.on('ai-get-editor-open-files', (e, d) => cb(d)) },
-    respondOpenFiles: (data) => ipcRenderer.invoke('ai-editor-open-files-response', data)
-  },
 
   // ==================== 工作区 ====================
   workspace: {
@@ -242,6 +145,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     pickFolder: () => ipcRenderer.invoke('workspace-pick-folder'),
     /** 通过路径字符串解析目录，不弹系统选择框；传 { path: '绝对路径或 ~/xxx' } */
     resolvePath: (data) => ipcRenderer.invoke('workspace-resolve-path', data),
+    /** 在单根目录下按路径/文件名子串搜索文件（供 @ 提及等） */
+    searchFiles: (data) => ipcRenderer.invoke('workspace-search-files', data),
   },
 
   // 外部终端

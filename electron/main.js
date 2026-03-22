@@ -32,7 +32,6 @@ const { registerStoreConfigSnapshotIpc } = require('./main-process/ipc/store-con
 const { registerFsDialogBasicIpc } = require('./main-process/ipc/fs-dialog-basic')
 const { registerShellSpawnCommandIpc } = require('./main-process/ipc/shell-spawn-command')
 const { registerExternalOpenIpc } = require('./main-process/ipc/external-open')
-const { registerBrowserFavoritesPasswordsIpc } = require('./main-process/ipc/browser-favorites-passwords')
 const { registerBrowserExtensionsIpc } = require('./main-process/ipc/browser-extensions')
 const { registerCozeIpc } = require('./main-process/ipc/coze-ipc')
 const { registerWorkspaceIpc } = require('./main-process/ipc/workspace-ipc')
@@ -166,11 +165,7 @@ const mcpHttpBridge = createMcpHttpBridge({ http, path, fs, getMainWindow: () =>
 // 初始化 electron-store
 const store = new Store({
   defaults: {
-    gitlabConfig: {},
-    gitlabHistory: [],
-    savedConfigs: [],
-    browserFavorites: [],
-    browserPasswords: []
+    savedConfigs: []
   }
 })
 
@@ -238,15 +233,6 @@ registerExternalOpenIpc({
   getAppRoot
 })
 
-registerBrowserFavoritesPasswordsIpc({
-  registerChannel,
-  store,
-  dialog,
-  getMainWindow: () => mainWindow,
-  safeLog,
-  safeError
-})
-
 registerWorkspaceIpc({
   registerChannel,
   store,
@@ -264,7 +250,7 @@ registerWebAppsSettingsIpc({ registerChannel, store })
 
 // app.whenReady / before-quit / activate：见文件末尾 registerAppWhenReady、registerAppQuitActivate
 
-// Git/GitLab/GitHub/Gitee/editor-git IPC 已移除
+// Git/GitLab/GitHub/Gitee/editor-git、嵌入式 terminal/editor 预加载 API 已移除
 
 registerBrowserExtensionsIpc({
   registerChannel,
@@ -281,7 +267,6 @@ const {
   skillsRt,
   getAIConfigLegacy,
   modelSupportsVision,
-  pendingEditorFilesRequests,
   conversationFile,
   sessionRegistry,
   parseInboundModelCommand,
@@ -352,7 +337,7 @@ registerAiToolsAttachmentsIpc({
   artifactRegistry,
   appLogger
 })
-registerAiChatSessionIpc({ registerChannel, aiGateway, pendingEditorFilesRequests })
+registerAiChatSessionIpc({ registerChannel, aiGateway })
 
 // ==================== 飞书/Telegram/钉钉：适配器 + 入站管线 + channels IPC（见 im-channels-bootstrap.js） ====================
 ;({ startFeishuReceive } = setupImChannels({

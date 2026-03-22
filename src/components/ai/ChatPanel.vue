@@ -802,10 +802,6 @@ const mentionedFiles = ref([])   // 已选中的文件列表
 let mentionSearchTimer = null
 let mentionAtStart = -1          // @ 符号在 textarea 中的位置
 
-// 编辑器当前打开的文件列表（通过全局事件同步）
-const editorOpenFiles = ref([])
-const onEditorFilesChanged = (e) => { editorOpenFiles.value = e.detail || [] }
-
 // 工作区根目录列表（通过全局事件同步）
 const workspaceRoots = ref([])
 const onWorkspaceRootsChanged = (e) => { workspaceRoots.value = e.detail || [] }
@@ -825,11 +821,6 @@ const onAddSnippetToAI = (e) => {
   if (!mentionedFiles.value.find(f => f._key === key)) {
     mentionedFiles.value.push({ type: 'snippet', _key: key, ...item })
   }
-}
-
-// 当 @ 弹框打开时，向全局派发请求当前打开文件列表（若有监听方如编辑器可响应）
-const requestEditorFiles = () => {
-  window.dispatchEvent(new CustomEvent('request-editor-open-files'))
 }
 
 // 从绝对路径生成相对路径（支持多工作区根目录）
@@ -860,31 +851,29 @@ const toRelative = (absPath) => {
 }
 
 const searchMentionFiles = async (q) => {
-  // query 为空时，优先展示编辑器已打开的文件（最多 10 个）
-  if (!q) {
-    if (editorOpenFiles.value.length > 0) {
-      mentionItems.value = editorOpenFiles.value.slice(0, 10).map(f => ({
-        path: f.filePath,
-        name: f.fileName,
-        relativePath: toRelativeWithProject(f.filePath),
-        type: 'file'
-      }))
-      return
-    }
-  }
-
-  // 搜索所有工作区根目录
   const roots = workspaceRoots.value.length > 0
     ? workspaceRoots.value
     : (props.projectPath ? [{ path: props.projectPath, name: props.projectPath.split('/').pop() }] : [])
 
   if (!roots.length) return
+
+  const query = String(q || '').trim()
+  if (!query) {
+    mentionItems.value = []
+    return
+  }
+
   mentionLoading.value = true
   try {
-    // 并发搜索所有根目录
+    const search = window.electronAPI?.workspace?.searchFiles
+    if (typeof search !== 'function') {
+      mentionItems.value = []
+      return
+    }
+    // 并发搜索所有根目录（主进程 workspace-search-files）
     const results = await Promise.all(
       roots.map(root =>
-        window.electronAPI.editor.searchFiles({ rootPath: root.path, query: q || '' })
+        search({ rootPath: root.path, query, maxFiles: 50 })
           .then(res => ({ root, res }))
           .catch(() => ({ root, res: null }))
       )
@@ -969,7 +958,6 @@ const detectMention = () => {
     showMention.value = true
     // @ 刚出现时主动请求编辑器文件列表（确保拿到最新状态）
     if (justOpened) {
-      requestEditorFiles()
       // mentionQuery 可能仍是 ''，watch 不会触发，需要主动调用一次
       clearTimeout(mentionSearchTimer)
       mentionSearchTimer = setTimeout(() => searchMentionFiles(q), 160)
@@ -1644,11 +1632,11 @@ const handleSend = async (opts = {}) => {
     for (const f of newMentionedFiles) {
       fileNames.push(`@${f.relativePath || f.name}`)
       try {
-        const res = await window.electronAPI.editor.readFile({ filePath: f.path })
-        if (res?.success && res.content) {
-          const lines = res.content.split('\n').length
+        const content = await window.electronAPI.readFile(f.path)
+        if (typeof content === 'string' && content.length) {
+          const lines = content.split('\n').length
           if (lines <= 200) {
-            inlineParts.push(`\`\`\`\n// @${f.relativePath || f.name}\n${res.content}\n\`\`\``)
+            inlineParts.push(`\`\`\`\n// @${f.relativePath || f.name}\n${content}\n\`\`\``)
           } else {
             largePaths.push(`- ${f.relativePath} (${lines} lines, please read with file_operation)`)
           }
@@ -1733,7 +1721,6 @@ const onAIConfigUpdated = () => loadModels()
 onMounted(async () => {
   messagesRef.value?.addEventListener('scroll', onScroll, { passive: true })
   messagesRef.value?.addEventListener('click', onImageClick)
-  window.addEventListener('editor-open-files-changed', onEditorFilesChanged)
   window.addEventListener('workspace-roots-changed', onWorkspaceRootsChanged)
   window.addEventListener('add-file-to-ai', onAddFileToAI)
   window.addEventListener('add-snippet-to-ai', onAddSnippetToAI)
@@ -1956,7 +1943,6 @@ onUnmounted(() => {
   document.removeEventListener('mousedown', onSlashPaletteClickOutside)
   messagesRef.value?.removeEventListener('scroll', onScroll)
   messagesRef.value?.removeEventListener('click', onImageClick)
-  window.removeEventListener('editor-open-files-changed', onEditorFilesChanged)
   window.removeEventListener('workspace-roots-changed', onWorkspaceRootsChanged)
   window.removeEventListener('add-file-to-ai', onAddFileToAI)
   window.removeEventListener('add-snippet-to-ai', onAddSnippetToAI)
