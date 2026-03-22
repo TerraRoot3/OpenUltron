@@ -101,17 +101,11 @@ npm run release:all
 - Node.js 主进程能力
 - 可扩展工具协议（MCP）
 
-## 设计文档
+## 文档
 
-- [优化与演进路线图（工程化 / 智能体能力）](./docs/OPTIMIZATION-ROADMAP.md)
-- [主进程 main.js 模块化拆分蓝图](./docs/MAIN-PROCESS-MODULARIZATION.md)
-- [主进程拆分：剩余工作与分阶段计划](./docs/MAIN-PROCESS-REMAINING-PLAN.md)
-- [OpenAI：Codex 与 Chat Completions（为何 Codex 能用但本应用报 429）](./docs/OPENAI-CODEX-AND-CHAT-COMPLETIONS.md)
-- [技能包与 ClawHub 兼容说明](./docs/SKILLS-PACK-COMPAT.md)
-- [Web 沙箱应用（可打包/安装/依赖声明）](./docs/WEB-APPS-SANDBOX-DESIGN.md)
-- [Web 应用 IPC / HTTP 参考](./docs/WEB-APPS-IPC-REFERENCE.md)
-- [Web 应用实现清单（进度勾选）](./docs/WEB-APPS-IMPLEMENTATION-CHECKLIST.md)  
-  - 侧栏 **应用** → 应用库 **`/web-apps`**（新建 / 列表）；**打开** **`/app-open`**（仅全屏预览）；**工作室** **`/web-app-studio`**（左侧预览 + 右侧 AI）。
+完整索引与分类见 **[docs/README.md](./docs/README.md)**（路线图、主进程拆分、Web 沙箱、技能包、专项计划等）。  
+常用入口：[优化与演进路线图](./docs/OPTIMIZATION-ROADMAP.md)、[Web 沙箱设计](./docs/WEB-APPS-SANDBOX-DESIGN.md)、[技能包说明](./docs/SKILLS-PACK-COMPAT.md)。  
+侧栏 **应用**：应用库 **`/web-apps`**；全屏预览 **`/app-open`**；工作室 **`/web-app-studio`**（左预览 + 右 AI）。
 
 ---
 

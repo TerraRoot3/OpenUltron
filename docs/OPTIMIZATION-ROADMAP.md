@@ -1,6 +1,6 @@
 # 优化与演进路线图（智能体 / 工程化）
 
-本文档把「深度分析」收敛为**可执行优先级**，与现有设计文档（如 `WEB-APPS-SANDBOX-DESIGN.md`、`docs/plans/*agent-capability-routing*`）对齐，便于迭代时对照。
+本文档把「深度分析」收敛为**可执行优先级**，与 `WEB-APPS-SANDBOX-DESIGN.md`、`docs/plans/agent-capability-routing.md` 等对齐，便于迭代时对照。
 
 ---
 
@@ -23,8 +23,7 @@
 ## P0 — 体验与一致性（建议下一迭代）
 
 1. **Capability Router + Execution Envelope 全链路**  
-   - 设计：`docs/plans/2026-03-12-agent-capability-routing-design.md`  
-   - 实现计划：`docs/plans/2026-03-12-agent-capability-routing-implementation.md`  
+   - 说明与落地状态：`docs/plans/agent-capability-routing.md`  
    - 目标：子 Agent / 渠道回传 **统一成功-失败-产物** 语义，减少「说完成但没收齐」类问题。  
    - 现状：`electron/ai/execution-envelope.js` 已有基础，需在 `sessions_spawn` 完成路径与 Feishu 等投递侧 **强制规范化**。
 
@@ -65,4 +64,4 @@
 
 ## 如何更新本文档
 
-完成功能或重构后，在对应 **P 级**下勾选项或追加一行「已完成 + 提交/PR 引用」；大方向变更先改 `docs/plans/*` 或产品主设计文档，再同步本节。
+完成功能或重构后，在对应 **P 级**下勾选项或追加一行「已完成 + 提交/PR 引用」；大方向变更先改 `docs/plans/` 下对应文档或产品主设计文档，再同步本节。

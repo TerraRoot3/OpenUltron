@@ -101,14 +101,9 @@ npm run release:all
 
 ## Documentation
 
-- [Optimization & agent roadmap](./docs/OPTIMIZATION-ROADMAP.md)
-- [Main process (main.js) modularization plan](./docs/MAIN-PROCESS-MODULARIZATION.md)
-- [Main process split: remaining work & phased plan](./docs/MAIN-PROCESS-REMAINING-PLAN.md)
-- [OpenAI Codex vs Chat Completions](./docs/OPENAI-CODEX-AND-CHAT-COMPLETIONS.md)
-- [Skills & ClawHub compatibility](./docs/SKILLS-PACK-COMPAT.md)
-- [Web sandbox apps](./docs/WEB-APPS-SANDBOX-DESIGN.md)
-- [Web apps IPC / HTTP](./docs/WEB-APPS-IPC-REFERENCE.md)
-- [Web apps implementation checklist](./docs/WEB-APPS-IMPLEMENTATION-CHECKLIST.md)
+See **[docs/README.md](./docs/README.md)** for the full index (roadmap, main-process split, web sandbox, skills, plans).  
+Quick links: [Optimization roadmap](./docs/OPTIMIZATION-ROADMAP.md), [Web sandbox design](./docs/WEB-APPS-SANDBOX-DESIGN.md), [Skills / ClawHub](./docs/SKILLS-PACK-COMPAT.md).  
+Sidebar **Apps**: library **`/web-apps`**, fullscreen preview **`/app-open`**, studio **`/web-app-studio`** (preview + AI chat).
 
 ---
 

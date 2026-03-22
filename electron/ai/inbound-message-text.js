@@ -383,8 +383,8 @@ function createInboundMessageTextHelpers (deps) {
   function looksLikeGenericGreeting (text = '') {
     const t = String(text || '').replace(/\s+/g, ' ').trim()
     if (!t || t.length > 80) return false
-    if (/^(你好|您好|hi\b|hello\b|在吗|在么|早上好|下午好|晚上好|哈喽|嗨)[，,。.!\s]*$/i.test(t)) return true
-    if (/^(ok|好的|好哒|收到|谢谢|感谢|嗯|恩|👍|谢谢老板)[，,。.!\s]*$/i.test(t)) return true
+    if (/^(你好|您好|hi\b|hello\b|在吗|在么|早上好|下午好|晚上好|哈喽|嗨)[，,。.!！?？\s]*$/i.test(t)) return true
+    if (/^(ok|好的|好哒|收到|谢谢|感谢|嗯|恩|👍|谢谢老板)[，,。.!！?？\s]*$/i.test(t)) return true
     return false
   }
 

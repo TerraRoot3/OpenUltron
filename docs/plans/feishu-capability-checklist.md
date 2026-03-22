@@ -1,6 +1,6 @@
-# Feishu Capability Acceptance Checklist (2026-03-12)
+# 飞书能力验收清单
 
-> 目标：验证飞书文档、电子表格、多维表格能力，以及主/子 Agent 路由与结果回传一致性。
+> 验证飞书文档、电子表格、多维表格能力，以及主/子 Agent 路由与结果回传一致性。
 
 ## A. 主流程与路由
 
@@ -95,4 +95,3 @@
 
 1. `rewrite_inplace` / `append_inplace` 当前为 `copy_based` 策略（生成新文档版本），不是块级原位编辑。
 2. `export_and_send` 当前导出为 Markdown 文件并发送。
-

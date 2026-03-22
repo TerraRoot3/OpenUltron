@@ -1,6 +1,6 @@
 # 主进程 `main.js` 模块化拆分蓝图
 
-`electron/main.js` 体量极大（约 1 万行），集中了 **IPC、`registerChannel`、渠道编排、AI 编排、浏览器/扩展、文件与终端** 等逻辑。本文说明 **如何按域拆分**、**依赖方向**、**迁移顺序与风险**，与 `OPTIMIZATION-ROADMAP.md` P2 对齐。
+`electron/main.js` 体量极大（约 1 万行），集中了 **IPC、`registerChannel`、渠道编排、AI 编排、浏览器/扩展、文件与终端** 等逻辑。本文说明 **如何按域拆分**、**依赖方向**、**迁移顺序与风险**，与 `OPTIMIZATION-ROADMAP.md` P2 对齐。仓库内其它文档索引见 **[README.md](./README.md)**（本目录）。
 
 **剩余 channel 与分阶段收尾清单**：见 [`MAIN-PROCESS-REMAINING-PLAN.md`](./MAIN-PROCESS-REMAINING-PLAN.md)（`main.js` 内 **直接** `registerChannel('...')` 已基本迁出；仍以 `rg "registerChannel\\(" electron/main.js` 为准，多为注入到子模块的变量名）。
 
