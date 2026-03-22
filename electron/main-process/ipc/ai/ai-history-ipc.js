@@ -1,4 +1,6 @@
 const { MAIN_CHAT_PROJECT, SESSION_SOURCES } = require('./session-constants')
+const { consolidateLessonsLearned } = require('../../../ai/lessons-consolidate')
+const { summarizeToolFailuresFromMessages } = require('../../../ai/tool-outcome-summary')
 
 /**
  * 会话历史落库、摘要、进化、列表（依赖 main 注入的 Orchestrator / conversationFile 等）
@@ -92,8 +94,9 @@ function registerAiHistoryIpc (deps) {
             .map((e) => {
               const status = e.success ? '成功' : '失败'
               const cwd = e.cwd ? ` (cwd: ${e.cwd})` : ''
+              const ec = !e.success && e.errorCode ? ` errCode=${e.errorCode}` : ''
               const code = !e.success && e.exitCode != null ? ` exit=${e.exitCode}` : ''
-              return `- [${status}]${cwd} ${(e.command || '').trim().slice(0, 200)}${code}`
+              return `- [${status}]${cwd} ${(e.command || '').trim().slice(0, 200)}${ec}${code}`
             })
             .join('\n')
         : '无'
@@ -278,6 +281,8 @@ function registerAiHistoryIpc (deps) {
   const EVOLVE_MIN_INTERVAL_MS = 3 * 60 * 1000
   const EVOLVE_MIN_DIALOG_MESSAGES = 6
   const EVOLVE_MIN_NEW_MESSAGES = 4
+  /** 蒸馏时注入已有 LESSONS 的最大字符数（尾部截取，优先保留近期条目） */
+  const EVOLVE_EXISTING_LESSONS_MAX_CHARS = 6000
   const evolveSessionState = new Map() // key => { lastTs, lastDialogCount, running }
   
   function getDialogMessagesForEvolve(conv) {
@@ -306,8 +311,9 @@ function registerAiHistoryIpc (deps) {
     return { ok: true, reason: 'ready' }
   }
   
-  async function evolveFromSessionInternal({ projectPath, sessionId, force = false, reason = 'manual' } = {}) {
+  async function evolveFromSessionInternal({ projectPath, sessionId, force = false, reason = 'manual', runId } = {}) {
     if (!projectPath || !sessionId) return { success: true, skipped: true, reason: 'missing_params' }
+    const runIdStr = runId != null && String(runId).trim() ? String(runId).trim() : undefined
     const projectKey = conversationFile.hashProjectPath(projectPath)
     const conv = conversationFile.loadConversation(projectKey, sessionId)
     const dialogMsgs = getDialogMessagesForEvolve(conv)
@@ -346,27 +352,61 @@ function registerAiHistoryIpc (deps) {
           .map(([k, v]) => `${k}:total=${v?.total || 0},ok=${v?.success || 0},fail=${v?.failed || 0}`)
         return rows.join(' | ')
       })()
-  
+      const cmdByErrorCode = (() => {
+        const m = cmdSummary?.byErrorCode && typeof cmdSummary.byErrorCode === 'object' ? cmdSummary.byErrorCode : {}
+        const rows = Object.entries(m)
+          .slice(0, 8)
+          .map(([k, v]) => `${k}=${v}`)
+        return rows.join('，')
+      })()
+
+      let toolFailuresFromDialog = ''
+      try {
+        toolFailuresFromDialog = summarizeToolFailuresFromMessages(conv?.messages || [], { maxItems: 14, maxChars: 2600 })
+      } catch (_) {}
+
       const { entries: recentEntries } = commandExecutionLog.getRecentEntries(projectPath || '', 50, sessionId)
       const recentCommandsText = recentEntries.length
         ? recentEntries
             .map((e) => {
               const status = e.success ? '成功' : '失败'
               const cwd = e.cwd ? ` (cwd: ${e.cwd})` : ''
+              const ec = !e.success && e.errorCode ? ` errCode=${e.errorCode}` : ''
               const code = !e.success && e.exitCode != null ? ` exit=${e.exitCode}` : ''
-              return `- [${status}]${cwd} ${(e.command || '').trim().slice(0, 200)}${code}`
+              return `- [${status}]${cwd} ${(e.command || '').trim().slice(0, 200)}${ec}${code}`
             })
             .join('\n')
         : ''
+
+      let existingLessonsText = ''
+      try {
+        const rawLessons = memoryStore.readLessonsLearned && memoryStore.readLessonsLearned()
+        if (rawLessons && String(rawLessons).trim()) {
+          const t = String(rawLessons).trim()
+          existingLessonsText =
+            t.length > EVOLVE_EXISTING_LESSONS_MAX_CHARS
+              ? `…(更早条目已省略，共 ${t.length} 字，以下为尾部 ${EVOLVE_EXISTING_LESSONS_MAX_CHARS} 字)\n${t.slice(-EVOLVE_EXISTING_LESSONS_MAX_CHARS)}`
+              : t
+        }
+      } catch (_) {}
   
-      const systemPrompt = '你负责从对话与命令执行记录中提炼经验教训。只输出一个 JSON 数组，格式为 [{"content":"...", "category":"..."}]。每条 content 必须详细（80～400字）：包含具体场景、失败原因或成功做法、可复用的命令/路径/步骤；须结合「最近执行命令」判断安装了哪些、哪些成功/失败。category 只能从 通用/git/部署/调试/命令/飞书/MCP/自动化 中选。若无值得提炼内容则输出 []。禁止 markdown 代码块，禁止额外解释。'
+      const systemPrompt =
+        '你负责从对话与命令执行记录中提炼经验教训。只输出一个 JSON 数组，格式为 [{"content":"...", "category":"..."}]。每条 content 必须详细（80～400字）：包含具体场景、失败原因或成功做法、可复用的命令/路径/步骤；须结合「最近执行命令」「工具失败摘要」与方括号中的 error.code（若有）判断根因。category 只能从 通用/git/部署/调试/命令/飞书/MCP/自动化 中选。若用户提供了「已有知识库摘要」，其中已覆盖的要点不得重复输出；仅在有**新增**可执行经验时输出新条，否则输出 []。若无值得提炼内容则输出 []。禁止 markdown 代码块，禁止额外解释。'
       const prompt = [
         `触发来源：${reason}`,
         `项目：${projectPath}`,
         `会话：${sessionId}`,
+        runIdStr ? `关联 runId：${runIdStr}` : '',
         `命令执行摘要：${cmdBrief}`,
         cmdByTool ? `按工具统计：${cmdByTool}` : '',
+        cmdByErrorCode ? `失败命令 error.code 分布（execute_command 落盘）：${cmdByErrorCode}` : '',
         recentCommandsText ? ['', '最近执行命令（本会话，供提炼「安装了哪些、哪些成功/失败」参考）：', recentCommandsText].join('\n') : '',
+        toolFailuresFromDialog
+          ? ['', '本会话工具调用失败摘要（role:tool 结果中 success=false 或 envelope 失败；[CODE] 为归类码）：', toolFailuresFromDialog].join('\n')
+          : '',
+        existingLessonsText
+          ? ['', '已有知识库摘要（请勿重复记录同义内容；仅补充全新信息）：', existingLessonsText].join('\n')
+          : '',
         '',
         '请根据以上「对话」与「最近执行命令」提炼 1～5 条经验教训：',
         dialogText
@@ -408,6 +448,7 @@ function registerAiHistoryIpc (deps) {
           projectPath,
           sessionId,
           reason,
+          runId: runIdStr,
           dialogCount: dialogMsgs.length,
           saved
         })
@@ -429,16 +470,26 @@ function registerAiHistoryIpc (deps) {
   }
   
   // 开启新会话时主动自我进化：根据上一会话记录提炼经验并写入知识库（后台执行，不阻塞 UI）
-  registerChannel('ai-evolve-from-session', async (event, { projectPath, sessionId, force }) => {
+  registerChannel('ai-evolve-from-session', async (event, { projectPath, sessionId, force, runId }) => {
     const out = await evolveFromSessionInternal({
       projectPath,
       sessionId,
       force: force === true,
-      reason: 'manual_channel'
+      reason: 'manual_channel',
+      runId
     })
     return out && typeof out === 'object' ? out : { success: true }
   })
-  
+
+  registerChannel('ai-consolidate-lessons-learned', async () => {
+    try {
+      const out = await consolidateLessonsLearned({ getResolvedAIConfig, aiOrchestrator, appLogger })
+      return out && typeof out === 'object' ? out : { success: false, error: 'invalid_response' }
+    } catch (e) {
+      return { success: false, error: e.message || String(e) }
+    }
+  })
+
   // 列出项目所有历史对话（用于对话列表 UI）
   registerChannel('ai-list-conversations', async (event, { projectPath }) => {
     try {

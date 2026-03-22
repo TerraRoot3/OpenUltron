@@ -9,6 +9,27 @@ function detectRequestedExternalRuntime(text = '') {
   return ''
 }
 
+/**
+ * 与 detectCapability 规则对齐的多路信号，用于日志与后续路由对照（不改变主 capability 判定顺序）
+ * @returns {string[]}
+ */
+function computeCapabilitySignals(text = '') {
+  const t = String(text || '').toLowerCase()
+  if (!t) return []
+  const signals = []
+  if (/(飞书|feishu).*(文档|doc|docx|写|改|润色|重写|周报|报告|会议纪要)|((写|改|润色|重写).*(飞书|文档|docx?))/.test(t)) {
+    signals.push('docs')
+  }
+  if (/(多维表格|bitable)/.test(t)) signals.push('bitable')
+  if (/(记录|字段|数据表)/.test(t)) signals.push('bitable_records')
+  if (/(表格|sheet|sheets|电子表格|单元格)/.test(t)) signals.push('sheets')
+  if (/(截图|screenshot|网页|打开页面|浏览器)/.test(t)) signals.push('browser')
+  if (/(打包|zip|压缩|发文件|发送文件|下载文件|导出)/.test(t)) signals.push('artifact')
+  const ext = detectRequestedExternalRuntime(text)
+  if (ext) signals.push(`runtime:${ext}`)
+  return signals
+}
+
 function detectCapability(text = '') {
   const t = String(text || '').toLowerCase()
   if (!t) return 'general'
@@ -22,10 +43,17 @@ function detectCapability(text = '') {
   return 'general'
 }
 
-function resolveCapabilityRoute({ text = '', runtime = '' } = {}) {
+/**
+ * @param {{ text?: string, runtime?: string }} input
+ * @param {{ info?: (tag: string, payload: object) => void }} [logger] - 传入 appLogger 时写结构化 RouteDecision 日志（D2）
+ */
+function resolveCapabilityRoute(input = {}, logger) {
+  const text = input.text != null ? String(input.text) : ''
+  const runtime = input.runtime != null ? String(input.runtime) : ''
   const requestedRuntime = String(runtime || '').trim().toLowerCase()
   const explicitExternal = detectRequestedExternalRuntime(text)
   const capability = detectCapability(text)
+  const capabilitySignals = computeCapabilitySignals(text)
   let executionMode = 'internal'
   if (requestedRuntime) executionMode = requestedRuntime
   else if (explicitExternal) executionMode = explicitExternal
@@ -33,18 +61,37 @@ function resolveCapabilityRoute({ text = '', runtime = '' } = {}) {
 
   const deliveryPolicy = capability === 'artifact' || capability === 'browser' ? 'auto_send' : 'defer'
   const riskLevel = capability === 'docs' || capability === 'bitable' ? 'confirm_required' : 'safe'
-  return {
+  const result = {
     capability,
+    capabilitySignals,
     executionMode,
     deliveryPolicy,
     riskLevel,
     explicitExternal: !!explicitExternal,
     externalRuntime: explicitExternal || ''
   }
+  if (logger && typeof logger.info === 'function') {
+    try {
+      logger.info('[CapabilityRoute]', {
+        capability: result.capability,
+        capabilitySignals: result.capabilitySignals,
+        executionMode: result.executionMode,
+        deliveryPolicy: result.deliveryPolicy,
+        riskLevel: result.riskLevel,
+        explicitExternal: result.explicitExternal,
+        externalRuntime: result.externalRuntime || undefined,
+        runtimeArg: runtime.slice(0, 120),
+        textLen: text.length,
+        textPreview: text.slice(0, 200)
+      })
+    } catch (_) {}
+  }
+  return result
 }
 
 module.exports = {
   detectRequestedExternalRuntime,
   detectCapability,
+  computeCapabilitySignals,
   resolveCapabilityRoute
 }

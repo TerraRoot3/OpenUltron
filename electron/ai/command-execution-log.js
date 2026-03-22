@@ -127,6 +127,7 @@ function readProjectEntries(projectPath) {
         cwd: e.cwd,
         success: e.success === true,
         exitCode: e.exitCode,
+        errorCode: e.errorCode,
         ts: Number(e.ts || 0),
         sessionId: e.sessionId
       })
@@ -145,6 +146,7 @@ function readProjectEntries(projectPath) {
         cwd: e.cwd,
         success: e.success === true,
         exitCode: e.exitCode,
+        errorCode: e.errorCode,
         ts: Number(e.ts || 0),
         sessionId: e.sessionId
       })
@@ -196,14 +198,23 @@ function writeSummaryMarkdown() {
         success: 0,
         failed: 0,
         installs: new Map(),
-        latest: []
+        latest: [],
+        errorCodes: new Map(),
+        failedCommandRepeat: new Map()
       })
     }
     const p = byProject.get(key)
+    const cmd = String(r.command || '').trim()
     p.total++
     if (r.success) p.success++
-    else p.failed++
-    const cmd = String(r.command || '').trim()
+    else {
+      p.failed++
+      const ec = r.errorCode != null && String(r.errorCode).trim() ? String(r.errorCode).trim() : 'UNKNOWN'
+      p.errorCodes.set(ec, (p.errorCodes.get(ec) || 0) + 1)
+      if (cmd) {
+        p.failedCommandRepeat.set(cmd, (p.failedCommandRepeat.get(cmd) || 0) + 1)
+      }
+    }
     if (/^\s*(npm|pnpm|yarn|pip3?|brew)\s+.*(install|add)\b/i.test(cmd) && r.success) {
       p.installs.set(cmd, (p.installs.get(cmd) || 0) + 1)
     }
@@ -250,6 +261,23 @@ function writeSummaryMarkdown() {
       } else {
         lines.push('  - 无')
       }
+      const ecRows = [...p.errorCodes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12)
+      lines.push('- 失败命令 error.code 分布（窗口内，含历史无码记为 UNKNOWN）：')
+      if (ecRows.length) {
+        for (const [code, n] of ecRows) lines.push(`  - ${code}：${n} 次`)
+      } else {
+        lines.push('  - 无失败记录')
+      }
+      const repeatFails = [...p.failedCommandRepeat.entries()]
+        .filter(([, n]) => n >= 2)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 8)
+      lines.push('- 重复失败命令（≥2 次，便于发现顽固问题）：')
+      if (repeatFails.length) {
+        for (const [c, n] of repeatFails) lines.push(`  - (${n} 次) ${c.slice(0, 220)}`)
+      } else {
+        lines.push('  - 无')
+      }
       lines.push('')
     }
   }
@@ -272,6 +300,7 @@ function append(projectPath, sessionId, payload) {
     cwd: payload.cwd,
     success: payload.success === true,
     exitCode: payload.exitCode,
+    errorCode: payload.errorCode != null && String(payload.errorCode).trim() ? String(payload.errorCode).trim() : undefined,
     ts: Date.now(),
     sessionId: payload.sessionId || sessionId,
     date: currentDateKey()
@@ -320,9 +349,10 @@ function getViewedPaths(projectPath) {
 function getExecutionSummary(projectPath) {
   const entries = readProjectEntries(projectPath)
   if (!entries.length) {
-    return { total: 0, success: 0, failed: 0, byTool: {} }
+    return { total: 0, success: 0, failed: 0, byTool: {}, byErrorCode: {} }
   }
   const byTool = {}
+  const byErrorCode = {}
   let success = 0
   let failed = 0
   for (const e of entries) {
@@ -334,13 +364,16 @@ function getExecutionSummary(projectPath) {
     } else {
       failed++
       byTool[e.toolName].failed++
+      const ec = e.errorCode != null && String(e.errorCode).trim() ? String(e.errorCode).trim() : 'UNKNOWN'
+      byErrorCode[ec] = (byErrorCode[ec] || 0) + 1
     }
   }
   return {
     total: entries.length,
     success,
     failed,
-    byTool
+    byTool,
+    byErrorCode
   }
 }
 
@@ -367,7 +400,8 @@ function getRecentEntries(projectPath, limit = 50, sessionId = null) {
       cwd: e.cwd || '',
       success: e.success === true,
       toolName: e.toolName || 'execute_command',
-      exitCode: e.exitCode
+      exitCode: e.exitCode,
+      errorCode: e.errorCode
     }))
   }
 }

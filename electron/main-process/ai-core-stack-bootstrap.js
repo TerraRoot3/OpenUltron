@@ -382,6 +382,15 @@ function bootstrapAiCoreStack(deps) {
     console.warn('加载 sessions_spawn 工具失败:', e.message)
   }
   try {
+    const { createConsolidateLessonsTool } = require('../ai/tools/consolidate-lessons-learned')
+    aiToolRegistry.register(
+      'consolidate_lessons_learned',
+      createConsolidateLessonsTool({ getResolvedAIConfig, aiOrchestrator, appLogger })
+    )
+  } catch (e) {
+    console.warn('加载 consolidate_lessons_learned 工具失败:', e.message)
+  }
+  try {
     const { createListConfiguredModelsTool } = require('../ai/tools/list-configured-models')
     aiToolRegistry.register('list_configured_models', createListConfiguredModelsTool(getAIConfigLegacy))
   } catch (e) {

@@ -210,6 +210,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     saveSessionSummary: (data) => ipcRenderer.invoke('ai-save-session-summary', data),
     listSessionSummaries: (data) => ipcRenderer.invoke('ai-list-session-summaries', data),
     evolveFromSession: (data) => ipcRenderer.invoke('ai-evolve-from-session', data),
+    consolidateLessonsLearned: () => ipcRenderer.invoke('ai-consolidate-lessons-learned'),
     listConversations: (data) => ipcRenderer.invoke('ai-list-conversations', data),
     renameConversation: (data) => ipcRenderer.invoke('ai-rename-conversation', data),
     // 会话管理（独立 AI 助手）

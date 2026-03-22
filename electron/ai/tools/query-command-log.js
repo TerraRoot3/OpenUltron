@@ -2,7 +2,7 @@
 const commandExecutionLog = require('../command-execution-log')
 
 const definition = {
-  description: '查询当前项目下已执行过的命令聚合结果：查看过哪些目录和文件、成功/失败统计、或最近执行成功的命令列表。用于避免重复查看、避免重复安装（先查再装）、辅助后续操作与进化。',
+  description: '查询当前项目下已执行过的命令聚合结果：查看过哪些目录和文件、成功/失败统计、按工具聚合、失败条目的 error.code 分布（byErrorCode）、或最近执行成功的命令列表。用于避免重复查看、避免重复安装（先查再装）、辅助后续操作与进化。跨项目离线汇总见应用数据目录下 command-execution-log/SUMMARY.md（含失败码分布与重复失败命令 Top）。',
   parameters: {
     type: 'object',
     properties: {

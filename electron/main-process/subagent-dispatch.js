@@ -2,6 +2,8 @@
  * sessions_spawn：internal / 外部 CLI 子 Agent 派发、上下文拼接与超时封装
  */
 
+const { buildExecutionEnvelope } = require('../ai/execution-envelope')
+
 /** @param {object} deps — 见 main.js 原 createSubagentDispatch 调用处 */
 function createSubagentDispatch(deps) {
   const {
@@ -265,7 +267,7 @@ function createSubagentDispatch(deps) {
     const { task, systemPrompt, roleName, model, projectPath, provider, runtime, parentSessionId, parentRunId, feishuChatId, feishuTenantKey, feishuDocHost, feishuSenderOpenId, feishuSenderUserId, stream } = opts || {}
     const subSessionId = `sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     const parentRun = String(parentRunId || '').trim()
-    const route = resolveCapabilityRoute({ text: String(task || ''), runtime: String(runtime || '') })
+    const route = resolveCapabilityRoute({ text: String(task || ''), runtime: String(runtime || '') }, appLogger)
     let delegatedTask = buildDelegatedTaskWithParentContext(task, {
       projectPath: projectPath || '__main_chat__',
       parentSessionId: parentSessionId || ''
@@ -313,7 +315,7 @@ function createSubagentDispatch(deps) {
       pushCommandLog(`[${n}] ${String(s).replace(/\s+/g, ' ').trim()}`)
     }
     const userRuntime = String(runtime || '').trim()
-    const routeFromRuntime = resolveCapabilityRoute({ text: String(task || ''), runtime: userRuntime || '' })
+    const routeFromRuntime = resolveCapabilityRoute({ text: String(task || ''), runtime: userRuntime || '' }, appLogger)
     let effectiveRuntime = userRuntime
     if (!effectiveRuntime || effectiveRuntime.toLowerCase() === 'auto') {
       const inferred = routeFromRuntime.externalRuntime || inferPreferredExternalRuntimeFromText([task, systemPrompt, roleName].filter(Boolean).join('\n'))
@@ -436,7 +438,25 @@ function createSubagentDispatch(deps) {
                   attemptedRuntimes: runtimeChain.slice(0, attemptErrors.length + 1)
                 })
               } catch (_) {}
-              return { ...out, parentRunId: parentRun || undefined, subSessionId, commandLogs: [...commandLogLines], attemptedRuntimes: runtimeChain.slice(0, attemptErrors.length + 1) }
+              return {
+                ...out,
+                parentRunId: parentRun || undefined,
+                subSessionId,
+                commandLogs: [...commandLogLines],
+                attemptedRuntimes: runtimeChain.slice(0, attemptErrors.length + 1),
+                envelope: buildExecutionEnvelope(
+                  {
+                    success: true,
+                    result: out.result,
+                    commandLogs: [...commandLogLines],
+                    subSessionId,
+                    parentRunId: parentRun || undefined,
+                    attemptedRuntimes: runtimeChain.slice(0, attemptErrors.length + 1),
+                    runtime: out.runtime || 'internal'
+                  },
+                  out.runtime || 'internal'
+                )
+              }
             }
             pushCommandLog(`[meta] attempt internal failed: ${out.error || '执行失败'}`)
             emitPartial()
@@ -537,7 +557,19 @@ function createSubagentDispatch(deps) {
               parentRunId: parentRun || undefined,
               messages: out.messages || [],
               runtime: out.runtime,
-              attemptedRuntimes: runtimeChain.slice(0, attemptErrors.length + 1)
+              attemptedRuntimes: runtimeChain.slice(0, attemptErrors.length + 1),
+              envelope: buildExecutionEnvelope(
+                {
+                  success: true,
+                  result: out.result || '',
+                  commandLogs: [...commandLogLines],
+                  subSessionId,
+                  parentRunId: parentRun || undefined,
+                  attemptedRuntimes: runtimeChain.slice(0, attemptErrors.length + 1),
+                  runtime: out.runtime
+                },
+                out.runtime || `external:${rt}`
+              )
             }
           }
           pushCommandLog(`[meta] attempt external:${rt} failed: ${out.error || '执行失败'}`)
@@ -609,7 +641,17 @@ function createSubagentDispatch(deps) {
         error: attemptErrors.join(' | ') || '子 Agent 执行失败',
         subSessionId,
         parentRunId: parentRun || undefined,
-        commandLogs: [...commandLogLines]
+        commandLogs: [...commandLogLines],
+        envelope: buildExecutionEnvelope(
+          {
+            success: false,
+            error: attemptErrors.join(' | ') || '子 Agent 执行失败',
+            commandLogs: [...commandLogLines],
+            subSessionId,
+            parentRunId: parentRun || undefined
+          },
+          'internal'
+        )
       }
     }
     try {
@@ -622,7 +664,6 @@ function createSubagentDispatch(deps) {
         pushCommandLog('[meta] sub-agent run timeout')
         emitPartial()
         try { sessionRegistry.markError(subSessionId, '子 Agent 执行超时') } catch (_) {}
-        const { buildExecutionEnvelope } = require('../ai/execution-envelope')
         return {
           success: false,
           error: '子 Agent 执行超时',
@@ -632,6 +673,7 @@ function createSubagentDispatch(deps) {
           envelope: buildExecutionEnvelope({
             success: false,
             error: '子 Agent 执行超时',
+            commandLogs: [...commandLogLines],
             subSessionId,
             parentRunId: parentRun || undefined
           }, 'internal')

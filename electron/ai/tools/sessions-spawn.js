@@ -4,6 +4,7 @@
  */
 
 const { buildExecutionEnvelope } = require('../execution-envelope')
+const { ingestEnvelopeArtifacts } = require('../artifact-hub')
 
 const definition = {
   description: '派生子 Agent 执行一项任务。主 Agent 将任务与可选系统提示交给子 Agent，子 Agent 在独立会话中运行直至完成，最后把最终回复文本返回给主 Agent。用于任务分派、多角色协作、或需隔离上下文的子任务。可通过 provider 与 model 指定子 Agent 使用的供应商与模型（先调用 list_providers_and_models 获取可用列表）。',
@@ -86,6 +87,16 @@ function createSessionsSpawnTool(runSubChat) {
       })
 
       const envelope = buildExecutionEnvelope(out || {}, out?.runtime || 'internal')
+      try {
+        ingestEnvelopeArtifacts(envelope, {
+          sessionId: parentSessionId,
+          runSessionId: out?.subSessionId != null ? String(out.subSessionId) : '',
+          parentRunId,
+          chatId: String(context.feishuChatId || context.remoteId || ''),
+          channel: String(context.channel || ''),
+          source: 'sessions_spawn'
+        })
+      } catch (_) {}
       if (!out || !out.success) {
         return {
           success: false,
@@ -105,14 +116,25 @@ function createSessionsSpawnTool(runSubChat) {
         envelope
       }
     } catch (e) {
-      const parentRunId = String(context.runId || '').trim()
+      const parentRunIdCatch = String(context.runId || '').trim()
       const out = {
         success: false,
         error: e.message || String(e),
         runtime: 'internal',
-        parentRunId: parentRunId || undefined
+        parentRunId: parentRunIdCatch || undefined
       }
-      return { ...out, envelope: buildExecutionEnvelope(out, 'internal') }
+      const envCatch = buildExecutionEnvelope(out, 'internal')
+      try {
+        ingestEnvelopeArtifacts(envCatch, {
+          sessionId: normalizeParentSessionId(context.sessionId || ''),
+          runSessionId: '',
+          parentRunId: parentRunIdCatch,
+          chatId: String(context.feishuChatId || context.remoteId || ''),
+          channel: String(context.channel || ''),
+          source: 'sessions_spawn'
+        })
+      } catch (_) {}
+      return { ...out, envelope: envCatch }
     }
   }
 

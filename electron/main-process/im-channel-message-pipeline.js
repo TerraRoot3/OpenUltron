@@ -949,6 +949,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
     triggerAutoEvolveFromSession({
       projectPath,
       sessionId: mainSessionId,
+      runId: String(runId),
       reason: `${binding.channel || 'channel'}_completed`,
       force: false
     })
@@ -972,6 +973,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
     triggerAutoEvolveFromSession({
       projectPath,
       sessionId: mainSessionId,
+      runId: String(runId),
       reason: `${binding.channel || 'channel'}_failed`,
       force: false
     })

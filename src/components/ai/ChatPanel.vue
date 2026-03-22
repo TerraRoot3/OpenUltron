@@ -743,7 +743,9 @@ const buildSystemPrompt = () => {
   )
   parts.push(
     '## 经验总结与知识库\n' +
-    '知识库 LESSONS_LEARNED 会在**每次对话开始时自动注入**给你，无需再调 read_lessons_learned 即可直接按其中经验执行。用户要求「总结经验」或对话中产生可复用教训时，用 **lesson_save** 写入：须写**详细**——含① 具体场景/问题 ② 失败原因或成功做法 ③ 可复用的命令、路径或步骤（便于下次直接套用），避免只写一句话概括；这样后续对话才能快速利用。'
+    '知识库 LESSONS_LEARNED 会在**每次对话开始时自动注入**给你，无需再调 read_lessons_learned 即可直接按其中经验执行。用户要求「总结经验」或对话中产生可复用教训时，用 **lesson_save** 写入：须写**详细**——含① 具体场景/问题 ② 失败原因或成功做法 ③ 可复用的命令、路径或步骤（便于下次直接套用），避免只写一句话概括；这样后续对话才能快速利用。用户要求「整理/压缩/去重知识库」时调用 **consolidate_lessons_learned**（会先备份再写回）。\n' +
+    '**跨会话任务延续**：多步长任务可将未完成步骤、验收标准简要写入项目根目录 **AGENT.md**（若已有则追加一节），便于下次对话接着做。\n' +
+    '**用户拒绝与边界**：用户明确拒绝某类操作、或要求「以后不要再…」时，用 **lesson_save**，**category 填 `策略`**，写清禁止项与适用范围，避免再次触犯。'
   )
   parts.push(
     '## 脚本能力与技能沉淀\n' +
@@ -2041,10 +2043,15 @@ const handleExternalSend = (text) => {
 // 清空消息并开始新会话（旧会话文件保留，重置 sessionId 触发新建）
 const clearMessages = () => {
   // 开启新会话时主动自我进化：根据上一会话记录提炼经验写入知识库（后台执行，不阻塞）
+  const runIdForEvolve =
+    useAIChatInstance.lastCompletedRunId?.value != null && String(useAIChatInstance.lastCompletedRunId.value).trim()
+      ? String(useAIChatInstance.lastCompletedRunId.value).trim()
+      : undefined
   if (currentSessionId.value) {
     window.electronAPI.ai.evolveFromSession({
       projectPath: historyProjectPath(),
-      sessionId: currentSessionId.value
+      sessionId: currentSessionId.value,
+      runId: runIdForEvolve
     }).catch(() => {})
   }
   useAIChatInstance.clearMessages()

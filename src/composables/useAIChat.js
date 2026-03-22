@@ -10,6 +10,8 @@ export function useAIChat(hooks = {}) {
   const currentStreamContent = ref('')
   const error = ref('')
   const tokenUsage = ref(null) // { iteration, usage: { total/system/dialog/tool/... } }
+  /** 最近一次 ai-chat-complete 携带的 runId，供会话进化等主进程日志归因 */
+  const lastCompletedRunId = ref(null)
   const pendingConfirm = ref(null) // { confirmId, message, severity }
 
   let currentSessionId = null
@@ -152,6 +154,8 @@ export function useAIChat(hooks = {}) {
       if (!isCurrentSession(data)) return
       isStreaming.value = false
       currentStreamContent.value = ''
+      const rid = data?.runId != null && String(data.runId).trim() ? String(data.runId).trim() : ''
+      if (rid) lastCompletedRunId.value = rid
       // 若最后一条 assistant 无内容也无工具调用，给个占位，避免“没报错但也没看到任何回复”
       const last = messages.value[messages.value.length - 1]
       if (last?.role === 'assistant' && !last.content?.trim() && !(last.toolCalls?.length)) {
@@ -530,6 +534,7 @@ export function useAIChat(hooks = {}) {
     tokenUsage.value = null
     currentStreamContent.value = ''
     pendingConfirm.value = null
+    lastCompletedRunId.value = null
   }
 
   // 清理
@@ -550,6 +555,7 @@ export function useAIChat(hooks = {}) {
     isStreaming,
     error,
     tokenUsage,
+    lastCompletedRunId,
     pendingConfirm,
     sendMessage,
     stopChat,

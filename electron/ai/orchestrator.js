@@ -871,7 +871,7 @@ class Orchestrator {
               // 将 image_base64 注册为文件并用 file_url 替代，避免 base64 进入消息体（膨胀、耗 token）
               if (typeof result === 'object' && result && result.image_base64 && this.registerImageBase64) {
                 try {
-                  const fileUrl = await this.registerImageBase64(result.image_base64, sessionId)
+                  const fileUrl = await this.registerImageBase64(result.image_base64, sessionId, chatRunId)
                   if (fileUrl) {
                     result.file_url = fileUrl
                     delete result.image_base64

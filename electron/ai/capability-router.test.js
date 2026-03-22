@@ -1,6 +1,7 @@
 const {
   detectRequestedExternalRuntime,
   detectCapability,
+  computeCapabilitySignals,
   resolveCapabilityRoute
 } = require('./capability-router')
 
@@ -22,6 +23,31 @@ describe('capability-router', () => {
     expect(detectCapability('随便聊聊')).toBe('general')
   })
 
+  it('resolveCapabilityRoute logs structured decision when logger provided', () => {
+    const calls = []
+    const logger = {
+      info: (tag, payload) => {
+        calls.push({ tag, payload })
+      }
+    }
+    resolveCapabilityRoute({ text: '打包 zip 发我', runtime: '' }, logger)
+    expect(calls.length).toBe(1)
+    expect(calls[0].tag).toBe('[CapabilityRoute]')
+    expect(calls[0].payload.capability).toBe('artifact')
+    expect(calls[0].payload.deliveryPolicy).toBe('auto_send')
+  })
+
+  it('computeCapabilitySignals collects parallel keyword hits', () => {
+    expect(computeCapabilitySignals('')).toEqual([])
+    const mixed = computeCapabilitySignals('飞书文档里多维表格记录导出 zip 打包')
+    expect(mixed).toContain('docs')
+    expect(mixed).toContain('bitable')
+    expect(mixed).toContain('bitable_records')
+    expect(mixed).toContain('artifact')
+    const ext = computeCapabilitySignals('用 codex 写页面')
+    expect(ext).toContain('runtime:external:codex')
+  })
+
   it('resolveCapabilityRoute merges runtime and policies', () => {
     const r = resolveCapabilityRoute({ text: '用 codex 跑一下', runtime: '' })
     expect(r.executionMode).toBe('external:codex')
@@ -36,5 +62,7 @@ describe('capability-router', () => {
 
     const r3 = resolveCapabilityRoute({ text: '导出文件下载', runtime: '' })
     expect(r3.deliveryPolicy).toBe('auto_send')
+    expect(Array.isArray(r3.capabilitySignals)).toBe(true)
+    expect(r3.capabilitySignals).toContain('artifact')
   })
 })

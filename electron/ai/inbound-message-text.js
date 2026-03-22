@@ -358,12 +358,23 @@ function createInboundMessageTextHelpers (deps) {
       if (!raw) continue
       try {
         const obj = JSON.parse(raw)
+        const env = obj && typeof obj.envelope === 'object' ? obj.envelope : null
+        // 失败时优先采用 envelope（与 sessions_spawn / Execution Envelope 对齐，避免 result 字段误导渠道侧）
+        if (env && env.success === false) {
+          const parts = []
+          if (env.summary != null && String(env.summary).trim()) parts.push(String(env.summary).trim())
+          if (env.error && env.error.message) parts.push(String(env.error.message).trim())
+          if (env.error && env.error.code) parts.push(`[${String(env.error.code)}]`)
+          const line = parts.filter(Boolean).join(' ').trim()
+          if (line) {
+            last = line
+            continue
+          }
+        }
         const r = obj && obj.result != null ? String(obj.result).trim() : ''
         const s = obj && obj.stdout != null ? String(obj.stdout).trim() : ''
         const msg = obj && obj.message != null ? String(obj.message).trim() : ''
-        const envSummary = obj && obj.envelope && obj.envelope.summary != null
-          ? String(obj.envelope.summary).trim()
-          : ''
+        const envSummary = env && env.summary != null ? String(env.summary).trim() : ''
         if (r) last = r
         else if (s) last = s
         else if (msg) last = msg

@@ -143,6 +143,7 @@ export function installBrowserPolyfill(baseUrl = DEFAULT_API_BASE) {
       saveSessionSummary: (data) => invoke('ai-save-session-summary', [data]),
       listSessionSummaries: (data) => invoke('ai-list-session-summaries', [data]),
       evolveFromSession: (data) => invoke('ai-evolve-from-session', [data]).catch(() => ({ success: true })),
+      consolidateLessonsLearned: () => invoke('ai-consolidate-lessons-learned', []).catch(() => ({ success: false })),
       listConversations: (data) => invoke('ai-list-conversations', [data]),
       renameConversation: (data) => invoke('ai-rename-conversation', [data]),
       getSessions: () => invoke('ai-get-sessions', []),

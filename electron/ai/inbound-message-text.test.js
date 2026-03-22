@@ -41,4 +41,30 @@ describe('inbound-message-text', () => {
   it('compactSpawnResultText collapses whitespace after strip', () => {
     expect(h.compactSpawnResultText('  a\n\nb  ')).toBe('a b')
   })
+
+  it('extractLatestSessionsSpawnResult prefers envelope failure over result text', () => {
+    const messages = [
+      {
+        role: 'assistant',
+        tool_calls: [{ id: 'c1', type: 'function', function: { name: 'sessions_spawn', arguments: '{}' } }]
+      },
+      {
+        role: 'tool',
+        tool_call_id: 'c1',
+        content: JSON.stringify({
+          success: false,
+          result: '子任务已完成',
+          envelope: {
+            success: false,
+            summary: '子 Agent 未产出文件',
+            error: { code: 'MISSING_CONTEXT', message: '未找到路径' }
+          }
+        })
+      }
+    ]
+    const t = h.extractLatestSessionsSpawnResult(messages)
+    expect(t).toContain('子 Agent 未产出文件')
+    expect(t).toContain('MISSING_CONTEXT')
+    expect(t).not.toMatch(/^子任务已完成$/)
+  })
 })

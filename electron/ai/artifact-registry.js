@@ -56,6 +56,16 @@ function ensureDb() {
     CREATE INDEX IF NOT EXISTS idx_message_artifacts_session_message ON message_artifacts(session_id, message_id);
     CREATE INDEX IF NOT EXISTS idx_message_artifacts_artifact ON message_artifacts(artifact_id);
   `)
+  try {
+    const cols = db.prepare('PRAGMA table_info(artifacts)').all()
+    const hasParentRun = cols.some((c) => c && c.name === 'parent_run_id')
+    if (!hasParentRun) {
+      db.exec('ALTER TABLE artifacts ADD COLUMN parent_run_id TEXT')
+      appLogger?.info?.('[ArtifactRegistry] migrated: parent_run_id column')
+    }
+  } catch (e) {
+    appLogger?.warn?.('[ArtifactRegistry] migrate parent_run_id failed', { error: e.message || String(e) })
+  }
   if (!initialized) {
     initialized = true
     appLogger?.info?.('[ArtifactRegistry] initialized', { dbPath: DB_PATH, storeRoot: STORE_ROOT })
@@ -130,8 +140,8 @@ function insertArtifactRow(input = {}, { originalPath = '', managedPath = '', si
   const stmt = database.prepare(`
     INSERT INTO artifacts (
       id, kind, source, channel, session_id, run_session_id, message_id, chat_id, role,
-      path, original_path, filename, mime, size, sha256, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      path, original_path, filename, mime, size, sha256, created_at, parent_run_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
   stmt.run(
     artifactId,
@@ -149,7 +159,8 @@ function insertArtifactRow(input = {}, { originalPath = '', managedPath = '', si
     mime,
     size,
     sha256,
-    createdAt
+    createdAt,
+    String(input.parentRunId || '')
   )
   appLogger?.info?.('[ArtifactRegistry] register file', {
     id: artifactId,
@@ -157,6 +168,7 @@ function insertArtifactRow(input = {}, { originalPath = '', managedPath = '', si
     source: String(input.source || 'unknown'),
     sessionId: String(input.sessionId || ''),
     messageId: String(input.messageId || ''),
+    parentRunId: String(input.parentRunId || '') || undefined,
     path: managedPath
   })
   return {
@@ -225,11 +237,12 @@ function registerReferenceArtifact(input = {}) {
   const sha256 = crypto.createHash('sha256').update(`${kind}|${pathValue}|${originalPath}`).digest('hex')
 
   const database = ensureDb()
+  const parentRunId = String(input.parentRunId || '')
   const stmt = database.prepare(`
     INSERT INTO artifacts (
       id, kind, source, channel, session_id, run_session_id, message_id, chat_id, role,
-      path, original_path, filename, mime, size, sha256, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      path, original_path, filename, mime, size, sha256, created_at, parent_run_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
   stmt.run(
     artifactId,
@@ -247,7 +260,8 @@ function registerReferenceArtifact(input = {}) {
     mime,
     size,
     sha256,
-    createdAt
+    createdAt,
+    parentRunId
   )
   appLogger?.info?.('[ArtifactRegistry] register reference', {
     id: artifactId,
@@ -255,6 +269,7 @@ function registerReferenceArtifact(input = {}) {
     source,
     sessionId,
     messageId,
+    parentRunId: parentRunId || undefined,
     path: pathValue
   })
   return {

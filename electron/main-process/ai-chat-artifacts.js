@@ -6,7 +6,7 @@
 function createAiChatArtifactRegistrars(deps) {
   const { path, fs, getAppRoot, getAppRootPath, artifactRegistry, appLogger } = deps
 
-  async function registerImageBase64ForChat(base64, sessionId) {
+  async function registerImageBase64ForChat(base64, sessionId, parentRunId) {
     if (!base64 || typeof base64 !== 'string' || base64.length < 100) return null
     try {
       const rec = artifactRegistry.registerBase64Artifact({
@@ -14,7 +14,8 @@ function createAiChatArtifactRegistrars(deps) {
         ext: '.png',
         kind: 'image',
         source: 'chat_tool',
-        sessionId: String(sessionId || '')
+        sessionId: String(sessionId || ''),
+        parentRunId: String(parentRunId || '').trim()
       })
       if (!rec || !rec.path) return null
       const appRoot = getAppRoot()

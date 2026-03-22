@@ -265,6 +265,20 @@ async function execute(args, context = {}) {
     }
   }
   finalSent = true
+  let commandErrorCode
+  try {
+    const { normalizeErrorCode } = require('../execution-envelope')
+    const errHint = [
+      result.timedOut ? 'timeout' : '',
+      result.stderr,
+      result.exitCode != null ? `exit ${result.exitCode}` : ''
+    ]
+      .filter(Boolean)
+      .join(' ')
+    commandErrorCode = result.success && !result.timedOut ? undefined : normalizeErrorCode(errHint)
+  } catch (_) {
+    commandErrorCode = undefined
+  }
   try {
     commandExecutionLog.append(projectPath, sessionId, {
       toolName: 'execute_command',
@@ -272,6 +286,7 @@ async function execute(args, context = {}) {
       cwd,
       success: result.success,
       exitCode: result.exitCode,
+      errorCode: commandErrorCode,
       sessionId
     })
   } catch (e) { /* ignore */ }
