@@ -29,7 +29,8 @@ electron/
     deps.js                  # 可选：集中导出 app/store/mainWindow 等（慎用，防成上帝对象）
     inbound-model-command.js # 已存在：渠道 /model 解析与全局默认模型
     ipc/                     # 按域拆分的「只负责 registerChannel」模块
-      window-shell.js        # 窗口、通知、刷新信号
+      window-logs-notifications.js # 已存在：log/logs-*、window-*、refresh、系统通知、get-api-base-url
+      window-shell.js        # （可选后续）与上并列时再细分
       fs-dialog.js           # 打开/保存、读写文件
       terminal-process.js    # execute-command、PTY、kill
       browser-favorites.js   # 收藏夹 CRUD
@@ -159,3 +160,12 @@ require('./main-process/ipc/ai-config').register({ app, store, registerChannel, 
 ## 9. 文档维护
 
 大域拆分落地后，在本文件末尾追加 **「进度」** 小节（日期、PR、已迁出文件列表），并同步 `OPTIMIZATION-ROADMAP.md` P2。
+
+---
+
+## 10. 进度（已迁出）
+
+| 日期 | 文件 | 说明 |
+|------|------|------|
+| — | `main-process/inbound-model-command.js` | 渠道 `/model`、`applyGlobalDefaultModel` |
+| 2026-03-19 | `main-process/ipc/window-logs-notifications.js` | `log-to-frontend`、`logs-*`、`window-*`、`toggle-maximize`、刷新相关、`show-system-notification`、`get-api-base-url`（`getMainWindow` / `getApiServerPort` 由 main 注入） |

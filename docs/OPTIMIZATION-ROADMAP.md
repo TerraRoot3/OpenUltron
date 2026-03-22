@@ -11,6 +11,7 @@
 | **`electron/ai/ai-config-normalize.js`** | 统一 `modelPool` / `modelBindings` 规范化与 `finalizeAiModelFields`，供 `ai-save-config`、`applyGlobalDefaultModel`、`ai_config_control` 共用，减少三处逻辑漂移。 |
 | **`electron/main-process/inbound-model-command.js`** | 渠道首行 `/model` 解析与全局默认模型写入；`main.js` 通过 `createInboundModelCommandHandlers(deps)` 注入依赖。 |
 | **`docs/MAIN-PROCESS-MODULARIZATION.md`** | `main.js` 按域拆分蓝图：目录约定、`registerChannel` 分组、迁移顺序、风险与检查清单。 |
+| **`electron/main-process/ipc/window-logs-notifications.js`** | 日志 / 窗口 / 刷新 / 系统通知 / `get-api-base-url` IPC 从 `main.js` 迁出，依赖注入。 |
 
 ---
 

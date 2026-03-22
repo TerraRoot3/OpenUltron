@@ -29,6 +29,7 @@ const artifactRegistry = require('./ai/artifact-registry')
 const aiBrowserManager = require('./ai/browser-window-manager')
 const { resolveCapabilityRoute, detectRequestedExternalRuntime } = require('./ai/capability-router')
 const { getLogPath, readTail, getForAi, logger: appLogger, patchConsole } = require('./app-logger')
+const { registerWindowLogsAndNotificationsIpc } = require('./main-process/ipc/window-logs-notifications')
 const { filterSessionsList, isRunSessionId } = require('./ai/sessions-list-filter')
 const skillPack = require('./ai/skill-pack')
 const { stopAllWebAppServices } = require('./web-apps/process-manager')
@@ -717,104 +718,18 @@ function createMenu() {
 // 当 Electron 完成初始化并准备创建浏览器窗口时调用此方法
 console.log('Electron app starting...')
 
-// 前端调试日志处理器
-registerChannel('log-to-frontend', async (event, message) => {
-  console.log(`🔍 前台调试: ${message}`)
-  return true
-})
-
-// 日志页：路径、tail、供 AI 分析
-registerChannel('logs-get-path', () => getLogPath())
-registerChannel('logs-read-tail', (event, lines) => readTail(lines == null ? 2000 : lines))
-registerChannel('logs-get-for-ai', (event, lines) => getForAi(lines == null ? 500 : lines))
-
-// 窗口操作（用于自定义标题栏：Mac 预留红绿灯空间 + 拖拽，Windows 提供 min/max/close）
-function getMainOrFocusedWindow() {
-  return BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]
-}
-registerChannel('window-minimize', async () => {
-  const window = getMainOrFocusedWindow()
-  if (window) window.minimize()
-  return { success: !!window }
-})
-registerChannel('window-close', async () => {
-  const window = getMainOrFocusedWindow()
-  if (window) window.close()
-  return { success: !!window }
-})
-registerChannel('toggle-maximize', async (event) => {
-  try {
-    const window = getMainOrFocusedWindow()
-    if (!window) {
-      return { success: false, error: 'No window found' }
-    }
-    if (window.isMaximized()) {
-      window.unmaximize()
-      return { success: true, maximized: false }
-    } else {
-      window.maximize()
-      return { success: true, maximized: true }
-    }
-  } catch (error) {
-    return { success: false, error: error.message }
-  }
-})
-
-// Store 已在文件顶部声明
-
-// 刷新相关处理器
-registerChannel('send-refresh-on-focus', async (event) => {
-  try {
-    // 发送刷新事件到渲染进程（用于地址栏刷新按钮或 Command+R）
-    if (mainWindow && mainWindow.webContents) {
-      mainWindow.webContents.send('refresh-on-focus')
-    }
-    return true
-  } catch (error) {
-    console.error('❌ 发送刷新事件失败:', error.message)
-    return false
-  }
-})
-
-registerChannel('notify-refresh-complete', async (event) => {
-  try {
-    // 通知刷新完成
-    if (mainWindow && mainWindow.webContents) {
-      mainWindow.webContents.send('refresh-complete')
-    }
-    return true
-  } catch (error) {
-    console.error('❌ 发送刷新完成事件失败:', error.message)
-    return false
-  }
-})
-
-registerChannel('show-system-notification', async (event, payload = {}) => {
-  try {
-    if (!SystemNotification.isSupported()) {
-      return { success: false, error: '当前系统不支持原生通知' }
-    }
-    const title = String(payload.title != null ? payload.title : 'OpenUltron').slice(0, 200)
-    const body = String(payload.body != null ? payload.body : '').slice(0, 500)
-    const n = new SystemNotification({
-      title: title || 'OpenUltron',
-      body,
-      silent: payload.silent === true
-    })
-    n.show()
-    return { success: true }
-  } catch (e) {
-    return { success: false, error: e.message || String(e) }
-  }
+registerWindowLogsAndNotificationsIpc({
+  registerChannel,
+  getLogPath,
+  readTail,
+  getForAi,
+  BrowserWindow,
+  SystemNotification,
+  getMainWindow: () => mainWindow,
+  getApiServerPort: () => apiServerPort
 })
 
 // 配置存储：仅 IPC 转发到 invokeRegistry（实现已在 registerConfigHandlers 中注册，HTTP 直连 invokeRegistry）
-// get-api-base-url 也进 registry，便于浏览器查询 API 地址
-registerChannel('get-api-base-url', () => ({
-  url: apiServerPort ? `http://127.0.0.1:${apiServerPort}` : null,
-  port: apiServerPort || null
-}))
-
 ipcMain.handle('get-config', (event, key) => invokeRegistry.invoke('get-config', [key]))
 ipcMain.handle('set-config', (event, key, value) => invokeRegistry.invoke('set-config', [key, value]))
 ipcMain.handle('get-all-configs', () => invokeRegistry.invoke('get-all-configs', []))
