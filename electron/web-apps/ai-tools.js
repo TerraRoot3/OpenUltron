@@ -20,7 +20,8 @@ function parseWebappToolFullName(fullName) {
 }
 
 /**
- * 是否合并 manifest.aiTools（受 store 开关与白名单约束）
+ * 是否合并 manifest.aiTools：路径在 web-apps 下即合并；不再按 scope/allowlist 约束。
+ * 仅当用户在设置中关闭「合并 Web 应用 AI 工具」时整体不合并（aiWebAppToolsEnabled === false）。
  * @param {string} projectPath
  * @param {() => object} getStore electron-store
  */
@@ -34,21 +35,8 @@ function shouldMergeWebAppTools(projectPath, getStore) {
   } catch {
     store = null
   }
-  if (!store || typeof store.get !== 'function') return true
-  if (!store.get('aiWebAppToolsEnabled', true)) return false
-  const rawScope = store.get('aiWebAppToolsScope', null)
-  const allow = store.get('aiWebAppToolsAllowlist', [])
-  const allowArr = Array.isArray(allow) ? allow.map((x) => String(x || '').trim()).filter(Boolean) : []
-  /** @type {'all'|'allowlist'} */
-  let scope = rawScope === 'all' || rawScope === 'allowlist' ? rawScope : null
-  if (scope == null) {
-    scope = allowArr.length > 0 ? 'allowlist' : 'all'
-  }
-  if (scope === 'all') return true
-  const manifest = readManifestJson(p)
-  const id = manifest && String(manifest.id || '').trim()
-  if (!id) return false
-  return allowArr.length > 0 && allowArr.includes(id)
+  if (store && typeof store.get === 'function' && store.get('aiWebAppToolsEnabled', true) === false) return false
+  return true
 }
 
 /**
