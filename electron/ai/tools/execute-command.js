@@ -143,6 +143,7 @@ async function execute(args, context = {}) {
   const projectPath = context.projectPath || ''
   const sessionId = context.sessionId || ''
   const toolCallId = context.toolCallId || ''
+  const abortSignal = context.abortSignal
   const hasExplicitTimeout = Object.prototype.hasOwnProperty.call(args || {}, 'timeout')
   const effectiveTimeout = hasExplicitTimeout
     ? clampTimeout(timeout)
@@ -150,6 +151,18 @@ async function execute(args, context = {}) {
 
   if (!command || !cwd) {
     return { success: false, error: '缺少 command 或 cwd 参数' }
+  }
+
+  if (abortSignal?.aborted) {
+    return {
+      success: false,
+      error: '已取消',
+      command,
+      cwd,
+      exitCode: 130,
+      timedOut: false,
+      cancelled: true
+    }
   }
 
   if (isRiskyCommand(command)) {
@@ -236,6 +249,7 @@ async function execute(args, context = {}) {
     script,
     cwd,
     timeout: timeoutMs,
+    ...(abortSignal ? { signal: abortSignal } : {}),
     onStdout: (chunk) => {
       stdoutStream += String(chunk || '')
       emitProgress(false)

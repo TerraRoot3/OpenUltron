@@ -11,12 +11,12 @@ const DEFAULT_TIMEOUT = 600000
 const MAX_BUFFER = 1024 * 1024 * 5
 
 /**
- * @param {{ script: string; cwd: string; timeout?: number; env?: Record<string, string>; onStdout?: Function; onStderr?: Function }} options
+ * @param {{ script: string; cwd: string; timeout?: number; env?: Record<string, string>; onStdout?: Function; onStderr?: Function; signal?: AbortSignal }} options
  * @param {{ projectPath?: string; sessionId?: string }} [context]
- * @returns {Promise<{ success: boolean; stdout?: string; stderr?: string; exitCode?: number; error?: string; timedOut?: boolean }>}
+ * @returns {Promise<{ success: boolean; stdout?: string; stderr?: string; exitCode?: number; error?: string; timedOut?: boolean; cancelled?: boolean }>}
  */
 async function execute(options, context) {
-  const { script, cwd, timeout = DEFAULT_TIMEOUT, env, onStdout, onStderr } = options || {}
+  const { script, cwd, timeout = DEFAULT_TIMEOUT, env, onStdout, onStderr, signal: abortSignal } = options || {}
   if (!script || !cwd) {
     return { success: false, error: '缺少 script 或 cwd' }
   }
@@ -24,6 +24,10 @@ async function execute(options, context) {
   if (dangerous.some(d => script.includes(d))) {
     return { success: false, error: '命令被安全策略拦截' }
   }
+  if (abortSignal && abortSignal.aborted) {
+    return { success: false, error: '已取消', stdout: '', stderr: '', exitCode: 130, timedOut: false, cancelled: true }
+  }
+
   const inProcess = tryInProcess(script, cwd)
   if (inProcess.handled) {
     const maxLen = 8000
@@ -69,12 +73,14 @@ async function execute(options, context) {
     let stdout = ''
     let stderr = ''
     let timedOut = false
+    let userCancelled = false
     let settled = false
 
-    const killProcessTree = () => {
+    const killProcessTree = (reason = 'timeout') => {
       try {
         if (!child || !child.pid) return
-        appLogger?.warn?.('[ShellExecutor] 超时，终止进程组', {
+        const msg = reason === 'abort' ? '[ShellExecutor] 用户取消，终止进程组' : '[ShellExecutor] 超时，终止进程组'
+        appLogger?.warn?.(msg, {
           pid: child.pid,
           timeoutSec: Math.floor(timeout / 1000),
           scriptPreview,
@@ -106,34 +112,48 @@ async function execute(options, context) {
     const timer = setTimeout(() => {
       timedOut = true
       stderr = appendChunk(stderr, `\n命令执行超时 (${Math.floor(timeout / 1000)}秒)`)
-      killProcessTree()
+      killProcessTree('timeout')
     }, timeout)
+
+    const onAbortSignal = () => {
+      if (settled) return
+      userCancelled = true
+      stderr = appendChunk(stderr, '\n已取消')
+      killProcessTree('abort')
+    }
+    if (abortSignal) {
+      if (abortSignal.aborted) onAbortSignal()
+      else abortSignal.addEventListener('abort', onAbortSignal, { once: true })
+    }
 
     child.on('error', (err) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      if (abortSignal) abortSignal.removeEventListener('abort', onAbortSignal)
       resolve({
         success: false,
         error: err.message,
         stdout: trimOutput(stdout),
         stderr: trimOutput(stderr),
         exitCode: 1,
-        timedOut
+        timedOut,
+        cancelled: userCancelled
       })
     })
 
-    child.on('close', (code, signal) => {
+    child.on('close', (code, osSignal) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
-      const exitCode = timedOut ? -1 : (code ?? (signal ? 1 : 0))
-      const success = !timedOut && exitCode === 0
+      if (abortSignal) abortSignal.removeEventListener('abort', onAbortSignal)
+      const exitCode = timedOut ? -1 : (userCancelled ? 130 : (code ?? (osSignal ? 1 : 0)))
+      const success = !timedOut && !userCancelled && exitCode === 0
       if (!success) {
         const stderrTail = (stderr || '').trim().slice(-1200)
         appLogger?.warn?.('[ShellExecutor] 命令未成功结束', {
           exitCode,
-          signal: signal || null,
+          signal: osSignal || null,
           timedOut,
           scriptPreview,
           stderrTail,
@@ -148,7 +168,8 @@ async function execute(options, context) {
         stdout: trimOutput(stdout),
         stderr: trimOutput(stderr),
         exitCode,
-        timedOut
+        timedOut,
+        cancelled: userCancelled
       })
     })
   })

@@ -26,6 +26,10 @@ function off(event, handler) {
 }
 
 /**
+ * 同步触发：依次调用 handlers，**不等待** async 函数完成；若某个 handler 返回 Promise，
+ * 本函数会**提前 return 该 Promise** 且**不再调用**后续 handlers（历史行为，勿依赖）。
+ * 多订阅者且需全部执行完毕时请用 **emitAsync** 或显式 pipeline。详见 `docs/MESSAGE-CONTRACT.md` §4。
+ *
  * @param {CoreEvent} event
  * @param {any} payload
  * @returns {void | Promise<void>}
@@ -44,8 +48,8 @@ function emit(event, payload) {
 }
 
 /**
- * 异步 emit：等待所有返回 Promise 的 handler 完成（本实现为同步调用，首个 async 不 await）
- * 若需严格串行可在此处改为 await 每个 handler。
+ * 等待所有 handler 完成（各自 catch 后仍计入 Promise.all）。
+ * 新增「上下文 hook」、多步副作用时优先使用本方法而非 emit。
  */
 function emitAsync(event, payload) {
   const list = this._handlers[event]

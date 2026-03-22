@@ -76,6 +76,24 @@ function canSend(sender) {
   return true
 }
 
+/**
+ * 同 session 新消息是否「明显只想停掉当前任务」——命中则跳过 LLM 分类，省一次请求。
+ * @returns {boolean|null} true=停止, false=明显不停止, null=交下游模型判断
+ */
+function quickClassifyStopPreviousIntent(text) {
+  const raw = String(text || '').trim()
+  if (!raw) return null
+  if (raw.length > 96) return null
+  const core = raw.replace(/[\s.。!！?？…,，;；、]+$/u, '').trim()
+  if (!core) return null
+  if (/^(别做了|不要做了|不要了|算了|不用了|先停|先别|停一下|停一停|停下|停掉|停止|取消吧|取消任务|取消执行|取消|中断|别继续|别跑了)(了|吧|啊|呀|哈|哦|呗)?$/u.test(core)) {
+    return true
+  }
+  if (/^(stop|cancel|abort|halt)(\.|!)?$/i.test(core)) return true
+  if (/^(please\s+)?(stop|cancel)(\s+(it|now|this|that))?(\.|!)?$/i.test(core)) return true
+  return null
+}
+
 function pickRecentUserIntentText(messages, maxUserMessages = 3, maxChars = 3200) {
   const list = Array.isArray(messages) ? messages : []
   const users = list.filter(m => m && m.role === 'user').slice(-Math.max(1, maxUserMessages))
@@ -257,6 +275,7 @@ class Orchestrator {
     }
 
     // 同 session 新消息会开新 run 并覆盖 activeSessions[sessionId]；旧 run 仍在后台跑，finally 里只删“当前仍是自己的”条目，避免旧 run 结束时误删新 run
+    const prevActive = this.activeSessions.get(sessionId)
     const abortController = new AbortController()
     this.activeSessions.set(sessionId, {
       abortController,
@@ -268,6 +287,15 @@ class Orchestrator {
       feishuSenderOpenId: feishuSenderOpenId || '',
       feishuSenderUserId: feishuSenderUserId || ''
     })
+    if (prevActive?.chatRunId && prevActive.chatRunId !== chatRunId) {
+      try {
+        appLogger?.info?.('[Orchestrator] 同 session 新开 run，旧 run 仍在后台直至结束或中止', {
+          sessionId: String(sessionId).slice(0, 24),
+          previousRunId: prevActive.chatRunId,
+          runId: chatRunId
+        })
+      } catch (_) { /* ignore */ }
+    }
 
     // 用 panelId 操作 session-registry（panelId 在页面生命周期内稳定）
     // 没有 panelId 时回退到 sessionId（Heartbeat 等后台场景）
@@ -394,6 +422,14 @@ class Orchestrator {
       const currentModelText = loadPrompt('current-model', { model: useModel })
       if (currentModelText) memParts.push(currentModelText)
 
+      {
+        const d = new Date()
+        const todayStr = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`
+        memParts.push(
+          `[当前日期]\n当前日期：${todayStr}。回答中凡涉及「今天」「本月」「当前」等时间，必须使用此日期（${todayStr}），不得使用搜索结果或其它来源的日期。`
+        )
+      }
+
       // 0.5 飞书会话（从 prompts/feishu-session.md 或默认）
       const session = this.activeSessions.get(sessionId)
       if (session && session.feishuChatId) {
@@ -434,6 +470,23 @@ class Orchestrator {
               lines.join('\n') +
               (allLines.length > lines.length ? `\n- ...(其余 ${allLines.length - lines.length} 个已省略)` : '') +
               '\n\n**何时必须用技能**：用户要求「用某技能 / 按 xxx 技能 / 查天气」等时，必须先 **get_skill(action="get", skill_id="完整id")** 再按其步骤执行（常见为 execute_command 调用 curl 等），禁止跳过 get_skill 凭记忆编造天气或步骤。'
+            )
+            memParts.push(
+              '[技能执行与 git 规则]\n' +
+              `你有上述可用技能（共 ${allLines.length} 个），请根据用户意图自动判断是否需要使用。需要使用某个技能时，先调用 get_skill(action="get", skill_id="...") 获取完整内容（含描述和步骤）后严格执行。\n\n` +
+              '## 技能自动优化规则\n' +
+              '当你执行某个技能并在对话中做了调整（如修复了步骤错误、补充了遗漏环节、根据用户反馈优化了流程），' +
+              '在对话结束前必须调用 install_skill(action="update") 将最终正确的版本写回该技能文件。\n' +
+              '触发条件（满足任一即更新）：\n' +
+              '1. 执行技能时遇到报错，调整后成功\n' +
+              '2. 用户指出技能步骤有问题并确认了修正方案\n' +
+              '3. 你主动补充了技能中缺失的关键步骤且用户认可\n' +
+              '4. 你通过 run_script 写出的脚本运行成功且可复用，必须用 install_skill 保存为 type: script 技能\n' +
+              '更新时保留原有 frontmatter，只修改正文内容，不得降低原有步骤的完整性。\n\n' +
+              '## git commit 确认规则\n' +
+              '执行 git commit 前调用 user_confirmation 时，必须带上 allow_push: true 参数，' +
+              '让用户可以选择「确认并推送」一步完成提交+推送。若用户选择「确认并推送」，' +
+              '工具返回结果中 push_after_commit 为 true，此时在 commit 成功后立即执行 git push origin <当前分支>。'
             )
           }
         } catch (e) {
@@ -521,11 +574,32 @@ class Orchestrator {
         }
       }
 
+      // 3.1 项目 AGENT.md（与主窗口原 ChatPanel 注入路径一致：.gitManager/AGENT.md）
+      {
+        const pp = String(projectPath || '').trim()
+        if (pp && !pp.startsWith('__') && path.isAbsolute(pp)) {
+          try {
+            const agentMdPath = path.join(pp, '.gitManager', 'AGENT.md')
+            if (fs.existsSync(agentMdPath)) {
+              const raw = fs.readFileSync(agentMdPath, 'utf-8').trim()
+              if (raw) memParts.push(`## 项目上下文（AGENT.md）\n${clipInjectedSection(raw, 4000)}`)
+            }
+          } catch (_) { /* ignore */ }
+        }
+      }
+
       // 4. 知识库经验教训（自动注入，无需再调 read_lessons_learned 即可直接利用）
       const lessonsContent = readLessonsLearned()
       if (lessonsContent && lessonsContent.trim()) {
         memParts.push(`[知识库 - 经验教训]\n${clipInjectedSection(lessonsContent.trim(), 2200)}\n\n**使用方式**：优先复用上述经验，避免重复试错；写 lesson_save 时记录具体场景、原因、命令或路径。`)
       }
+
+      memParts.push(
+        '[记忆工具选用]\n' +
+        '• **memory_save**：用户偏好、项目配置、重要事实等「可检索的碎片事实」。\n' +
+        '• **lesson_save**：踩坑与可复用做法、命令/路径/步骤类「经验教训」（写入 LESSONS_LEARNED）；用户明确拒绝某类操作时用 category **策略**。\n' +
+        '偏「是什么」走 memory_save；偏「下次别怎样 / 怎样做」走 lesson_save，避免混用。'
+      )
 
       const memSystemMsg = {
         role: 'system',
@@ -859,7 +933,10 @@ class Orchestrator {
                 if (isScreenshotTool) {
                   appLogger?.info?.('[AI][ToolCall] 执行截图相关工具', { name: toolName, sessionId, argsPreview: JSON.stringify(args).slice(0, 200) })
                 }
-                result = await this._executeTool(toolCall.function.name, args, wrappedSender, sessionId, toolCall.id)
+                result = await this._executeTool(toolCall.function.name, args, wrappedSender, sessionId, toolCall.id, {
+                  abortSignal: abortController.signal,
+                  chatRunId
+                })
               } catch (e) {
                 result = {
                   error: e.message,
@@ -968,7 +1045,8 @@ class Orchestrator {
           currentMessages.push({
             role: 'user',
             content: `[系统] ${loopError} 请换一种思路或命令再试，勿重复相同操作；若仍无法完成再告知用户。`,
-            _hideInUI: true
+            _hideInUI: true,
+            meta: { hideInUI: true }
           })
           }
           continue
@@ -1022,7 +1100,7 @@ class Orchestrator {
       await ensurePromptCompressed({ maxPasses: 2, notify: false, bypassCooldown: true })
       wrappedSender.send('ai-chat-complete', { sessionId, messages: currentMessages })
       sessionRegistry.markComplete(registryId)
-      this._extractMemoriesAsync(currentMessages, projectPath, config, useModel, isAnthropic, sessionId)
+      this._extractMemoriesAsync(currentMessages, projectPath, config, useModel, isAnthropic, sessionId, chatRunId)
       this._notifyFeishuOnComplete(currentMessages)
       return { success: true, messages: currentMessages }
     } catch (error) {
@@ -1031,7 +1109,7 @@ class Orchestrator {
         await ensurePromptCompressed({ maxPasses: 2, notify: false, bypassCooldown: true })
         wrappedSender.send('ai-chat-complete', { sessionId, messages: currentMessages })
         sessionRegistry.markComplete(registryId)
-        this._extractMemoriesAsync(currentMessages, projectPath, config, useModel, isAnthropic, sessionId)
+        this._extractMemoriesAsync(currentMessages, projectPath, config, useModel, isAnthropic, sessionId, chatRunId)
         this._notifyFeishuOnComplete(currentMessages)
         return { success: true, messages: currentMessages }
       } else {
@@ -1176,7 +1254,7 @@ class Orchestrator {
   }
 
   // 异步提取对话中的记忆（后台运行，不影响用户体验）
-  async _extractMemoriesAsync(messages, projectPath, config, model, isAnthropic, sessionId) {
+  async _extractMemoriesAsync(messages, projectPath, config, model, isAnthropic, sessionId, chatRunId) {
     // 仅对包含有效对话的消息执行
     const dialogMsgs = messages.filter(m => m.role === 'user' || m.role === 'assistant')
     if (dialogMsgs.length < 2) return
@@ -1253,6 +1331,14 @@ class Orchestrator {
       if (savedContents.length > 0) appendToDiary(savedContents)
       if (savedContents.length > 0) {
         console.log(`[AI] 自动提取 ${savedContents.length} 条记忆`)
+        try {
+          appLogger?.info?.('[AI][Memory] auto_fragment_extract', {
+            runId: String(chatRunId || '').slice(0, 48),
+            sessionId: String(sessionId || '').slice(0, 32),
+            savedCount: savedContents.length,
+            projectPathSlice: String(projectPath || '').slice(0, 120)
+          })
+        } catch (_) { /* ignore */ }
       }
     } catch (e) {
       // 静默失败，不影响主流程
@@ -1290,6 +1376,11 @@ class Orchestrator {
     if (!userMessageText || typeof userMessageText !== 'string') return false
     const trimmed = userMessageText.trim()
     if (!trimmed) return false
+    const quick = quickClassifyStopPreviousIntent(trimmed)
+    if (quick === true) {
+      appLogger?.info?.('[Orchestrator] 关键词判定用户意图为先停止当前任务', { preview: trimmed.slice(0, 40) })
+      return true
+    }
     const config = this.getConfig()
     if (!config?.apiKey || !String(config.apiKey).trim()) return false
     const systemPrompt = 'You are a classifier. A task is currently running in the chat. The user just sent a new message (may be in Chinese or English, e.g. 停止/先停掉/别做了/cancel/stop). Does the user clearly want to stop, cancel or abort the current task (before doing something else)? Reply with exactly YES or NO, nothing else. If the message is ambiguous or just normal content, reply NO.'
@@ -2363,13 +2454,15 @@ class Orchestrator {
     })
   }
 
-  async _executeTool(name, args, sender, sessionId, toolCallId = '') {
+  async _executeTool(name, args, sender, sessionId, toolCallId = '', runMeta = {}) {
     if (!this.toolRegistry) {
       return { error: `工具系统未初始化` }
     }
+    const { abortSignal, chatRunId: metaRunId } = runMeta || {}
     // Route MCP tools to MCP manager
     if (name.startsWith('mcp__') && this.mcpManager) {
-      return await this.mcpManager.callTool(name, args)
+      if (abortSignal?.aborted) return { error: '已取消' }
+      return await this.mcpManager.callTool(name, args, { signal: abortSignal })
     }
     // manifest.aiTools（§6）：webapp__<appId>__<name>
     if (name.startsWith('webapp__')) {
@@ -2529,7 +2622,8 @@ class Orchestrator {
       sessionId,
       projectPath,
       toolCallId,
-      runId: String(session?.chatRunId || '').trim(),
+      runId: String(metaRunId || session?.chatRunId || '').trim(),
+      abortSignal: abortSignal || undefined,
       channel: session?.feishuChatId ? 'feishu' : 'main',
       remoteId: session?.feishuChatId || '',
       feishuChatId: session?.feishuChatId || '',

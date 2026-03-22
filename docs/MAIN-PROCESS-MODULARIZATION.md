@@ -217,6 +217,7 @@ require('./main-process/ipc/ai-config').register({ app, store, registerChannel, 
 | 2026-03-19 | `main-process/channel-run-state.js` | `createChannelRunState`：IM 同会话多 run 的 Map/Set 与 `stopPreviousRunsForChannel` / `waitForPreviousRuns`（注入 `aiOrchestrator`） |
 | 2026-03-19 | `main-process/ipc/channels-session-completed-send.js` | `registerChannelsSessionCompletedSend`：`chat.session.completed` 出站产物登记、`rememberSessionArtifacts`、`chatChannelRegistry.send`、飞书失败兜底 |
 | 2026-03-19 | `main-process/im-tool-call-format.js` | `parseToolCallArgs`、`formatCommandFromToolCall`（主进程直跑重试与飞书流式命令行展示共用） |
+| 2026-03-22 | `main-process/ai-core-register-late-tools.js` | `registerMidStackAiTools` / `registerPostGatewayAiTools`：从 `ai-core-stack-bootstrap` 迁出 sessions_spawn、consolidate、list/verify 模型、stop/wait 等工具注册 |
 | 2026-03-19 | `main-process/im-channel-message-pipeline.js` | `registerImChannelMessagePipeline`：`chat.message.received` → `processMessageReplace` / `handleChatMessageReceived`（飞书/TG/钉钉协调 Agent 全链路） |
 | 2026-03-19 | `main-process/im-channel-artifacts.js` | `createImChannelArtifactHandlers`：会话产物缓存、`registerArtifactsFromItems`、飞书引用解析与 `registerReferenceArtifactsFromMessages` |
 | 2026-03-19 | `main-process/im-channel-session-page-target.js` | `createSessionPageTargetHelpers`：`findRecentPageTarget` / `findRecentHtmlArtifact`（子 Agent 委派时注入主会话网页上下文） |

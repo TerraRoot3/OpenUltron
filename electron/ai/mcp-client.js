@@ -173,6 +173,12 @@ const nextId = () => _rpcId++
 // 将 MCP server/tool name 转为合法的 function name（只保留 a-z A-Z 0-9 _ -）
 const sanitizeName = (name) => name.replace(/[^a-zA-Z0-9_-]/g, '_')
 
+function mcpAbortError() {
+  const e = new Error('已取消')
+  e.code = 'ABORT_ERR'
+  return e
+}
+
 // 确保 inputSchema 是合法的 OpenAI function parameters 格式
 const sanitizeSchema = (schema) => {
   if (schema && typeof schema === 'object' && schema.type === 'object') return schema
@@ -379,7 +385,9 @@ class StdioMcpConnection {
     console.log(`[MCP:${this.name}] 加载了 ${this.tools.length} 个工具: ${this.tools.map(t => t._originalName).join(', ')}`)
   }
 
-  async callTool(originalName, args) {
+  async callTool(originalName, args, options = {}) {
+    const signal = options?.signal
+    if (signal?.aborted) return { error: '已取消' }
     if (this.name === 'chrome-devtools') {
       if ((originalName === 'navigate_page' || originalName === 'new_page') && args && typeof args.url === 'string') {
         const nextUrl = String(args.url || '').trim()
@@ -405,8 +413,11 @@ class StdioMcpConnection {
       result = await this._sendRequest('tools/call', {
         name: originalName,
         arguments: args || {}
-      }, timeoutMs)
+      }, timeoutMs, signal)
     } catch (e) {
+      if (e && (e.code === 'ABORT_ERR' || e.message === '已取消')) {
+        return { error: '已取消' }
+      }
       const isTimeout = /超时|timeout/i.test(String(e?.message || ''))
       appLogger?.warn?.(`[MCP] ${this.name} 工具 ${originalName} 执行失败${isTimeout ? '（超时）' : ''}: ${e?.message || e}`)
       if (isTimeout && this.name === 'chrome-devtools' && longTimeoutTools.includes(originalName)) {
@@ -712,36 +723,51 @@ class StdioMcpConnection {
     // 忽略通知（notifications）
   }
 
-  _sendRequest(method, params, timeoutMs = 30000) {
+  _sendRequest(method, params, timeoutMs = 30000, signal = null) {
     return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(mcpAbortError())
+        return
+      }
       const id = nextId()
       let settled = false
-      const timer = setTimeout(() => {
-        if (settled) return
-        settled = true
-        if (this.pending.has(id)) {
-          this.pending.delete(id)
-          const errMsg = `MCP "${this.name}" 请求超时: ${method}`
-          appLogger?.warn?.('[MCP]', errMsg)
-          reject(new Error(errMsg))
+      let abortHandler = null
+      const clearAbort = () => {
+        if (abortHandler && signal) {
+          signal.removeEventListener('abort', abortHandler)
+          abortHandler = null
         }
-      }, timeoutMs)
-      const done = (fn, arg) => {
+      }
+      const finalize = (fn, arg) => {
         if (settled) return
         settled = true
         clearTimeout(timer)
-        this.pending.delete(id)
+        clearAbort()
+        if (this.pending.has(id)) this.pending.delete(id)
         fn(arg)
       }
+      const timer = setTimeout(() => {
+        if (!this.pending.has(id)) return
+        const errMsg = `MCP "${this.name}" 请求超时: ${method}`
+        appLogger?.warn?.('[MCP]', errMsg)
+        finalize(reject, new Error(errMsg))
+      }, timeoutMs)
+      if (signal) {
+        abortHandler = () => {
+          if (!this.pending.has(id)) return
+          finalize(reject, mcpAbortError())
+        }
+        signal.addEventListener('abort', abortHandler, { once: true })
+      }
       this.pending.set(id, {
-        resolve: (v) => done(resolve, v),
-        reject: (e) => done(reject, e)
+        resolve: (v) => finalize(resolve, v),
+        reject: (e) => finalize(reject, e)
       })
       const msg = JSON.stringify({ jsonrpc: '2.0', id, method, params })
       try {
         this.process.stdin.write(msg + '\n')
       } catch (e) {
-        done(reject, e)
+        finalize(reject, e)
       }
     })
   }
@@ -825,10 +851,19 @@ class SseMcpConnection {
     console.log(`[MCP:${this.name}] 加载了 ${this.tools.length} 个工具`)
   }
 
-  async callTool(originalName, args) {
-    const result = this.sessionId
-      ? await this._postRequest('tools/call', { name: originalName, arguments: args || {} })
-      : await this._sendRequest('tools/call', { name: originalName, arguments: args || {} })
+  async callTool(originalName, args, options = {}) {
+    const signal = options?.signal
+    if (signal?.aborted) return { error: '已取消' }
+    const toolCallExtra = { signal, timeoutMs: 120000 }
+    let result
+    try {
+      result = this.sessionId
+        ? await this._postRequest('tools/call', { name: originalName, arguments: args || {} }, toolCallExtra)
+        : await this._sendRequest('tools/call', { name: originalName, arguments: args || {} }, toolCallExtra)
+    } catch (e) {
+      if (e && (e.code === 'ABORT_ERR' || e.message === '已取消')) return { error: '已取消' }
+      throw e
+    }
     if (result?.isError) {
       return { error: result.content?.map(c => c.text || '').join('\n') || '工具执行失败' }
     }
@@ -858,8 +893,13 @@ class SseMcpConnection {
   }
 
   // 新版：POST JSON-RPC，读取响应（可能是 JSON 也可能是 SSE stream）
-  _postRequest(method, params) {
+  _postRequest(method, params, extra = {}) {
+    const { signal, timeoutMs = 30000 } = extra
     return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(mcpAbortError())
+        return
+      }
       const id = method.startsWith('notifications/') ? undefined : nextId()
       const body = JSON.stringify({
         jsonrpc: '2.0',
@@ -878,6 +918,20 @@ class SseMcpConnection {
       }
       if (this.sessionId) headers['Mcp-Session-Id'] = this.sessionId
 
+      let settled = false
+      let abortHandler = null
+      let timeoutTimer = null
+      const finish = (fn, arg) => {
+        if (settled) return
+        settled = true
+        if (timeoutTimer) clearTimeout(timeoutTimer)
+        if (abortHandler && signal) {
+          signal.removeEventListener('abort', abortHandler)
+          abortHandler = null
+        }
+        fn(arg)
+      }
+
       const req = mod.request({
         hostname: url.hostname,
         port: url.port || (isHttps ? 443 : 80),
@@ -887,6 +941,18 @@ class SseMcpConnection {
         ...(isHttps ? { agent: httpsAgent } : {})
       })
 
+      if (signal) {
+        abortHandler = () => {
+          try { req.destroy() } catch (_) { /* ignore */ }
+        }
+        signal.addEventListener('abort', abortHandler, { once: true })
+      }
+
+      timeoutTimer = setTimeout(() => {
+        try { req.destroy() } catch (_) { /* ignore */ }
+        finish(reject, new Error('请求超时'))
+      }, timeoutMs)
+
       req.on('response', (res) => {
         // 记录 session id
         const sid = res.headers['mcp-session-id']
@@ -895,7 +961,11 @@ class SseMcpConnection {
         const ct = res.headers['content-type'] || ''
 
         // 通知类消息不需要等响应
-        if (id === undefined) { res.resume(); resolve(null); return }
+        if (id === undefined) {
+          res.resume()
+          finish(resolve, null)
+          return
+        }
 
         let data = ''
         res.on('data', c => { data += c })
@@ -903,31 +973,32 @@ class SseMcpConnection {
           // 非 2xx 状态码直接报错
           if (res.statusCode < 200 || res.statusCode >= 300) {
             console.error(`[MCP:${this.name}] HTTP ${res.statusCode} ${method}: ${data.substring(0, 200)}`)
-            return reject(new Error(`HTTP ${res.statusCode}: ${data.substring(0, 200)}`))
+            return finish(reject, new Error(`HTTP ${res.statusCode}: ${data.substring(0, 200)}`))
           }
           try {
             if (ct.includes('text/event-stream')) {
               // 从 SSE 流中提取 data: {...} 行
               const msg = this._parseSseData(data)
-              if (!msg) return reject(new Error(`SSE 响应无有效数据: ${data.substring(0, 200)}`))
-              if (msg?.error) reject(new Error(msg.error.message || JSON.stringify(msg.error)))
-              else resolve(msg?.result ?? msg)
+              if (!msg) return finish(reject, new Error(`SSE 响应无有效数据: ${data.substring(0, 200)}`))
+              if (msg?.error) finish(reject, new Error(msg.error.message || JSON.stringify(msg.error)))
+              else finish(resolve, msg?.result ?? msg)
             } else {
               const msg = JSON.parse(data)
-              if (msg.error) reject(new Error(msg.error.message || JSON.stringify(msg.error)))
-              else resolve(msg.result)
+              if (msg.error) finish(reject, new Error(msg.error.message || JSON.stringify(msg.error)))
+              else finish(resolve, msg.result)
             }
           } catch (e) {
-            reject(new Error(`响应解析失败 (${res.statusCode}): ${data.substring(0, 300)}`))
+            finish(reject, new Error(`响应解析失败 (${res.statusCode}): ${data.substring(0, 300)}`))
           }
         })
       })
 
       req.on('error', (err) => {
-        console.error(`[MCP:${this.name}] HTTP 请求失败:`, err.message)
-        reject(err)
+        if (!settled) {
+          console.error(`[MCP:${this.name}] HTTP 请求失败:`, err.message)
+          finish(reject, signal?.aborted ? mcpAbortError() : err)
+        }
       })
-      req.setTimeout(30000, () => { req.destroy(); reject(new Error('请求超时')) })
       req.write(body)
       req.end()
     })
@@ -944,8 +1015,13 @@ class SseMcpConnection {
   }
 
   // 老版简单 POST（无握手，直接发）
-  _sendRequest(method, params) {
+  _sendRequest(method, params, extra = {}) {
+    const { signal, timeoutMs = 30000 } = extra
     return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(mcpAbortError())
+        return
+      }
       const id = nextId()
       const body = JSON.stringify({ jsonrpc: '2.0', id, method, params })
       const url = new URL(this.url)
@@ -956,6 +1032,20 @@ class SseMcpConnection {
         'Content-Length': Buffer.byteLength(body),
         ...this.extraHeaders
       }
+      let settled = false
+      let abortHandler = null
+      let timeoutTimer = null
+      const finish = (fn, arg) => {
+        if (settled) return
+        settled = true
+        if (timeoutTimer) clearTimeout(timeoutTimer)
+        if (abortHandler && signal) {
+          signal.removeEventListener('abort', abortHandler)
+          abortHandler = null
+        }
+        fn(arg)
+      }
+
       const req = mod.request({
         hostname: url.hostname,
         port: url.port || (isHttps ? 443 : 80),
@@ -964,28 +1054,42 @@ class SseMcpConnection {
         headers,
         ...(isHttps ? { agent: httpsAgent } : {})
       })
+
+      if (signal) {
+        abortHandler = () => {
+          try { req.destroy() } catch (_) { /* ignore */ }
+        }
+        signal.addEventListener('abort', abortHandler, { once: true })
+      }
+
+      timeoutTimer = setTimeout(() => {
+        try { req.destroy() } catch (_) { /* ignore */ }
+        finish(reject, new Error('请求超时'))
+      }, timeoutMs)
+
       req.on('response', (res) => {
         let data = ''
         res.on('data', c => { data += c })
         res.on('end', () => {
           if (res.statusCode < 200 || res.statusCode >= 300) {
             console.error(`[MCP:${this.name}] HTTP ${res.statusCode} ${method}: ${data.substring(0, 200)}`)
-            return reject(new Error(`HTTP ${res.statusCode}: ${data.substring(0, 200)}`))
+            return finish(reject, new Error(`HTTP ${res.statusCode}: ${data.substring(0, 200)}`))
           }
           try {
             const msg = JSON.parse(data)
-            if (msg.error) reject(new Error(msg.error.message || JSON.stringify(msg.error)))
-            else resolve(msg.result)
+            if (msg.error) finish(reject, new Error(msg.error.message || JSON.stringify(msg.error)))
+            else finish(resolve, msg.result)
           } catch (e) {
-            reject(new Error(`响应解析失败 (${res.statusCode}): ${data.substring(0, 200)}`))
+            finish(reject, new Error(`响应解析失败 (${res.statusCode}): ${data.substring(0, 200)}`))
           }
         })
       })
       req.on('error', (err) => {
-        console.error(`[MCP:${this.name}] HTTP 请求失败:`, err.message)
-        reject(err)
+        if (!settled) {
+          console.error(`[MCP:${this.name}] HTTP 请求失败:`, err.message)
+          finish(reject, signal?.aborted ? mcpAbortError() : err)
+        }
       })
-      req.setTimeout(30000, () => { req.destroy(); reject(new Error('请求超时')) })
       req.write(body)
       req.end()
     })
@@ -1149,12 +1253,12 @@ class McpManager {
   /**
    * 执行 MCP 工具
    */
-  async callTool(toolName, args) {
+  async callTool(toolName, args, options) {
     const resolved = this.resolveToolName(toolName)
     if (!resolved) {
       return { error: `MCP 工具 "${toolName}" 不可用（server 未连接）` }
     }
-    return await resolved.conn.callTool(resolved.originalName, args)
+    return await resolved.conn.callTool(resolved.originalName, args, options)
   }
 
   /**

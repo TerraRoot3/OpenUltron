@@ -518,7 +518,7 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
     if (docHost) binding.feishuDocHost = docHost
     if (senderOpenId) binding.feishuSenderOpenId = senderOpenId
     if (senderUserId) binding.feishuSenderUserId = senderUserId
-    eventBus.emit('chat.message.received', { message, binding })
+    await eventBus.emitAsync('chat.message.received', { message, binding })
   }
 
   return {

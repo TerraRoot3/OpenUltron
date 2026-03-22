@@ -232,6 +232,7 @@ import ImageViewer from './ImageViewer.vue'
 import { useAIChat } from '../../composables/useAIChat'
 import { useLogoUrl } from '../../composables/useLogoUrl.js'
 import { useI18n } from '../../composables/useI18n'
+import { buildRendererSystemSupplement } from '../../shared/prompt/renderer-system-supplement.js'
 
 const logoUrl = useLogoUrl()
 const { t } = useI18n()
@@ -323,7 +324,7 @@ const lastAssistantHasActivity = computed(() => {
 const displayMessages = computed(() =>
   messages.value.filter((m) => {
     if (m.role !== 'user' && m.role !== 'assistant') return false
-    if (m._hideInUI) return false
+    if (m._hideInUI || (m.meta && m.meta.hideInUI)) return false
     if (m.role === 'user' && typeof m.content === 'string' && m.content.trim().startsWith('[系统]')) return false
     return true
   })
@@ -439,13 +440,11 @@ watch(() => props.model, (val) => {
 
 watch(() => props.projectPath, () => {
   loadSkills()
-  loadAgentMd()
   loadModels()
 })
 
 // ---- 技能（自动注入，无需手动选择）----
 const skills = ref([])
-const agentMdContent = ref(null)  // 当前项目 AGENT.md 内容
 
 const loadSkills = async () => {
   try {
@@ -458,15 +457,6 @@ const loadSkills = async () => {
 }
 /** 与 SkillManager 一致：安装/更新技能后主进程会发 ai-skills-changed，否则会话里 skills 仍为空，模型看不到技能列表 */
 let unsubscribeSkillsChanged = null
-
-const loadAgentMd = async () => {
-  try {
-    const projectPath = props.projectPath
-    if (!projectPath) return
-    const res = await window.electronAPI.ai.readAgentMd({ projectPath })
-    agentMdContent.value = res?.content || null
-  } catch { /* ignore */ }
-}
 
 // ---- 斜杠命令 ----
 const slashPaletteRef = ref(null)
@@ -699,100 +689,12 @@ const onInput = () => {
   slashQuery.value = rest
 }
 
-// 当前日期，供 AI 回答「今天」类问题时使用
-const currentDateLabel = () => {
-  const d = new Date()
-  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`
-}
-
-// 构建最终 systemPrompt：基础 prompt + 技能目录（不含内容，AI 按需调用 get_skill 工具获取）
-const buildSystemPrompt = () => {
-  const parts = []
-  if (props.studioSandboxMode && props.systemPrompt) {
-    // 必须放在最前，否则下文「OpenUltron/IDENTITY」会把「改 hello」误导成改主程序身份文件
-    parts.push(
-      '## 【最高优先级】应用工作室（沙箱）\n' +
-      '你当前在 **应用工作室** 中协助用户。**本轮会话唯一允许用 file_operation / apply_patch 写入的项目根目录** 即下方「应用工作室」中给出的**应用根目录**（与 projectPath 一致）。\n' +
-      '**禁止** 因用户说「hello」「Hello」「改 hello」就去修改 ~/.openultron/IDENTITY.md、SOUL.md 或 OpenUltron **主程序**仓库；用户指的是 **已安装的沙箱应用**（如示例 Hello）目录里的 `index.html` / `manifest.json` 等。\n' +
-      '相对路径（如 `index.html`）会自动拼到该应用根目录；不要用 execute_command 去别处找「hello 项目」。'
-    )
-    parts.push(props.systemPrompt)
-  } else {
-    // 当前应用边界：本应用为 OpenUltron；用户要求改本机其他项目时直接操作，不预写具体项目名或路径
-    parts.push(
-      '## 当前应用\n' +
-      '你正在运行的应用是 **OpenUltron**（本应用）。' +
-      '当用户要求修改或配置本机其他项目、某仓库或用户提到的任意名称时，你应当直接操作：用 execute_command 查找路径，用 file_operation 读取与修改配置文件；不要推脱或仅请用户提供路径。具体是什么项目、配置文件名与目录结构由你通过检索或用户表述自行判断。\n' +
-      '当执行中遇到「命令不存在」「依赖缺失」（如 tesseract、ffmpeg、python 包等）时：不要只给安装建议。应直接执行最小化安装步骤并继续任务；安装命令超时或失败时，自动换一种安装方式重试一次（无需向用户弹确认），仍失败再给降级方案。\n' +
-      '**名字与身份**：当用户说「改名字」「改身份」「修改角色」等且未指明外部项目时，指本应用（OpenUltron）的 IDENTITY.md、SOUL.md。两文件在**应用根目录**（与 prompts 同级），如 ~/.openultron/IDENTITY.md、~/.openultron/SOUL.md；文件名为**大写** IDENTITY.md、SOUL.md，勿写入 prompts/ 或 identity.md（小写）。可引导用户点「编辑我的名字与角色」打开，或用 file_operation 写上述路径；勿误解为改其它外部助手应用。'
-    )
-  }
-  const todayStr = currentDateLabel()
-  parts.push(`当前日期：${todayStr}。回答中凡涉及「今天」「本月」「当前」等时间，必须使用此日期（${todayStr}），不得使用搜索结果或其它来源的日期。`)
-  // 联网与工具优先级：必须优先尝试搜索，且禁止同一轮对话内重复多次搜索造成死循环
-  parts.push(
-    '## 本地检索与命令自我进化\n' +
-    '在项目中查找代码、文件、内容时，**由你自行决定**用哪些命令或 file_operation，不提供固定命令示例。\n' +
-    '**命令执行日志**：每次 execute_command 的成功/失败会写入本地记录。你可通过 **query_command_log**（query 取 summary、both 或 recent_successful_commands）查看当前项目下已执行次数、成功/失败统计、已查看过的目录与文件、以及最近执行成功的命令列表。执行安装类命令（npm/pip/brew install）前请先 query=recent_successful_commands，若相同或等价安装已成功过则不要重复执行。请以实际执行结果与日志为准，实现自我进化。'
-  )
-  parts.push(
-    '## 联网与实时信息\n' +
-    '1) 搜索：询问新闻、股价、实时事件、技术文档等时，**优先**已配置的 MCP 搜索工具（如 Serper、Brave Search）。**若未配置搜索 MCP，必须使用内置 `web_search`（必要时再 `web_fetch`）作答**，禁止仅回复「请去设置里添加搜索 MCP」而不尝试查询。\n' +
-    '2) **天气**：用户问天气、或要求用 weather/查气温时，若上方技能列表中有 `[weather-…] weather` 等条目，必须先 `get_skill(action="get", skill_id="<方括号内的完整 id>")`（例如 `weather-1.0.0`，不要用简称 `weather`），再按技能正文用 **`execute_command` 执行其中的 curl（如 wttr.in）**；该路径不依赖搜索 MCP。无对应技能时再用 `web_search` / `web_fetch`。\n' +
-    '3) 抓取链接：当用户给出具体 URL 时，优先用 `web_fetch` 抓取正文；需登录或动态渲染时，**必须使用 chrome-devtools MCP**（打开/截屏/点击/填表/执行 JS 等）。无内置 webview 兜底，请确保 chrome-devtools MCP 已启用。禁止对同一问题重复多次搜索造成死循环；获得结果后立即作答。'
-  )
-  parts.push(
-    '## 经验总结与知识库\n' +
-    '知识库 LESSONS_LEARNED 会在**每次对话开始时自动注入**给你，无需再调 read_lessons_learned 即可直接按其中经验执行。用户要求「总结经验」或对话中产生可复用教训时，用 **lesson_save** 写入：须写**详细**——含① 具体场景/问题 ② 失败原因或成功做法 ③ 可复用的命令、路径或步骤（便于下次直接套用），避免只写一句话概括；这样后续对话才能快速利用。用户要求「整理/压缩/去重知识库」时调用 **consolidate_lessons_learned**（会先备份再写回）。\n' +
-    '**跨会话任务延续**：多步长任务可将未完成步骤、验收标准简要写入项目根目录 **AGENT.md**（若已有则追加一节），便于下次对话接着做。\n' +
-    '**用户拒绝与边界**：用户明确拒绝某类操作、或要求「以后不要再…」时，用 **lesson_save**，**category 填 `策略`**，写清禁止项与适用范围，避免再次触犯。'
-  )
-  parts.push(
-    '## 脚本能力与技能沉淀\n' +
-    '你拥有 run_script 工具：可在 ~/.openultron/temp/<task_id>/ 下编写并运行 Python 脚本，用于当前工具无法直接完成的任务。' +
-    '典型场景：爬取新闻/天气/小红书/公众号、读取 Excel/PDF/Word（可用 requirements 指定 openpyxl、PyPDF2、python-docx 等）、复杂数据处理。' +
-    '脚本运行成功后，若逻辑可复用，必须调用 install_skill 将该脚本保存为技能：content 为完整 SKILL.md，frontmatter 含 type: script，正文为 Python 代码。' +
-    '技能会随「AI 数据备份/恢复」一起备份与恢复；后续同类需求可先 get_skill 获取脚本再 run_script 执行。'
-  )
-  if (!props.studioSandboxMode) {
-    parts.push(
-      '## 查找并修改本机其他项目\n' +
-      '用户要求查看或修改本机某项目、某仓库或用户提到的任意名称时：**自行决定**用 execute_command 执行哪些命令定位，用 file_operation 读改配置；不得未执行就称找不到或向用户索要路径。可先调用 query_command_log 看当前项目下曾执行过的命令与成功/失败情况，再决定本次用什么命令。具体项目名称、常见路径、配置文件与目录结构由你自行检索或根据用户表述判断，提示词中不预设。\n' +
-      '**回复风格**：不要写「我来帮你…」「让我执行搜索命令」等固定话术；不要输出「可能的原因和建议」「请提供以下任一信息」等模板式列表。直接执行、根据结果继续或简短说明已尝试与下一步。'
-    )
-  }
-  if (props.systemPrompt && !props.studioSandboxMode) parts.push(props.systemPrompt)
-  if (skills.value.length > 0) {
-    // 仅列出 id + name，不含描述，减少 token 占用；完整内容由 AI 按需调用 get_skill 获取
-    const skillList = skills.value
-      .filter(s => s.id)
-      .map(s => `- [${s.id}] ${s.name}`)
-      .join('\n')
-    parts.push(
-      `你有以下可用技能（共 ${skills.value.length} 个），请根据用户意图自动判断是否需要使用。` +
-      `需要使用某个技能时，先调用 get_skill(action="get", skill_id="...") 获取完整内容（含描述和步骤）后严格执行：\n\n${skillList}\n\n` +
-      `## 技能自动优化规则\n` +
-      `当你执行某个技能并在对话中做了调整（如修复了步骤错误、补充了遗漏环节、根据用户反馈优化了流程），` +
-      `在对话结束前必须调用 install_skill(action="update") 将最终正确的版本写回该技能文件。\n` +
-      `触发条件（满足任一即更新）：\n` +
-      `1. 执行技能时遇到报错，调整后成功\n` +
-      `2. 用户指出技能步骤有问题并确认了修正方案\n` +
-      `3. 你主动补充了技能中缺失的关键步骤且用户认可\n` +
-      `4. 你通过 run_script 写出的脚本运行成功且可复用，必须用 install_skill 保存为 type: script 技能\n` +
-      `更新时保留原有 frontmatter，只修改正文内容，不得降低原有步骤的完整性。\n\n` +
-      `## git commit 确认规则\n` +
-      `执行 git commit 前调用 user_confirmation 时，必须带上 allow_push: true 参数，` +
-      `让用户可以选择「确认并推送」一步完成提交+推送。若用户选择「确认并推送」，` +
-      `工具返回结果中 push_after_commit 为 true，此时在 commit 成功后立即执行 git push origin <当前分支>。`
-    )
-  }
-  // 注入项目 AGENT.md（如存在）
-  if (agentMdContent.value) {
-    parts.push(`## 项目上下文（AGENT.md）\n${agentMdContent.value}`)
-  }
-
-  return parts.join('\n\n') || undefined
-}
+// 构建最终 systemPrompt：大段规则由主进程 orchestrator 注入；此处仅父组件/工作室附加说明
+const buildSystemPrompt = () =>
+  buildRendererSystemSupplement({
+    studioSandboxMode: props.studioSandboxMode,
+    parentSystemPrompt: props.systemPrompt
+  })
 
 // ---- @ 文件提及 ----
 const mentionPaletteRef = ref(null)
@@ -1751,7 +1653,6 @@ onMounted(async () => {
   if (window.electronAPI?.ai?.onSkillsChanged) {
     unsubscribeSkillsChanged = window.electronAPI.ai.onSkillsChanged(() => { loadSkills() })
   }
-  await loadAgentMd()
   if (props.initialSessionId) currentSessionId.value = props.initialSessionId
   await persistLoad()
   await loadConversationList()

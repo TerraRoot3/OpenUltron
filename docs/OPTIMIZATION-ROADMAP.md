@@ -2,6 +2,8 @@
 
 本文档把「深度分析」收敛为**可执行优先级**，与 `WEB-APPS-SANDBOX-DESIGN.md`、`docs/plans/agent-capability-routing.md` 等对齐，便于迭代时对照。
 
+**认知层专项（角色 / 记忆 / 上下文 / 压缩 / 总结 / 学习 / 反馈 / 验证 / Hook）** 的完整盘点、冗余收敛点、执行项与 **C0–C3 优先级**，见：**`docs/plans/agent-cognitive-architecture-plan.md`**（**§九** 分阶段落地状态表）。**内部消息与 EventBus 约定**：**`docs/MESSAGE-CONTRACT.md`**。
+
 ---
 
 ## 已落地的工程优化（示例）

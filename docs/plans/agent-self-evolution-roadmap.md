@@ -2,6 +2,8 @@
 
 与 `docs/plans/agent-capability-routing.md`、`docs/OPTIMIZATION-ROADMAP.md` 对齐：先契约与可观测，再记忆治理与闭环评估。按阶段顺序做，完成一项勾一项。
 
+更广义的「角色 / 上下文 / 压缩 / 消息贯穿 / Hook」架构计划与 **C0–C3 优先级** 见 **`docs/plans/agent-cognitive-architecture-plan.md`**（本文聚焦 A–E 进化清单，二者交叉引用）。
+
 ---
 
 ## 阶段 A — 记忆质量（低成本、立竿见影）

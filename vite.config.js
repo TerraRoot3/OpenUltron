@@ -2,7 +2,6 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import AutoImport from 'unplugin-auto-import/vite'
 import Components from 'unplugin-vue-components/vite'
-
 export default defineConfig({
   base: '/',   // History 模式无 #，开发/生产均通过 HTTP 服务访问
   plugins: [

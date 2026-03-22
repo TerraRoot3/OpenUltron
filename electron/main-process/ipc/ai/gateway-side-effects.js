@@ -6,7 +6,7 @@ const { FEISHU_PROJECT, TELEGRAM_PROJECT, DINGTALK_PROJECT } = require('./sessio
 /**
  * @param {object} deps
  * @param {typeof import('electron').BrowserWindow} deps.BrowserWindow
- * @param {{ emit: (ev: string, p: any) => void }} deps.eventBus
+ * @param {{ emit: (ev: string, p: any) => void, emitAsync?: (ev: string, p: any) => Promise<void> }} deps.eventBus
  * @param {object} deps.conversationFile
  * @param {(raw: string) => { path?: string, base64?: string }[]} deps.parseScreenshotFromToolResult
  * @param {(t: string) => { cleanedText: string, filePaths: string[] }} deps.extractLocalResourceScreenshots
@@ -215,7 +215,7 @@ function createGatewaySideEffectHandlers (deps) {
       filePaths: fileItems.map((x) => (x && x.path) ? String(x.path) : '').filter(Boolean).slice(0, 8)
     })
     if (imageItems.length > 0) appLogger?.info?.('[Feishu] 应用内飞书会话完成，带图回发', { imageCount: imageItems.length })
-    eventBus.emit('chat.session.completed', { binding: outBinding, payload: outPayload })
+    await eventBus.emitAsync('chat.session.completed', { binding: outBinding, payload: outPayload })
   }
 
   function forwardToMainWindow (sessionId, _projectPath, channel, data) {

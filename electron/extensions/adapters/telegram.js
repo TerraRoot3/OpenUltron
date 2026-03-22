@@ -304,7 +304,7 @@ function createTelegramAdapter(eventBus, getChannelConfig) {
       attachments: normalizedAttachments
     }
     const binding = createSessionBinding(sessionId, TELEGRAM_PROJECT, 'telegram', chatId)
-    eventBus.emit('chat.message.received', { message, binding })
+    await eventBus.emitAsync('chat.message.received', { message, binding })
   }
 
   return {

@@ -317,7 +317,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
         await feishuNotify.deleteMessageReaction(userMessageId, typingReactionId).catch(() => {})
       }
       const errBinding = { ...binding, sessionId: mainSessionId, projectPath, remoteId: chatId, ...(binding.channel === 'feishu' && { feishuChatId: chatId }) }
-      eventBus.emit('chat.session.completed', { binding: errBinding, payload: { text: `切换模型失败：${apply.error}` } })
+      await eventBus.emitAsync('chat.session.completed', { binding: errBinding, payload: { text: `切换模型失败：${apply.error}` } })
       return
     }
     const rest = (modelCmd.remainderText || '').trim()
@@ -326,7 +326,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
         await feishuNotify.deleteMessageReaction(userMessageId, typingReactionId).catch(() => {})
       }
       const okBinding = { ...binding, sessionId: mainSessionId, projectPath, remoteId: chatId, ...(binding.channel === 'feishu' && { feishuChatId: chatId }) }
-      eventBus.emit('chat.session.completed', { binding: okBinding, payload: { text: `已切换全局模型为：${modelCmd.modelId}` } })
+      await eventBus.emitAsync('chat.session.completed', { binding: okBinding, payload: { text: `已切换全局模型为：${modelCmd.modelId}` } })
       return
     }
     userDisplayText = rest
@@ -380,7 +380,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
       await feishuNotify.deleteMessageReaction(userMessageId, typingReactionId).catch(() => {})
     }
     const errBinding = { ...binding, sessionId: mainSessionId, projectPath, remoteId: chatId, ...(binding.channel === 'feishu' && { feishuChatId: chatId }) }
-    eventBus.emit('chat.session.completed', { binding: errBinding, payload: { text: '请先在应用内配置 API Key 后再使用。' } })
+    await eventBus.emitAsync('chat.session.completed', { binding: errBinding, payload: { text: '请先在应用内配置 API Key 后再使用。' } })
     return
   }
   const collectedScreenshots = []
@@ -945,7 +945,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
     if (imageItems.length > 0) {
       appLogger?.info?.(`[${binding.channel}] 会话完成，带图回发`, { imageCount: imageItems.length })
     }
-    eventBus.emit('chat.session.completed', { binding: outBinding, payload: outPayload })
+    await eventBus.emitAsync('chat.session.completed', { binding: outBinding, payload: outPayload })
     triggerAutoEvolveFromSession({
       projectPath,
       sessionId: mainSessionId,
@@ -969,7 +969,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
       await feishuNotify.deleteMessageReaction(userMessageId, typingReactionId).catch(() => {})
     }
     const errBinding = { ...binding, sessionId: mainSessionId, projectPath, remoteId: chatId, ...(binding.channel === 'feishu' && { feishuChatId: chatId }) }
-    eventBus.emit('chat.session.completed', { binding: errBinding, payload: { text: `处理出错: ${e.message}` } })
+    await eventBus.emitAsync('chat.session.completed', { binding: errBinding, payload: { text: `处理出错: ${e.message}` } })
     triggerAutoEvolveFromSession({
       projectPath,
       sessionId: mainSessionId,

@@ -323,7 +323,7 @@ function createDingtalkAdapter(eventBus, getChannelConfig) {
     binding.open_conversation_id = normalized.openConversationId || remoteId
     binding.robot_code = normalized.robotCode || ''
 
-    eventBus.emit('chat.message.received', { message, binding })
+    await eventBus.emitAsync('chat.message.received', { message, binding })
     return { ok: true }
   }
 

@@ -24,7 +24,7 @@ const definition = {
   }
 }
 
-async function execute(args) {
+async function execute(args, ctx = {}) {
   const { content, tags = [], project_path, id } = args
   if (!content?.trim()) return { success: false, error: '缺少 content 参数' }
   try {
@@ -33,8 +33,17 @@ async function execute(args) {
       tags,
       projectPath: project_path || null,
       id: id || null,
-      source: 'auto'
+      source: 'manual'
     })
+    try {
+      const { logger: appLogger } = require('../app-logger')
+      appLogger?.info?.('[AI][Memory] memory_save', {
+        memoryId: memory.id,
+        runId: String(ctx.runId || '').slice(0, 48),
+        channel: ctx.channel || 'main',
+        projectPathSlice: String(project_path || ctx.projectPath || '').slice(0, 160)
+      })
+    } catch (_) { /* ignore */ }
     // 异步缓存 embedding（不阻塞响应）
     if (_getAIConfig) {
       const apiConfig = _getAIConfig()?.config
