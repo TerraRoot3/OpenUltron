@@ -32,6 +32,7 @@ electron/
       window-logs-notifications.js # 已存在：log/logs-*、window-*、refresh、系统通知、get-api-base-url
       store-config-snapshot.js     # 已存在：delete-saved-config、get/set-current-config
       fs-dialog-basic.js           # 已存在：show-open/save-dialog、read-file、save-file、read-image-as-base64
+      shell-spawn-command.js       # 已存在：execute-command、execute-command-realtime、kill-command-process、Git index.lock
       window-shell.js        # （可选后续）与上并列时再细分
       fs-dialog.js           # （命名占位）更多文件类 IPC 可并入或拆出
       terminal-process.js    # execute-command、PTY、kill
@@ -173,3 +174,4 @@ require('./main-process/ipc/ai-config').register({ app, store, registerChannel, 
 | 2026-03-19 | `main-process/ipc/window-logs-notifications.js` | `log-to-frontend`、`logs-*`、`window-*`、`toggle-maximize`、刷新相关、`show-system-notification`、`get-api-base-url`（`getMainWindow` / `getApiServerPort` 由 main 注入） |
 | 2026-03-19 | `main-process/ipc/store-config-snapshot.js` | `delete-saved-config`、`get-current-config`、`set-current-config` |
 | 2026-03-19 | `main-process/ipc/fs-dialog-basic.js` | `show-open-dialog`、`show-save-dialog`、`read-file`、`save-file`、`read-image-as-base64` |
+| 2026-03-19 | `main-process/ipc/shell-spawn-command.js` | `execute-command`、`execute-command-realtime`、`kill-command-process`；进程 Map 与 `checkAndRemoveGitLock` 内聚于模块（另导出 `isGitWriteCommand` / `checkAndRemoveGitLock` 供测试复用） |
