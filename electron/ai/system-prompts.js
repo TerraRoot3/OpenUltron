@@ -1,12 +1,23 @@
 /**
  * 系统提示词：从 ~/.openultron/prompts/*.md 加载，支持 AI 通过 file_operation 自我修改。
- * 无地区限定用语；缺失文件时使用内置默认并写入目录供后续编辑。
+ * 无地区限定用语；缺失文件时写入内置默认。内置默认变更时递增 PROMPTS_DEFAULTS_REVISION，
+ * 启动会备份旧文件后覆盖同名 .md（见 ensurePromptsDirAndDefaults）。
  */
 const fs = require('fs')
 const path = require('path')
 const { getAppRootPath } = require('../app-root')
 
 const PROMPTS_DIR = 'prompts'
+
+/**
+ * 内置默认提示词修订号：只要改动 getDefaultPrompts() 或 README_CONTENT，务必递增。
+ * 已安装用户：若 ~/.openultron/prompts/.defaults-revision 小于此值，启动时会将各 *.md
+ * 用当前内置默认覆盖（覆盖前会把旧版同名文件拷到 prompts/_backup_rev_<修订>_<时间>/）。
+ * 未递增修订则只补全缺失的 .md，不覆盖用户已改文件。
+ */
+const PROMPTS_DEFAULTS_REVISION = 1
+
+const REVISION_FILE = '.defaults-revision'
 
 function getPromptsDir() {
   return getAppRootPath(PROMPTS_DIR)
@@ -17,6 +28,13 @@ function getDefaultPrompts() {
   return {
     'current-model': `[当前模型]
 本对话实际使用的模型为：{{model}}。当用户询问你是什么模型、谁、或身份时，请根据此实际模型回答，勿自称其他型号（如 Claude、GPT 等）除非当前确实为该模型。`,
+
+    'task-persistence': `[任务完成原则 — 想尽一切正当办法]
+默认态度：在合法、安全、尊重用户意愿的前提下，**优先把需求落地**，而不是轻易回答「做不到」。此处「不择手段」指**正当地穷尽手段**：跑命令与脚本、读代码与日志、检索仓库、联网搜索与抓取文档、安装依赖或 CLI、使用浏览器与 MCP、换实现路径、对可恢复错误重试等；禁止为省事而假装不能，禁止一次失败或一次工具报错就放弃。
+
+在明确说「无法完成」之前，应已尽力：执行并排查、补齐上下文、用满已有工具与 MCP、必要时按 tool-gap-fallback 写最小脚本或补丁并验证。
+
+仅在以下情况可明确宣告失败或拒绝：已真实尝试多种合理路径并能简要说明试过什么、卡在哪里；或存在硬约束（必须由用户提供的密钥/权限、违反安全与合规、需求客观上不可能）。`,
 
     'feishu-session': `[飞书会话]
 当前会话来自飞书。回复「你好」「在吗」或自我介绍时，请按 IDENTITY.md 与 SOUL.md 中的名字与语气，勿自称「OpenUltron 的 AI 助手」「随时为您服务」等通用话术。
@@ -40,6 +58,7 @@ function getDefaultPrompts() {
 当用户询问天气、新闻、股价、实时事件、技术文档等时，建议主动使用工具获取实时信息后作答，不要凭空编造。
 1) 有具体 URL 时：用 web_fetch 抓取该网页正文。
 2) 无 URL 时：用 web_search 搜索关键词（或已配置的 MCP 搜索工具），再对结果中的 url 用 web_fetch 抓取正文；若未配置搜索 MCP，使用 web_search 再 web_fetch。
+若问题依赖 **用户所在城市或「附近、周边、当地」**（如附近美食、景点、天气）：应用**无内置定位**；请礼貌请用户提供城市/区域（或参考 USER.md 等），再将地名并入 web_search；勿编造位置。
 建议避免对同一问题重复多次调用；获得结果后即可作答。`,
 
     'coding-execution': `[编程执行优先]
@@ -172,6 +191,7 @@ const README_CONTENT = `# System prompts
 These Markdown files are injected into the AI system context. You can edit them to change behavior; the app loads them at the start of each conversation.
 
 - **current-model.md** – Injected with {{model}} replaced by the actual model name.
+- **task-persistence.md** – Default stance: exhaust legitimate means (commands, search, tools, MCP, retries) before declaring failure.
 - **feishu-session.md** – Used when the session is from Feishu.
 - **feishu-sheets-bitable.md** – Feishu sheets/bitable execution behavior.
 - **realtime-info.md** – When to use web_fetch / web_search for live information.
@@ -185,10 +205,43 @@ These Markdown files are injected into the AI system context. You can edit them 
 - **tool-gap-fallback.md** – Generic fallback when built-in tools are insufficient: read config/context, write minimal scripts/patches, execute+verify, and return results safely.
 
 Path: \`<appRoot>/prompts/\` (e.g. ~/.openultron/prompts/). The AI can modify these files via file_operation (read/write) if given this path.
+
+**Updates:** Built-in defaults carry a revision (\`.defaults-revision\`). When the app ships a higher revision, it overwrites the listed \`*.md\` files with new defaults after copying any previous versions to \`_backup_rev_<revision>_<timestamp>/\`. Bump the revision in code whenever default prompt text changes.
 `
 
+function readStoredPromptsRevision(promptsDir) {
+  const p = path.join(promptsDir, REVISION_FILE)
+  try {
+    if (!fs.existsSync(p)) return 0
+    const n = parseInt(String(fs.readFileSync(p, 'utf-8')).trim(), 10)
+    return Number.isFinite(n) && n >= 0 ? n : 0
+  } catch {
+    return 0
+  }
+}
+
 /**
- * 确保 prompts 目录存在，且缺失的默认文件写入一次（便于 AI 后续用 file_operation 修改）
+ * 将当前已存在的内置键对应 .md 备份到子目录（仅修订升级时调用）
+ */
+function backupExistingPromptFiles(promptsDir, defaultsKeys, revisionLabel) {
+  const existing = defaultsKeys.filter((k) => fs.existsSync(path.join(promptsDir, `${k}.md`)))
+  if (existing.length === 0) return
+  const stamp = Date.now()
+  const backupDir = path.join(promptsDir, `_backup_rev_${revisionLabel}_${stamp}`)
+  try {
+    fs.mkdirSync(backupDir, { recursive: true })
+    for (const key of existing) {
+      const from = path.join(promptsDir, `${key}.md`)
+      fs.copyFileSync(from, path.join(backupDir, `${key}.md`))
+    }
+    console.log('[system-prompts] 已备份', existing.length, '个提示词文件 →', backupDir)
+  } catch (e) {
+    console.warn('[system-prompts] 备份旧提示词失败（仍将尝试写入新默认）:', e.message)
+  }
+}
+
+/**
+ * 确保 prompts 目录存在；修订升级时覆盖内置键的 .md 并更新 README；否则仅补全缺失文件。
  */
 function ensurePromptsDirAndDefaults() {
   const dir = getPromptsDir()
@@ -196,6 +249,34 @@ function ensurePromptsDirAndDefaults() {
     fs.mkdirSync(dir, { recursive: true })
   }
   const defaults = getDefaultPrompts()
+  const keys = Object.keys(defaults)
+  const readmePath = path.join(dir, 'README.md')
+  const revPath = path.join(dir, REVISION_FILE)
+  const stored = readStoredPromptsRevision(dir)
+
+  if (stored < PROMPTS_DEFAULTS_REVISION) {
+    backupExistingPromptFiles(dir, keys, PROMPTS_DEFAULTS_REVISION)
+    for (const [key, content] of Object.entries(defaults)) {
+      try {
+        fs.writeFileSync(path.join(dir, `${key}.md`), content, 'utf-8')
+      } catch (e) {
+        console.warn('[system-prompts] 写入默认失败:', key, e.message)
+      }
+    }
+    try {
+      fs.writeFileSync(readmePath, README_CONTENT, 'utf-8')
+    } catch (e) {
+      console.warn('[system-prompts] 写入 README 失败:', e.message)
+    }
+    try {
+      fs.writeFileSync(revPath, String(PROMPTS_DEFAULTS_REVISION), 'utf-8')
+    } catch (e) {
+      console.warn('[system-prompts] 写入修订号文件失败:', e.message)
+    }
+    console.log('[system-prompts] 已同步内置提示词默认 → 修订', PROMPTS_DEFAULTS_REVISION, '（此前为', stored, '）')
+    return
+  }
+
   for (const [key, content] of Object.entries(defaults)) {
     const filePath = path.join(dir, `${key}.md`)
     if (!fs.existsSync(filePath)) {
@@ -206,7 +287,6 @@ function ensurePromptsDirAndDefaults() {
       }
     }
   }
-  const readmePath = path.join(dir, 'README.md')
   if (!fs.existsSync(readmePath)) {
     try {
       fs.writeFileSync(readmePath, README_CONTENT, 'utf-8')
@@ -221,5 +301,6 @@ module.exports = {
   getDefaultPrompts,
   readPrompt,
   loadPrompt,
-  ensurePromptsDirAndDefaults
+  ensurePromptsDirAndDefaults,
+  PROMPTS_DEFAULTS_REVISION
 }

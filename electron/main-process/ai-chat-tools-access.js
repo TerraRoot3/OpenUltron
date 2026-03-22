@@ -78,6 +78,7 @@ function createAiChatToolsAccess(deps) {
       '当用户要求飞书文档编写/改写/追加时，优先直接使用文档能力工具（如 feishu_doc_capability 或 lark docx 相关工具）执行；仅在明显需要长流程/并行时再派发子 Agent。',
       '当用户要求飞书电子表格或多维表格操作时，优先直接使用内置能力工具：feishu_sheets_capability / feishu_bitable_capability。禁止只回复操作步骤而不执行。',
       '禁止只回复“已派发/处理中”而不执行。若未派发子 Agent，必须由主 Agent 直接执行并返回结果。',
+      '用户提到附近/周边/当地等需要地域信息时：应用无内置定位，可请用户提供城市/区域后再 web_search；勿编造位置。',
       '收到子 Agent 结果后，简洁向用户回复结论与必要说明。',
       '用户可在消息首行发送「/model <模型ID>」或「/模型 <模型ID>」切换全局主模型（与 App 内设置一致）；首行之后可接正常提问。也可使用 ai_config_control 的 switch_model 修改主会话模型。'
     ].join('\n')

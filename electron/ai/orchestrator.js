@@ -409,6 +409,8 @@ class Orchestrator {
           '用户要求改外部项目时，先执行命令定位项目与文件，再改；不要在未执行时声称“找不到”。\n' +
           '安装命令前先查 query_command_log(recent_successful_commands)，已装过则不重复安装。\n' +
           '排查 OpenUltron 自身异常（Gateway、渠道、内置工具失败）时用 read_app_log 读 app.log 尾部；可按 keyword 缩小范围。\n' +
+          '[「附近」与地域类问题]\n' +
+          '应用**无内置自动定位**（不提供 GPS/经纬度工具）。用户提到附近、周边、当地、本地天气/美食/景点等时：请用户说明**城市或区域**，或参考 USER.md 等已有信息，再用 web_search / web_fetch；勿编造用户位置。\n' +
           '缺依赖时优先内置工具（如 ffmpeg_run、edge_tts_synthesize），失败再 execute_command 安装或重试一次。\n' +
           '用户明确要求语音时必须真实调用语音相关工具，不得只文字声称完成。\n' +
           `默认工作空间：${getWorkspaceRoot()}。\n` +
@@ -422,6 +424,10 @@ class Orchestrator {
       // 0.1 当前模型（从 prompts/current-model.md 或默认）
       const currentModelText = loadPrompt('current-model', { model: useModel })
       if (currentModelText) memParts.push(currentModelText)
+
+      // 0.12 任务完成原则（从 prompts/task-persistence.md 或默认；主会话与工作室均注入）
+      const taskPersistenceText = loadPrompt('task-persistence')
+      if (taskPersistenceText) memParts.push(taskPersistenceText)
 
       {
         const d = new Date()

@@ -71,10 +71,10 @@ function createDefaultRegistry(options = {}) {
   } catch (e) { console.warn('加载 feishu_doc_capability 工具失败:', e.message) }
 
   const builtinTools = [
+    ['read_app_log', './tools/read-app-log'],
     ['analyze_project', './tools/analyze-project'],
     ['execute_command', './tools/execute-command'],
     ['query_command_log', './tools/query-command-log'],
-    ['read_app_log', './tools/read-app-log'],
     ['run_script', './tools/run-script'],
     ['git_operation', './tools/git-operation'],
     ['file_operation', './tools/file-operation'],
