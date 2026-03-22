@@ -81,6 +81,10 @@ const DEFAULT_TELEGRAM = {
   bot_token: '',
   enabled: false,
   voice_reply_enabled: false,
+  /** 默认 chat_id：任务完成通知等场景使用（需与 bot 有过对话） */
+  default_chat_id: '',
+  /** 会话结束时向 default_chat_id 发送完成摘要 */
+  notify_on_complete: false,
   /** 允许触发的 chat_id 列表，'*' 表示全部允许；不配或空数组表示全部允许 */
   allowFrom: undefined
 }
@@ -92,6 +96,8 @@ const DEFAULT_DINGTALK = {
   default_robot_code: '',
   receive_enabled: false,
   voice_reply_enabled: false,
+  /** 会话结束时向 default_chat_id + default_robot_code 发送完成摘要 */
+  notify_on_complete: false,
   /** 允许触发的 conversationId/用户 ID 列表，'*' 表示全部允许；不配或空数组表示全部允许 */
   allowFrom: undefined
 }
@@ -382,6 +388,8 @@ function setTelegram(partial) {
     bot_token: partial && partial.bot_token !== undefined ? String(partial.bot_token).trim() : cur.bot_token,
     enabled: partial && partial.enabled !== undefined ? !!partial.enabled : cur.enabled,
     voice_reply_enabled: partial && partial.voice_reply_enabled !== undefined ? !!partial.voice_reply_enabled : !!cur.voice_reply_enabled,
+    default_chat_id: partial && partial.default_chat_id !== undefined ? String(partial.default_chat_id).trim() : String(cur.default_chat_id || ''),
+    notify_on_complete: partial && partial.notify_on_complete !== undefined ? !!partial.notify_on_complete : !!cur.notify_on_complete,
     allowFrom: allowFromTg
   }
   writeAll(all)
@@ -406,6 +414,7 @@ function setDingtalk(partial) {
     default_robot_code: partial && partial.default_robot_code !== undefined ? String(partial.default_robot_code).trim() : String(cur.default_robot_code || ''),
     receive_enabled: partial && partial.receive_enabled !== undefined ? !!partial.receive_enabled : cur.receive_enabled,
     voice_reply_enabled: partial && partial.voice_reply_enabled !== undefined ? !!partial.voice_reply_enabled : !!cur.voice_reply_enabled,
+    notify_on_complete: partial && partial.notify_on_complete !== undefined ? !!partial.notify_on_complete : !!cur.notify_on_complete,
     allowFrom: allowFromDingtalk
   }
   writeAll(all)

@@ -114,12 +114,12 @@ function getDefaultPrompts() {
 - 引导用户：飞书开放平台创建应用获取 App ID/Secret，开通机器人与接收消息；发消息目标可从 sessions_list 的 feishuChatId 获取；allowFrom 与 OAuth 按需配置。
 
 **3. telegram（Telegram Bot）**
-- 配置项及用途：**bot_token**（BotFather 颁发的 token，格式 123456:ABC-DEF...）；**enabled**（是否开启接收消息）；**voice_reply_enabled**（是否语音回复）；**allowFrom**（"*" 或 chat_id 数组，限制可触发的会话）。
+- 配置项及用途：**bot_token**（BotFather 颁发的 token，格式 123456:ABC-DEF...）；**enabled**（是否开启接收消息）；**voice_reply_enabled**（是否语音回复）；**default_chat_id**（可选，任务完成通知等）；**notify_on_complete**（会话结束时向 default_chat_id 发摘要）；**allowFrom**（"*" 或 chat_id 数组，限制可触发的会话）。
 - 鉴权与调用（明确）：Telegram Bot API 根地址为 \`https://api.telegram.org/bot<bot_token>/<method>\`，例如 \`getMe\`、\`sendMessage\`、\`getUpdates\`。脚本调用时用同一 bot_token 拼入 URL 即可；无需额外 Header。内置接收/发送已使用该 token；未内置的方法可自写脚本请求上述 URL（勿在回复中输出完整 token）。
 - 引导用户：@BotFather 创建 Bot 获 token；enabled 设为 true；Chat ID 私聊用 @userinfobot 等获取，群组为负数。
 
 **4. dingtalk（钉钉）**
-- 配置项及用途：**app_key** / **app_secret**（应用凭证）；**default_chat_id** / **default_robot_code**（可选，通知用）；**receive_enabled**、**voice_reply_enabled**；**allowFrom**（"*" 或 conversationId/用户 ID 数组）。
+- 配置项及用途：**app_key** / **app_secret**（应用凭证）；**default_chat_id** / **default_robot_code**（可选，通知用）；**receive_enabled**、**voice_reply_enabled**、**notify_on_complete**（会话结束时向 default_chat_id+robot 发摘要，需二者已填）；**allowFrom**（"*" 或 conversationId/用户 ID 数组）。
 - 鉴权与调用（明确）：钉钉开放平台 API 通常需 access_token。access_token 获取：\`GET https://oapi.dingtalk.com/gettoken?appkey=<app_key>&appsecret=<app_secret>\`，响应 \`access_token\`。调用业务 API 时在 URL 或 body 中带 \`access_token\`。内置能力已使用；未内置接口可写脚本先 gettoken 再请求对应 API（密钥勿在回复中展示）。
 - 引导用户：钉钉开放平台创建应用获 app_key/app_secret；按需配置接收与 allowFrom。
 

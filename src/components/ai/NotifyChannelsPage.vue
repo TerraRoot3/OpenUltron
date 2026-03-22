@@ -177,6 +177,22 @@
             @blur="saveTelegramDebounced"
           />
         </div>
+        <div class="feishu-row">
+          <label>{{ t('notify.defaultSessionId') }}</label>
+          <input
+            v-model="telegramDefaultChatId"
+            type="text"
+            class="feishu-input"
+            :placeholder="t('notify.telegramDefaultChatIdPh')"
+            @blur="saveTelegramDebounced"
+          />
+        </div>
+        <div class="feishu-row feishu-row-check">
+          <label class="feishu-check-label">
+            <input v-model="telegramNotifyOnComplete" type="checkbox" @change="saveTelegramDebounced" />
+            <span>{{ t('notify.notifyOnComplete') }}</span>
+          </label>
+        </div>
         <div class="feishu-row feishu-row-check">
           <label class="feishu-check-label">
             <input v-model="telegramEnabled" type="checkbox" @change="saveTelegramDebounced" />
@@ -255,6 +271,12 @@
             <span>{{ t('notify.dingtalkVoiceReply') }}</span>
           </label>
         </div>
+        <div class="feishu-row feishu-row-check">
+          <label class="feishu-check-label">
+            <input v-model="dingtalkNotifyOnComplete" type="checkbox" @change="saveDingtalkDebounced" />
+            <span>{{ t('notify.notifyOnCompleteDingtalkHint') }}</span>
+          </label>
+        </div>
       </div>
       <div class="feishu-actions">
         <button class="feishu-btn primary" :disabled="dingtalkSaving" @click="saveDingtalk">
@@ -323,6 +345,8 @@ const canAuthorizeUserToken = computed(() => {
 
 // Telegram（消息通知内子平台）
 const telegramBotToken = ref('')
+const telegramDefaultChatId = ref('')
+const telegramNotifyOnComplete = ref(false)
 const telegramEnabled = ref(false)
 const telegramSaving = ref(false)
 const telegramStatusLoaded = ref(false)
@@ -336,6 +360,7 @@ const dingtalkDefaultChatId = ref('')
 const dingtalkDefaultRobotCode = ref('')
 const dingtalkReceiveEnabled = ref(false)
 const dingtalkVoiceReplyEnabled = ref(false)
+const dingtalkNotifyOnComplete = ref(false)
 const dingtalkSaving = ref(false)
 const dingtalkResult = ref(null)
 const dingtalkStatusLoaded = ref(false)
@@ -381,6 +406,8 @@ async function loadTelegramConfig() {
   const c = await telegramApi()?.getConfig?.()
   if (c) {
     telegramBotToken.value = c.bot_token || ''
+    telegramDefaultChatId.value = c.default_chat_id || ''
+    telegramNotifyOnComplete.value = !!c.notify_on_complete
     telegramEnabled.value = !!c.enabled
   }
   const status = await telegramApi()?.receiveStatus?.()
@@ -395,7 +422,12 @@ async function saveTelegram() {
   if (!telegramApi()) return
   telegramSaving.value = true
   try {
-    await telegramApi().setConfig?.({ bot_token: telegramBotToken.value, enabled: telegramEnabled.value })
+    await telegramApi().setConfig?.({
+      bot_token: telegramBotToken.value,
+      default_chat_id: (telegramDefaultChatId.value || '').trim(),
+      notify_on_complete: telegramNotifyOnComplete.value,
+      enabled: telegramEnabled.value
+    })
     await loadTelegramConfig()
   } finally {
     telegramSaving.value = false
@@ -417,6 +449,7 @@ async function loadDingtalkConfig() {
     dingtalkDefaultRobotCode.value = c.default_robot_code || ''
     dingtalkReceiveEnabled.value = !!c.receive_enabled
     dingtalkVoiceReplyEnabled.value = !!c.voice_reply_enabled
+    dingtalkNotifyOnComplete.value = !!c.notify_on_complete
   }
   const status = await dingtalkApi()?.receiveStatus?.()
   if (status) {
@@ -437,7 +470,8 @@ async function saveDingtalk() {
       default_chat_id: (dingtalkDefaultChatId.value || '').trim(),
       default_robot_code: (dingtalkDefaultRobotCode.value || '').trim(),
       receive_enabled: dingtalkReceiveEnabled.value,
-      voice_reply_enabled: dingtalkVoiceReplyEnabled.value
+      voice_reply_enabled: dingtalkVoiceReplyEnabled.value,
+      notify_on_complete: dingtalkNotifyOnComplete.value
     })
     await loadDingtalkConfig()
     dingtalkResult.value = { ok: true, message: t('notify.saved') }

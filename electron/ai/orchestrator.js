@@ -1132,7 +1132,7 @@ class Orchestrator {
       wrappedSender.send('ai-chat-complete', { sessionId, messages: currentMessages })
       sessionRegistry.markComplete(registryId)
       this._extractMemoriesAsync(currentMessages, projectPath, config, useModel, isAnthropic, sessionId, chatRunId)
-      this._notifyFeishuOnComplete(currentMessages)
+      require('./session-complete-notify').sendTaskCompleteNotifications(currentMessages).catch(() => {})
       return { success: true, messages: currentMessages }
     } catch (error) {
       if (abortController.signal.aborted) {
@@ -1141,7 +1141,7 @@ class Orchestrator {
         wrappedSender.send('ai-chat-complete', { sessionId, messages: currentMessages })
         sessionRegistry.markComplete(registryId)
         this._extractMemoriesAsync(currentMessages, projectPath, config, useModel, isAnthropic, sessionId, chatRunId)
-        this._notifyFeishuOnComplete(currentMessages)
+        require('./session-complete-notify').sendTaskCompleteNotifications(currentMessages).catch(() => {})
         return { success: true, messages: currentMessages }
       } else {
         const userMsg = this._enhanceLlmErrorForUser(error)
@@ -1155,31 +1155,6 @@ class Orchestrator {
       if (cur && cur.abortController === abortController) {
         this.activeSessions.delete(sessionId)
       }
-    }
-  }
-
-  /** 会话正常结束时，若飞书配置了「任务完成通知」，则发一条摘要到默认会话 */
-  _notifyFeishuOnComplete(messages) {
-    try {
-      const feishuNotify = require('./feishu-notify')
-      const config = feishuNotify.getConfig()
-      if (!config.notify_on_complete || !(config.default_chat_id && config.default_chat_id.trim())) return
-      const lastAssistant = [...(messages || [])].reverse().find(m => m.role === 'assistant')
-      let summary = ''
-      if (lastAssistant && lastAssistant.content) {
-        if (typeof lastAssistant.content === 'string') {
-          summary = lastAssistant.content.trim().slice(0, 400)
-        } else if (Array.isArray(lastAssistant.content)) {
-          const text = lastAssistant.content.map(c => (c && c.text) || '').join('').trim().slice(0, 400)
-          summary = text
-        }
-      }
-      if (!summary) summary = '会话已完成'
-      feishuNotify.sendMessage({
-        text: `【Git Manager 任务完成】\n${summary}`
-      }).catch(e => console.warn('[Feishu] 任务完成通知发送失败:', e.message))
-    } catch (e) {
-      console.warn('[Feishu] 任务完成通知失败:', e.message)
     }
   }
 
