@@ -3,9 +3,11 @@
 本文档把「角色 / 记忆 / 上下文 / 压缩 / 总结 / 学习 / 反馈 / 验证」及架构、模块、扩展性、冗余、消息贯穿、Hook 等维度**系统化记录**，并给出**可执行的优先级与切片**。与下列文档对齐阅读：
 
 - `docs/OPTIMIZATION-ROADMAP.md` — 工程与产品级 P0–P3 总览  
-- `docs/plans/agent-self-evolution-roadmap.md` — 记忆治理与进化闭环（A–E 阶段）  
 - `docs/plans/agent-capability-routing.md` — 能力与投递路由  
+- `docs/MESSAGE-CONTRACT.md` — 消息 `meta`、envelope、EventBus  
 - `docs/MAIN-PROCESS-MODULARIZATION.md` — 主进程模块化与 IPC 边界  
+
+**记忆 / 进化闭环（原 A–E 阶段清单）**：已全部在实现中落地；独立清单文件已移除，避免与本表重复维护。若需追溯条目，见 git 历史中的 `docs/plans/agent-self-evolution-roadmap.md`。
 
 ---
 
@@ -49,7 +51,7 @@
 | 消息扩展字段 | `_hideInUI`、`_uiKey`、工具 JSON 内 `envelope` 等 |
 
 **优化方向**  
-- **内部 Message 契约**：JSDoc typedef 或短规范文档（role、content、tool_calls、可选 `meta` / `envelope` / UI 字段），新字段进 `meta` 优于顶层泛滥。  
+- **内部 Message 契约**：见 **`docs/MESSAGE-CONTRACT.md`**（`meta` / envelope / EventBus）；新字段优先进 `meta`。  
 - **清洗与解析单点化**：继续把「最终 assistant 文本」「sessions_spawn 解析」收拢到 `inbound-message-text` 等模块，避免 Gateway 与 IM 各写一套分支。  
 - **EventBus**：`electron/core/events.js` 中 `emit` 与异步 handler 的语义已注释；若引入多 listener 的「上下文 hook」，优先 **`emitAsync` + 有序中间件** 或显式 pipeline。
 
@@ -84,7 +86,7 @@
 
 ### 6. 学习（Learning）与进化
 
-| 现状 | `docs/plans/agent-self-evolution-roadmap.md` A–E 与代码（evolve、tool-outcome-summary、execution-envelope）已对齐 |
+| 现状 | 进化路线 A–E（记忆、工具失败归因、envelope、路由、策略教训）已在代码侧落地：`evolve`、`tool-outcome-summary`、`execution-envelope` 等 |
 
 **优化方向**  
 - 触发策略除时间/条数外，增加 **高价值信号**（如同 `error.code` 连续失败、用户明确「记下来」）再蒸馏或提示 `lesson_save`。  
@@ -169,7 +171,7 @@
 | ID | 项 | 产出/验收 |
 |----|----|-----------|
 | C0-1 | **System prompt / 角色块单一构建源** | 主进程函数 + ChatPanel 改为调用或消费同构结果；技能规则只维护一处 |
-| C0-2 | **内部 Message 契约文档 + 推荐字段** | `docs/` 短文或 JSDoc；新扩展优先 `meta` |
+| C0-2 | **内部 Message 契约文档 + 推荐字段** | ✅ **`docs/MESSAGE-CONTRACT.md`** + `events.js` 注释；新扩展优先 `meta` |
 | C0-3 | **EventBus 异步语义决策** | 文档明确；新 hook 必须用 `emitAsync` 或 pipeline，避免依赖 `emit` 的 Promise 边角 |
 
 ### P1 — 中优先级（质量与可观测）
@@ -215,7 +217,7 @@
 
 - 完成某项：在本文件对应表格行追加「✅ 完成日期 + PR/提交说明」。  
 - 大方向变更：先改本节与关联 `docs/plans/*`，再在一行内同步 `docs/OPTIMIZATION-ROADMAP.md` 的引用。  
-- 与自我进化路线重叠的条目（记忆、evolve、envelope）：以 `agent-self-evolution-roadmap.md` 为执行清单，**本文档作为架构总览与优先级索引**。
+- 记忆、evolve、envelope 等：**本文档 §九 + `MESSAGE-CONTRACT.md`** 为当前真相源；不再维护单独的 A–E 勾选文件。
 
 ---
 

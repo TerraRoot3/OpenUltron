@@ -103,8 +103,8 @@ npm run release:all
 
 ## 文档
 
-完整索引与分类见 **[docs/README.md](./docs/README.md)**（路线图、主进程拆分、Web 沙箱、技能包、专项计划等）。  
-常用入口：[优化与演进路线图](./docs/OPTIMIZATION-ROADMAP.md)、[Gateway WebSocket](./docs/GATEWAY-WEBSOCKET.md)、[Web 沙箱设计](./docs/WEB-APPS-SANDBOX-DESIGN.md)、[技能包说明](./docs/SKILLS-PACK-COMPAT.md)。  
+**[docs/README.md](./docs/README.md)** 为技术文档总索引（智能体/消息契约、主进程拆分、Gateway、Web 沙箱、技能、专项计划）。  
+常用入口：[优化路线图](./docs/OPTIMIZATION-ROADMAP.md)、[认知层计划](./docs/plans/agent-cognitive-architecture-plan.md)、[消息契约](./docs/MESSAGE-CONTRACT.md)、[Gateway](./docs/GATEWAY-WEBSOCKET.md)、[Web 沙箱](./docs/WEB-APPS-SANDBOX-DESIGN.md)、[技能包](./docs/SKILLS-PACK-COMPAT.md)。  
 侧栏 **应用**：应用库 **`/web-apps`**；全屏预览 **`/app-open`**；工作室 **`/web-app-studio`**（左预览 + 右 AI）。
 
 ---

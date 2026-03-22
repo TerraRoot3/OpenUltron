@@ -2,23 +2,19 @@
 
 本文档把「深度分析」收敛为**可执行优先级**，与 `WEB-APPS-SANDBOX-DESIGN.md`、`docs/plans/agent-capability-routing.md` 等对齐，便于迭代时对照。
 
-**认知层专项（角色 / 记忆 / 上下文 / 压缩 / 总结 / 学习 / 反馈 / 验证 / Hook）** 的完整盘点、冗余收敛点、执行项与 **C0–C3 优先级**，见：**`docs/plans/agent-cognitive-architecture-plan.md`**（**§九** 分阶段落地状态表）。**内部消息与 EventBus 约定**：**`docs/MESSAGE-CONTRACT.md`**。
+**认知层专项**（角色 / 记忆 / 上下文 / 压缩 / 学习 / 验证 / Hook）见 **`docs/plans/agent-cognitive-architecture-plan.md`**（**§九** 落地状态表）。**消息与 EventBus**：**`docs/MESSAGE-CONTRACT.md`**。
 
 ---
 
-## 已落地的工程优化（示例）
+## 已落地的工程优化（摘要）
 
 | 项 | 说明 |
 |----|------|
-| **`electron/ai/ai-config-normalize.js`** | 统一 `modelPool` / `modelBindings` 规范化与 `finalizeAiModelFields`，供 `ai-save-config`、`applyGlobalDefaultModel`、`ai_config_control` 共用，减少三处逻辑漂移。 |
-| **`electron/main-process/inbound-model-command.js`** | 渠道首行 `/model` 解析与全局默认模型写入；`main.js` 通过 `createInboundModelCommandHandlers(deps)` 注入依赖。 |
-| **`docs/MAIN-PROCESS-MODULARIZATION.md`** | `main.js` 按域拆分蓝图：目录约定、`registerChannel` 分组、迁移顺序、风险与检查清单。 |
-| **`electron/main-process/ipc/window-logs-notifications.js`** | 日志 / 窗口 / 刷新 / 系统通知 / `get-api-base-url` IPC 从 `main.js` 迁出，依赖注入。 |
-| **`electron/main-process/ipc/store-config-snapshot.js`** | `savedConfigs` 删除与按路径的 current-config 快照 IPC。 |
-| **`electron/main-process/ipc/fs-dialog-basic.js`** | 打开/保存对话框与基础同步文件读写 IPC。 |
-| **`electron/main-process/ipc/shell-spawn-command.js`** | bash 执行、实时输出、取消子进程与 Git `index.lock` 处理 IPC。 |
-| **`electron/main-process/ipc/external-open.js`** | Cursor、系统终端、访达、`shell.openExternal` 等 IPC。 |
-| **`electron/main-process/ipc/browser-extensions.js`** | Webview `persist:main` 的 Chrome 扩展 IPC。 |
+| **模型配置** | `electron/ai/ai-config-normalize.js`：`modelPool` / `modelBindings` 等与 `ai-save-config`、`ai_config_control` 共用 |
+| **渠道 `/model`** | `main-process/inbound-model-command.js` + `main.js` 注入 |
+| **主进程 IPC 拆分** | 大量 `registerChannel` 已迁入 `main-process/ipc/*`；**完整模块表与剩余阶段**见 **`docs/MAIN-PROCESS-REMAINING-PLAN.md`** |
+| **编排与任务取消** | `AbortSignal` 贯穿 `execute_command` → Shell 进程组；MCP `callTool` 在 stdio/HTTP 侧可中断等待；`classifyStopPreviousIntent` 关键词短路；同 session 叠 `runId` 可观测日志；工具 context 优先使用当前 `chatRunId` |
+| **拆分蓝图** | **`docs/MAIN-PROCESS-MODULARIZATION.md`**（原则、目录、风险） |
 
 ---
 
@@ -48,11 +44,9 @@
 
 ## P2 — 可观测性与运维
 
-- 为每次 `startChat` 生成 **`runId`**（`electron/ai/run-id.js`）：**`wrappedSender`** 对 token / tool / usage / complete / error 统一注入；**Gateway WebSocket** 转发 **`runId`**，并修正 **`tool_result`** 字段（与 IPC 一致）；**`sessions_spawn` → `runSubChat`** 的 **`parentRunId`** 与 **`execution-envelope.metrics`** 见上文。  
-- 错误分类（已有 `_classifyLlmError`）可 **落盘统计**，便于看「哪家供应商、哪类模型」故障率高。  
-- `main.js` **按域拆分**（渠道、Gateway、配置、MCP），降低单文件认知成本。  
-  - 实施指南：**`docs/MAIN-PROCESS-MODULARIZATION.md`**（分阶段迁出 `main-process/ipc/*`，避免循环依赖）。  
-  - **剩余约 40+ 条 `registerChannel`（main.js 顶层）的分阶段清单与里程碑**：**`docs/MAIN-PROCESS-REMAINING-PLAN.md`**（阶段 2–5、7 薄 IPC、8 部分已落地；AI 大块与飞书 inbound 仍在 main）。
+- **`runId`**（`electron/ai/run-id.js`）：`wrappedSender` 对 token / tool / usage / complete / error 统一注入；Gateway WebSocket 转发；`sessions_spawn` / `parentRunId` / `execution-envelope.metrics` 等与上文 P0 对齐。  
+- 错误分类（`_classifyLlmError`）可 **落盘统计**（供应商 / 模型维度）。  
+- **`main.js` 继续瘦身**：Gateway 装配、飞书入站大段、bootstrap — 见 **`docs/MAIN-PROCESS-REMAINING-PLAN.md`** + **`docs/MAIN-PROCESS-MODULARIZATION.md`**。
 
 ---
 
