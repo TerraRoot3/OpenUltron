@@ -2,6 +2,8 @@
 
 `electron/main.js` 体量极大（约 1 万行），集中了 **IPC、`registerChannel`、渠道编排、AI 编排、浏览器/扩展、文件与终端** 等逻辑。本文说明 **如何按域拆分**、**依赖方向**、**迁移顺序与风险**，与 `OPTIMIZATION-ROADMAP.md` P2 对齐。
 
+**剩余 channel 与分阶段收尾清单**：见 [`MAIN-PROCESS-REMAINING-PLAN.md`](./MAIN-PROCESS-REMAINING-PLAN.md)（约 ~100 条待迁出时的执行顺序与里程碑）。
+
 ---
 
 ## 1. 为什么要拆

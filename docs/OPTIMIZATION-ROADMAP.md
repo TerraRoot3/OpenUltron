@@ -49,7 +49,8 @@
 - 为每次 `startChat` / 子 Agent run 打 **统一 `runId`**，日志与 tool 结果可关联。  
 - 错误分类（已有 `_classifyLlmError`）可 **落盘统计**，便于看「哪家供应商、哪类模型」故障率高。  
 - `main.js` **按域拆分**（渠道、Gateway、配置、MCP），降低单文件认知成本。  
-  - 实施指南：**`docs/MAIN-PROCESS-MODULARIZATION.md`**（分阶段迁出 `main-process/ipc/*`，避免循环依赖）。
+  - 实施指南：**`docs/MAIN-PROCESS-MODULARIZATION.md`**（分阶段迁出 `main-process/ipc/*`，避免循环依赖）。  
+  - **剩余 ~100 条 `registerChannel` 的分阶段清单与里程碑**：**`docs/MAIN-PROCESS-REMAINING-PLAN.md`**。
 
 ---
 

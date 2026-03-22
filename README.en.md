@@ -103,6 +103,7 @@ npm run release:all
 
 - [Optimization & agent roadmap](./docs/OPTIMIZATION-ROADMAP.md)
 - [Main process (main.js) modularization plan](./docs/MAIN-PROCESS-MODULARIZATION.md)
+- [Main process split: remaining work & phased plan](./docs/MAIN-PROCESS-REMAINING-PLAN.md)
 - [OpenAI Codex vs Chat Completions](./docs/OPENAI-CODEX-AND-CHAT-COMPLETIONS.md)
 - [Skills & ClawHub compatibility](./docs/SKILLS-PACK-COMPAT.md)
 - [Web sandbox apps](./docs/WEB-APPS-SANDBOX-DESIGN.md)
