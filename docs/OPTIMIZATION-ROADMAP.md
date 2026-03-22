@@ -28,7 +28,8 @@
    - 现状：`electron/ai/execution-envelope.js` 已有基础，需在 `sessions_spawn` 完成路径与 Feishu 等投递侧 **强制规范化**。
 
 2. **关键路径自动化测试**  
-   - 优先：`openai-responses.js`（Codex vs Platform 请求体差异）、`resolve-provider-config.js` / 模型路由、`ai-config-normalize.js`。  
+   - 已覆盖（Vitest）：`ai-config-normalize.js`、`resolve-provider-config.js`、`capability-router.js`、`execution-envelope.js`。  
+   - 仍建议补齐：`openai-responses.js`（Codex vs Platform 请求体差异）等。  
    - 工具：Vitest + Node 环境即可，不必先上 E2E。
 
 ---

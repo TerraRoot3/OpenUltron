@@ -11,7 +11,7 @@
 ## 架构要点
 
 1. **Capability Router**（`electron/ai/capability-router.js`）  
-   从用户文本解析：`capability`（如 docs / sheets / bitable / browser / artifact）、`executionMode`（默认 internal，显式指令才 `external:codex` 等）、`deliveryPolicy`、`riskLevel`。当前为**启发式**，复杂意图仍依赖模型与系统提示。
+   从用户文本解析：`capability`（如 docs / sheets / bitable / browser / artifact）、`executionMode`（默认 internal，显式指令才 `external:codex` 等）、`deliveryPolicy`、`riskLevel`。当前为**启发式**，复杂意图仍依赖模型与系统提示。含「多维表格」的语句优先判为 **bitable**，避免被「表格」关键词误判为 sheets。
 
 2. **Execution Envelope**（`electron/ai/execution-envelope.js`）  
    统一字段：`success`、`summary`、`artifacts[]`、`logs[]`、`tool_events[]`、`error { code, message, retriable }`、`metrics`。`sessions-spawn` 等路径应始终产出可被主流程消费的 envelope。

@@ -13,8 +13,10 @@ function detectCapability(text = '') {
   const t = String(text || '').toLowerCase()
   if (!t) return 'general'
   if (/(飞书|feishu).*(文档|doc|docx|写|改|润色|重写|周报|报告|会议纪要)|((写|改|润色|重写).*(飞书|文档|docx?))/.test(t)) return 'docs'
+  // 多维表格含「表格」字样，须先于普通电子表格规则匹配
+  if (/(多维表格|bitable)/.test(t)) return 'bitable'
   if (/(表格|sheet|sheets|电子表格|单元格)/.test(t)) return 'sheets'
-  if (/(多维表格|bitable|记录|字段|数据表)/.test(t)) return 'bitable'
+  if (/(记录|字段|数据表)/.test(t)) return 'bitable'
   if (/(截图|screenshot|网页|打开页面|浏览器)/.test(t)) return 'browser'
   if (/(打包|zip|压缩|发文件|发送文件|下载文件|导出)/.test(t)) return 'artifact'
   return 'general'
