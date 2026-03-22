@@ -12,6 +12,7 @@ const { promisify } = require('util')
 const openultronConfig = require('../openultron-config')
 const { redactSensitiveText } = require('../core/sensitive-text')
 const { logger: appLogger } = require('../app-logger')
+const { markdownToFeishuPost, shouldUseFeishuRichPost } = require('./feishu-markdown-to-post')
 
 const CONFIG_PATH = openultronConfig.getPath()
 
@@ -1215,6 +1216,17 @@ async function sendMessage(options = {}) {
     const content = text != null ? redactSensitiveText(String(text)) : ''
     if (!content) {
       return { success: false, message: '请提供 text、image_key/image_base64、file_key/file_path、post、audio_* 或 media_* 之一' }
+    }
+    const forcePlain = options.force_plain_text === true || options.text_format === 'plain'
+    if (!forcePlain && shouldUseFeishuRichPost(content)) {
+      try {
+        const postPayload = markdownToFeishuPost(content)
+        const res = await sendPost(receiveId, postPayload, receiveIdType)
+        appLogger?.info?.('[Feishu] 已以 post 富文本发送（含粗体/链接等），长度', content.length)
+        return { success: true, message_id: res.data && res.data.message_id, message: '富文本发送成功' }
+      } catch (e) {
+        appLogger?.warn?.('[Feishu] post 发送失败，降级为纯文本', { error: e.message || String(e) })
+      }
     }
     const res = await sendText(receiveId, content, receiveIdType)
     return { success: true, message_id: res.data && res.data.message_id, message: '发送成功' }

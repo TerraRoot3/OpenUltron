@@ -1149,6 +1149,11 @@ const fetchIdentityPathHint = async () => {
 // 稳定的面板 ID（整个 ChatPanel 实例生命周期不变，用于 session-registry 追踪页面在线状态）
 const panelId = `panel-${props.projectPath || '__general__'}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
 
+// 会话 ID 在 ref 与 useAIChat 闭包间同步，避免仅改 ref 时点「停止」仍带着旧/空的 sessionId 调 chatStop
+watch(currentSessionId, (v) => {
+  useAIChatInstance.setCurrentSessionId(v != null && v !== '' ? v : null)
+}, { immediate: true })
+
 // 切换会话时记录该会话曾使用的供应商，但不自动覆盖全局默认供应商
 // （避免加载旧会话后永久改变用户的默认供应商设置）
 const restoreProvider = async (savedApiBaseUrl) => {

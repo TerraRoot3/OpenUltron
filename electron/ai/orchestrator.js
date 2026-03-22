@@ -77,6 +77,38 @@ function canSend(sender) {
 }
 
 /**
+ * 注入系统上下文的「本机当前时间」块。
+ * 模型常把「当前」误写成训练截止附近的年份（如 2025），需给出明确真值源并强调优先于训练先验与网页上的过期日期。
+ */
+function buildLocalNowContextBlock() {
+  const d = new Date()
+  const y = d.getFullYear()
+  const mo = d.getMonth() + 1
+  const day = d.getDate()
+  const wk = ['日', '一', '二', '三', '四', '五', '六'][d.getDay()]
+  const h = String(d.getHours()).padStart(2, '0')
+  const mi = String(d.getMinutes()).padStart(2, '0')
+  const s = String(d.getSeconds()).padStart(2, '0')
+  let tz = ''
+  try {
+    tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''
+  } catch (_) { /* ignore */ }
+  const isoLocal = `${y}-${String(mo).padStart(2, '0')}-${String(day).padStart(2, '0')}T${h}:${mi}:${s}`
+  const dateZh = `${y}年${mo}月${day}日`
+  return [
+    '[当前时间 — 以运行本应用的电脑本机系统时钟为准]',
+    `- 日期：${dateZh}（星期${wk}）`,
+    `- 时刻：${h}:${mi}:${s}（24 小时制，本地）`,
+    `- IANA 时区：${tz || '（未能解析，仍按下方本地时刻理解）'}`,
+    `- ISO 本地日期+时刻：${isoLocal}`,
+    '',
+    '凡涉及「今天、现在、此刻、本周、本月、今年、当前日期/年份」等，必须与上列**公历年月日**一致。',
+    '不得以模型训练数据中的默认年份（例如误认为仍是 2025）代替；不得以搜索结果、网页页眉或文章里的旧日期代替「今天」。',
+    '若联网内容与上列冲突：以本段为「日历真值」；可向用户简短说明「按本机时间」。'
+  ].join('\n')
+}
+
+/**
  * 同 session 新消息是否「明显只想停掉当前任务」——命中则跳过 LLM 分类，省一次请求。
  * @returns {boolean|null} true=停止, false=明显不停止, null=交下游模型判断
  */
@@ -280,6 +312,7 @@ class Orchestrator {
     this.activeSessions.set(sessionId, {
       abortController,
       chatRunId,
+      panelId: panelId && String(panelId).trim() ? String(panelId).trim() : '',
       projectPath: projectPath || '',
       feishuChatId: feishuChatId || '',
       feishuTenantKey: feishuTenantKey || '',
@@ -429,13 +462,7 @@ class Orchestrator {
       const taskPersistenceText = loadPrompt('task-persistence')
       if (taskPersistenceText) memParts.push(taskPersistenceText)
 
-      {
-        const d = new Date()
-        const todayStr = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`
-        memParts.push(
-          `[当前日期]\n当前日期：${todayStr}。回答中凡涉及「今天」「本月」「当前」等时间，必须使用此日期（${todayStr}），不得使用搜索结果或其它来源的日期。`
-        )
-      }
+      memParts.push(buildLocalNowContextBlock())
 
       // 0.5 飞书会话（从 prompts/feishu-session.md 或默认）
       const session = this.activeSessions.get(sessionId)
@@ -1366,6 +1393,11 @@ class Orchestrator {
     if (session) {
       appLogger?.info?.('[Orchestrator] stopChat 中止会话', { sessionId: String(sessionId).slice(0, 24) })
       session.abortController.abort()
+      // session-registry 的 key 与 markRunning 一致：panelId || sessionId；需一并 stop，否则 waitIfPaused 可能永远挂起
+      const regId = (session.panelId && String(session.panelId).trim()) || sessionId
+      try {
+        sessionRegistry.stop(regId)
+      } catch (_) { /* ignore */ }
       this.activeSessions.delete(sessionId)
     }
   }
@@ -1783,6 +1815,7 @@ class Orchestrator {
           if (signal.aborted) { req.destroy(); return }
           const events = parser.parse(chunk)
           for (const event of events) {
+            if (signal.aborted) { req.destroy(); return }
             if (event.type === 'done' || event.type !== 'data') continue
             const choice = event.data.choices?.[0]
             if (!choice?.delta) continue
@@ -1814,6 +1847,10 @@ class Orchestrator {
           }
         })
         res.on('end', () => {
+          if (signal.aborted) {
+            reject(new Error('已取消'))
+            return
+          }
           if (toolCalls.length === 0 && Object.keys(toolCallBuffers).length > 0) {
             toolCalls = Object.values(toolCallBuffers).map((tc, idx) => ({
               id: (tc.id && String(tc.id).trim()) || `call_${idx}_${Date.now()}`,
@@ -1893,6 +1930,7 @@ class Orchestrator {
           if (signal.aborted) { req.destroy(); return }
           const events = parser.parse(chunk)
           for (const event of events) {
+            if (signal.aborted) { req.destroy(); return }
             if (event.type === 'done') continue
             if (event.type !== 'data') continue
             const parsed = event.data
@@ -1914,6 +1952,10 @@ class Orchestrator {
           }
         })
         res.on('end', () => {
+          if (signal.aborted) {
+            reject(new Error('已取消'))
+            return
+          }
           resolve({ content: fullContent, toolCalls })
         })
         res.on('error', onError)
@@ -1981,6 +2023,7 @@ class Orchestrator {
           if (signal.aborted) { req.destroy(); return }
           const events = parser.parse(chunk)
           for (const event of events) {
+            if (signal.aborted) { req.destroy(); return }
             if (event.type !== 'data') continue
             const d = event.data
             if (!d || !d.type) continue
@@ -2035,6 +2078,10 @@ class Orchestrator {
           }
         })
         res.on('end', () => {
+          if (signal.aborted) {
+            reject(new Error('已取消'))
+            return
+          }
           // 兜底：如果 message_delta 没触发也要收集
           if (toolCalls.length === 0) {
             for (const [, block] of Object.entries(contentBlocks)) {

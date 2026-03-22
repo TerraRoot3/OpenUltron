@@ -8,7 +8,7 @@ const artifactRegistry = require('../artifact-registry')
 const definition = {
   description: `向飞书群或会话发送消息。当用户在飞书内与机器人对话时，不传 chat_id 会自动发往当前会话。
 
-【发文本】传 text。
+【发文本】传 text。含 **粗体**、`代码`、`[链](url)`、标题(#)、列表(-) 时，服务端会自动用飞书 **post 富文本** 发送以便客户端渲染；若必须纯文本（不转义）可传 text_format=plain。
 【发图片】二选一：1) image_key（已上传得到的 key）；2) image_base64 + image_filename（如 image.png），会自动上传后发送。限制：单张 <10MB，GIF≤2000×2000，其他≤12000×12000；格式仅支持 JPG/PNG/GIF/WEBP/BMP。
 【发文件】二选一：1) file_key（已上传得到的 key）；2) file_path（本地绝对路径），会自动上传后发送。限制：<30MB。
 【发语音】飞书仅支持 opus 格式，三种方式任选：1) audio_text：传入要读的文字，自动 TTS 成 opus 发送（推荐）；2) audio_file_path：本地 .opus 文件路径；3) audio_file_key：已上传的 opus 的 file_key。音色用 audio_voice（如 zh-CN-XiaoyiNeural 或配置的别名），可选 audio_duration（秒）。
@@ -23,7 +23,12 @@ const definition = {
       },
       text: {
         type: 'string',
-        description: '发送纯文本时必填'
+        description: '发送纯文本时必填。含常见 Markdown 片段时会自动以飞书 post 富文本发送以便加粗/链接等渲染'
+      },
+      text_format: {
+        type: 'string',
+        enum: ['auto', 'plain'],
+        description: '可选。auto（默认）：自动识别 Markdown 并尽量发 post；plain：强制纯 text 消息（不渲染 ** 等）'
       },
       image_key: {
         type: 'string',
@@ -142,7 +147,7 @@ function isImageExt(filePath) {
 
 async function execute(args, context = {}) {
   const {
-    chat_id, text, image_key, image_base64, image_filename, file_key, file_name, file_path, post_title, post_content,
+    chat_id, text, text_format, image_key, image_base64, image_filename, file_key, file_name, file_path, post_title, post_content,
     audio_file_key, audio_file_name, audio_file_path, audio_duration, audio_text, audio_voice, audio_lang, audio_rate, audio_volume, audio_pitch,
     media_file_key, media_file_name, media_file_path, media_image_key
   } = args || {}
@@ -219,6 +224,7 @@ async function execute(args, context = {}) {
     opts.file_path = normalizedFilePath2 || undefined
   } else if (text != null) {
     opts.text = String(text)
+    if (text_format === 'plain') opts.force_plain_text = true
   }
 
   const hasAnyPayload = !!(

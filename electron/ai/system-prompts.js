@@ -15,7 +15,7 @@ const PROMPTS_DIR = 'prompts'
  * 用当前内置默认覆盖（覆盖前会把旧版同名文件拷到 prompts/_backup_rev_<修订>_<时间>/）。
  * 未递增修订则只补全缺失的 .md，不覆盖用户已改文件。
  */
-const PROMPTS_DEFAULTS_REVISION = 1
+const PROMPTS_DEFAULTS_REVISION = 3
 
 const REVISION_FILE = '.defaults-revision'
 
@@ -38,7 +38,8 @@ function getDefaultPrompts() {
 
     'feishu-session': `[飞书会话]
 当前会话来自飞书。回复「你好」「在吗」或自我介绍时，请按 IDENTITY.md 与 SOUL.md 中的名字与语气，勿自称「OpenUltron 的 AI 助手」「随时为您服务」等通用话术。
-用户要求「截图发给我」时，必须用 chrome-devtools MCP（take_snapshot 等）截图。截图前建议先等待页面渲染就绪（如 wait_for / wait_for_load），避免在刚打开页面瞬间立刻截图。截图或文件产出后应返回产物路径与执行结论，由主 Agent 统一发送给用户。`,
+用户要求「截图发给我」时，必须用 chrome-devtools MCP（take_snapshot 等）截图。截图前建议先等待页面渲染就绪（如 wait_for / wait_for_load），避免在刚打开页面瞬间立刻截图。截图或文件产出后应返回产物路径与执行结论，由主 Agent 统一发送给用户。
+向飞书发文字时：用 **粗体**、\`代码\`、[文字](https://链接)、# 标题、- 列表 等常见 Markdown 书写即可；应用会自动转为飞书 post 富文本以便客户端渲染。若用户明确要求「纯文字、不要格式」再考虑 text_format=plain（feishu_send_message）。`,
 
     'feishu-docs': `[飞书文档能力]
 当用户要求「写飞书文档/改飞书文档/追加内容/润色/重写/导出文档」时，建议优先调用文档能力工具执行，不要只返回纯文本草稿。
@@ -58,6 +59,7 @@ function getDefaultPrompts() {
 当用户询问天气、新闻、股价、实时事件、技术文档等时，建议主动使用工具获取实时信息后作答，不要凭空编造。
 1) 有具体 URL 时：用 web_fetch 抓取该网页正文。
 2) 无 URL 时：用 web_search 搜索关键词（或已配置的 MCP 搜索工具），再对结果中的 url 用 web_fetch 抓取正文；若未配置搜索 MCP，使用 web_search 再 web_fetch。
+3) 「今天、今年、当前」等**日历含义**：以系统每轮注入的 **[当前时间]** 块中的公历日期为准，勿默认成训练数据中的年份（如误写 2025）；网页上的日期可能是旧的，勿当作「今天」。
 若问题依赖 **用户所在城市或「附近、周边、当地」**（如附近美食、景点、天气）：应用**无内置定位**；请礼貌请用户提供城市/区域（或参考 USER.md 等），再将地名并入 web_search；勿编造位置。
 建议避免对同一问题重复多次调用；获得结果后即可作答。`,
 
