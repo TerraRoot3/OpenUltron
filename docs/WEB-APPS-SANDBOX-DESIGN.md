@@ -547,3 +547,23 @@ web-apps/<appId>/
 - **IPC 一览**：见 **`docs/WEB-APPS-IPC-REFERENCE.md`**。
 - **安装错误码（D2 子集）**：**`docs/WEB-APPS-INSTALL-ERRORS.md`**。
 - **MVP manifest JSON Schema（草案）**：**`docs/manifest-web-app-mvp.schema.json`**（与 `validateMvpManifest` 对齐，可扩展字段仍见 §3.2）。
+
+### 20.10 应用工作室：AI 自测约定（所有沙箱应用）
+
+目标：不限于示例应用，**任意** `web-apps/<id>/<version>/` 在工作室中由 AI 改动时，都应进入 **写代码 → 自测 → 修复 → 再测** 的闭环。
+
+| 项 | 约定 |
+|----|------|
+| **触发** | 功能或修复交付前，在**应用根目录**执行自测；未通过不得宣称完成。 |
+| **逻辑** | 有本地 HTTP/Node 服务时，用 **node:test** 或脚本断言关键 API；纯静态至少 **node --check** 或项目既有检查命令。 |
+| **UI** | 优先 **Playwright / Cypress** smoke（`data-testid` + 断言）；无条件时 **fetch 入口 HTML** 做弱断言并说明未做 E2E 的原因。 |
+| **npm** | 宿主 **`npm-install.js`** 默认 **`--omit=dev`**，E2E 依赖在 devDependencies 时，自测前在应用目录执行 **`npm install --include=dev`**，并按需 **`npx playwright install chromium`** 等。 |
+| **入口** | 建议在 **`package.json`** 提供 **`test`**、可选 **`test:e2e`**、**`verify`**；README 一两行说明。 |
+
+**实现**：主进程 **`orchestrator`** 对 `web-apps` 工作室会话在 memory 中注入 **「自测·必做」** 全文；前端 **`WebAppStudioView`** 的补充 system 中有一行短提醒，与设计文档本节一致。
+
+### 20.11 委派「应用工作室 Agent」（主会话 / IM）
+
+- **工具**（内置）：**`web_apps_list`**、**`web_apps_create`**、**`webapp_studio_invoke`**（参数 **`task`** + **`project_path`** / **`app_id`+`version`** / 仅 **`app_id`** / **`app_hint`** / **`create_new`** 等，同前节）。**主会话/协调会话**对 `~/.openultron/web-apps` 的 **`file_operation(write)`、`apply_patch`、cwd 落在该树内的 `execute_command`、非只读 `git_operation`** 由 **`orchestrator._executeTool`** 拒绝，强制走 **`webapp_studio_invoke`**。发给模型的工具列表中，上述三者名称排序靠前，且在 **OpenRouter 等 slim 模式**下**不截断**其 description，避免模型扫不到或误用通用写文件工具。子会话内不可用 `webapp_studio_invoke` / `web_apps_create` / `sessions_spawn`。
+- **回传调用方**：子 Agent system 中注入 **【工作室结果】** 格式要求；工具返回值含 `result` / `envelope` / `studio_path`，主会话或飞书协调 Agent 应据此向用户汇总（与 **`sessions_spawn`** 的 envelope 语义一致）。
+- **飞书**：协调 Agent 工具列表在 **未开启** `imCoordinator.include_sessions_spawn` 时仍包含 **`webapp_studio_invoke`**，以便仅委派工作室而不开放通用子 Agent。

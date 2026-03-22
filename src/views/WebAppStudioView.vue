@@ -155,6 +155,7 @@ const studioSystemPrompt = computed(() => {
     `- **左侧沙箱预览 URL**：\`${prev}\``,
     '',
     '**路径规则**：优先使用 **绝对路径**（以应用根目录开头）。也可使用 **相对应用根** 的路径（如 `index.html`、`styles.css`），宿主会自动拼接到应用根目录。**不要**把文件写到 OpenUltron 安装目录或其它项目。修改 `index.html`、`.css`、`manifest.json` 等会直接影响左侧预览；保存成功后界面会尝试 **自动刷新预览**，用户也可随时点「刷新预览」。',
+    '**自测**：改动后须在本应用根目录跑通自测（逻辑 + 关键 UI/行为），`package.json` 中提供 `test` / `test:e2e` / `verify` 为宜；宿主安装依赖默认省略 dev，跑 Playwright 等前需在该目录 `npm install --include=dev`。完整要求见系统上下文中「自测·必做」。',
     '**回复时**若提及「当前应用」，请用上述 **名称 / id**，避免与其它仓库混淆。'
   ].join('\n')
 })

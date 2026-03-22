@@ -9,6 +9,9 @@ const DEFAULT_SLIM_OPTS = {
   maxPropertyDescriptionChars: 60
 }
 
+/** 侧栏「应用」沙箱相关：描述被截断会导致模型找不到或误用 file_operation，故不参与瘦身 */
+const NO_SLIM_TOOL_NAMES = new Set(['web_apps_list', 'web_apps_create', 'webapp_studio_invoke'])
+
 function shouldSlimToolDefinitions(apiBaseUrl, slimMode) {
   const mode = String(slimMode || 'openrouter').toLowerCase()
   if (mode === 'never' || mode === 'off' || mode === 'false') return false
@@ -71,6 +74,12 @@ function slimToolsForChat(tools, toolDefConfig, apiBaseUrl) {
   return list.map((t) => {
     const fn = t && t.function ? t.function : {}
     const name = fn.name || ''
+    if (NO_SLIM_TOOL_NAMES.has(name)) {
+      return {
+        type: t.type || 'function',
+        function: { ...fn }
+      }
+    }
     let desc = typeof fn.description === 'string' ? fn.description : ''
     if (desc.length > maxDesc) {
       desc = `${desc.slice(0, maxDesc)}…`

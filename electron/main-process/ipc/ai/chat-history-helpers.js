@@ -174,7 +174,7 @@ function createChatHistoryHelpers (deps) {
         for (const tc of m.tool_calls) {
           const fn = tc && tc.function ? tc.function.name : ''
           const id = tc && tc.id ? String(tc.id) : ''
-          if (fn === 'sessions_spawn' && id) sessionSpawnCallIds.add(id)
+          if ((fn === 'sessions_spawn' || fn === 'webapp_studio_invoke') && id) sessionSpawnCallIds.add(id)
         }
       }
       if (m.role === 'tool') {

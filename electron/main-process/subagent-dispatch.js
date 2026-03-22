@@ -3,6 +3,7 @@
  */
 
 const { buildExecutionEnvelope } = require('../ai/execution-envelope')
+const { buildWebAppStudioDelegateCallerBlock } = require('../ai/webapp-studio-context')
 
 /** @param {object} deps — 见 main.js 原 createSubagentDispatch 调用处 */
 function createSubagentDispatch(deps) {
@@ -193,7 +194,7 @@ function createSubagentDispatch(deps) {
     }
   }
 
-  async function runByInternalSubAgent({ task, systemPrompt, roleName, model, projectPath, provider, eventSink, feishuChatId, feishuTenantKey, feishuDocHost, feishuSenderOpenId, feishuSenderUserId, capability }, subSessionId) {
+  async function runByInternalSubAgent({ task, systemPrompt, roleName, model, projectPath, provider, eventSink, feishuChatId, feishuTenantKey, feishuDocHost, feishuSenderOpenId, feishuSenderUserId, capability, webappStudioDelegate, parentSessionIdForDelegate }, subSessionId) {
     const messages = []
     const rolePrompt = roleName && String(roleName).trim()
       ? `你当前扮演的角色是「${String(roleName).trim()}」。请按该角色完成任务，并仅输出该角色应给出的结果。`
@@ -201,8 +202,11 @@ function createSubagentDispatch(deps) {
     const capabilityPrompt = capability === 'docs'
       ? '本任务属于飞书文档写作/修改能力。请优先调用文档能力工具（feishu_doc_capability 或可用的 lark docx 工具）执行真实创建/修改；不要只返回纯文本草稿。完成后返回文档链接/ID与变更摘要。'
       : ''
+    const delegateBlock = webappStudioDelegate && parentSessionIdForDelegate
+      ? buildWebAppStudioDelegateCallerBlock(parentSessionIdForDelegate)
+      : ''
     const deliveryPrompt = buildSubAgentDeliveryPrompt(projectPath || '')
-    const mergedSystemPrompt = [rolePrompt, capabilityPrompt, systemPrompt && String(systemPrompt).trim() ? String(systemPrompt).trim() : '', deliveryPrompt]
+    const mergedSystemPrompt = [delegateBlock, rolePrompt, capabilityPrompt, systemPrompt && String(systemPrompt).trim() ? String(systemPrompt).trim() : '', deliveryPrompt]
       .filter(Boolean)
       .join('\n\n')
     if (mergedSystemPrompt) messages.push({ role: 'system', content: mergedSystemPrompt })
@@ -230,14 +234,15 @@ function createSubagentDispatch(deps) {
       }
     }
 
+    const pp = projectPath && String(projectPath).trim() ? String(projectPath).trim() : '__main_chat__'
     const result = await aiOrchestrator.startChat({
       sessionId: subSessionId,
       messages,
       model: model && String(model).trim() ? String(model).trim() : undefined,
-      tools: getToolsForSubChat(),
+      tools: getToolsForSubChat({ projectPath: pp }),
       sender: eventSink || null,
       config: resolvedConfig,
-      projectPath: projectPath || '__main_chat__',
+      projectPath: pp,
       panelId: undefined,
       feishuChatId: feishuChatId && String(feishuChatId).trim() ? String(feishuChatId).trim() : undefined,
       feishuTenantKey: feishuTenantKey && String(feishuTenantKey).trim() ? String(feishuTenantKey).trim() : undefined,
@@ -264,7 +269,7 @@ function createSubagentDispatch(deps) {
   }
 
   async function runSubChat(opts) {
-    const { task, systemPrompt, roleName, model, projectPath, provider, runtime, parentSessionId, parentRunId, feishuChatId, feishuTenantKey, feishuDocHost, feishuSenderOpenId, feishuSenderUserId, stream } = opts || {}
+    const { task, systemPrompt, roleName, model, projectPath, provider, runtime, parentSessionId, parentRunId, feishuChatId, feishuTenantKey, feishuDocHost, feishuSenderOpenId, feishuSenderUserId, stream, webappStudioDelegate } = opts || {}
     const subSessionId = `sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     const parentRun = String(parentRunId || '').trim()
     const route = resolveCapabilityRoute({ text: String(task || ''), runtime: String(runtime || '') }, appLogger)
@@ -424,7 +429,9 @@ function createSubagentDispatch(deps) {
               feishuTenantKey,
               feishuDocHost,
               feishuSenderOpenId,
-              feishuSenderUserId
+              feishuSenderUserId,
+              webappStudioDelegate: webappStudioDelegate === true,
+              parentSessionIdForDelegate: parentSessionId || ''
             }, subSessionId)
             if (out.success) {
               pushCommandLog('[meta] attempt internal success')

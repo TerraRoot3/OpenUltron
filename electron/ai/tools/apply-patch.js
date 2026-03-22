@@ -4,7 +4,8 @@ const fs = require('fs')
 const path = require('path')
 
 const definition = {
-  description: '对一个或多个文件应用精准的文本修改（patch）。适合修改已知文件的特定行，比 file_operation(write) 更省 token。每个 change 指定文件路径、要替换的原始文本（old）和新文本（new）。',
+  description:
+    '对一个或多个文件应用精准的文本修改（patch）。适合修改已知文件的特定行，比 file_operation(write) 更省 token。**禁止** patch ~/.openultron/web-apps 下沙箱应用文件：须 **webapp_studio_invoke**。每个 change 指定路径、old、new。',
   parameters: {
     type: 'object',
     properties: {

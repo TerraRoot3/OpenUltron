@@ -3,7 +3,8 @@ const fs = require('fs')
 const path = require('path')
 
 const definition = {
-  description: '结构化文件操作（备用工具）。大部分情况请优先使用 execute_command（cat/ls/grep/find 等），仅在需要写入文件或结构化搜索时使用此工具',
+  description:
+    '结构化文件操作（备用工具）。大部分情况请优先使用 execute_command（cat/ls/grep/find 等），仅在需要写入文件或结构化搜索时使用此工具。**禁止**对 ~/.openultron/web-apps 下侧栏「应用」沙箱使用 write：须用 **webapp_studio_invoke** 委派应用工作室。',
   parameters: {
     type: 'object',
     properties: {

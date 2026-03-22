@@ -324,13 +324,17 @@ function createInboundMessageTextHelpers (deps) {
     return ''
   }
 
+  const DELEGATION_AGENT_TOOL_NAMES = new Set(['sessions_spawn', 'webapp_studio_invoke'])
+
+  /** 提取 sessions_spawn / webapp_studio_invoke 最近一次工具结果摘要，供渠道侧与主窗口兜底展示 */
   function extractLatestSessionsSpawnResult (messages = []) {
     if (!Array.isArray(messages) || messages.length === 0) return ''
     const spawnCallIds = new Set()
     for (const m of messages) {
       if (!m || m.role !== 'assistant' || !Array.isArray(m.tool_calls)) continue
       for (const tc of m.tool_calls) {
-        if (tc?.function?.name === 'sessions_spawn' && tc.id) spawnCallIds.add(String(tc.id))
+        const fn = tc?.function?.name
+        if (fn && DELEGATION_AGENT_TOOL_NAMES.has(fn) && tc.id) spawnCallIds.add(String(tc.id))
       }
     }
     let last = ''

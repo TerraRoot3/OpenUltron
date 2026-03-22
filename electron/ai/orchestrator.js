@@ -31,6 +31,8 @@ const {
 const { isOpenRouterBaseUrl, applyNonStreamOpenAiChatMaxTokens } = require('./openrouter-chat-constants')
 const { mergeModelSelectionIntoConfig } = require('./resolve-provider-config')
 const { createChatRunId } = require('./run-id')
+const { buildWebAppStudioSandboxMemoryBlock } = require('./webapp-studio-context')
+const { getWebAppsRoot } = require('../web-apps/registry')
 
 /** 是否为相对路径（与仅以 `/` 开头区分，兼容 Windows 绝对路径） */
 function isRelativeFilePath(p) {
@@ -50,6 +52,20 @@ function isWebAppSandboxProject(projectPath) {
   if (!path.isAbsolute(p)) return false
   return /web-apps/i.test(p.replace(/\\/g, '/'))
 }
+
+function isPathUnderWebAppsInstallRoot(fp) {
+  try {
+    const root = path.resolve(getWebAppsRoot())
+    const abs = path.resolve(String(fp || '').trim())
+    if (!abs) return false
+    return abs === root || abs.startsWith(root + path.sep)
+  } catch (_) {
+    return false
+  }
+}
+
+const WEBAPP_DELEGATION_REQUIRED_MSG =
+  '侧栏「应用」沙箱（~/.openultron/web-apps）须由 **webapp_studio_invoke** 委派应用工作室 Agent 修改，勿在本会话直接改文件。已装列表：**web_apps_list**；新建：**web_apps_create** 或 webapp_studio_invoke(create_new=true)。'
 
 /** 从字符串中匹配第一个「绝对路径 + 图片扩展名」*/
 const SCREENSHOT_PATH_RE = /(\/var\/folders\/[^\s'")\]]+\.(?:png|jpg|jpeg|webp))|(\/tmp\/[^\s'")\]]+\.(?:png|jpg|jpeg|webp))|(\/(?:var|Users|tmp)[^\s'")\]]+\.(?:png|jpg|jpeg|webp))/i
@@ -425,15 +441,7 @@ class Orchestrator {
 
       // 0. 当前应用边界（最高优先级）
       if (webAppSandbox) {
-        memParts.push(
-          '[当前应用 - 应用工作室沙箱 · 最高优先级]\n' +
-          '你正在 **应用工作室** 中编辑 **一个已安装的 Web 沙箱应用**（不是 OpenUltron 主程序仓库）。\n' +
-          `本会话 **projectPath**（沙箱应用根目录，绝对路径）为：\n\`${sandboxRoot}\`\n` +
-          '相对路径默认基于该目录；修改 index.html/css/manifest.json 会直接影响预览。\n' +
-          '必须实际写文件后再汇报结果（file_operation/apply_patch/execute_command），不要只给方案。\n' +
-          '改应用展示名优先改 manifest.json 的 name；改页面文字优先改应用目录内入口页面，禁止改 ~/.openultron/IDENTITY.md、SOUL.md。\n' +
-          '仅当工具返回成功才能宣称“已完成”。'
-        )
+        memParts.push(buildWebAppStudioSandboxMemoryBlock(sandboxRoot))
       } else {
         memParts.push(
           '[当前应用]\n' +
@@ -448,6 +456,7 @@ class Orchestrator {
           `默认工作空间：${getWorkspaceRoot()}。\n` +
           `当无真实项目路径时：脚本优先写入 ${path.join(getWorkspaceRoot(), 'scripts')}，新建项目优先放入 ${path.join(getWorkspaceRoot(), 'projects')}，避免散落在其他目录。\n` +
           '生成 PPT/PDF/Excel 等二进制文件必须用 execute_command 实际生成，并返回绝对路径。\n' +
+          '侧栏「应用」/ Web 沙箱（~/.openultron/web-apps）：**必须**用 **webapp_studio_invoke** 改代码或完整新建功能流；**禁止**对 web-apps 下文件使用 file_operation(write)、apply_patch、或将 execute_command 的 cwd 指到该目录（会被拒绝）。**web_apps_list** 查已装（模型应优先用它，勿让用户背 id）；**web_apps_create** 或 webapp_studio_invoke(create_new) 新建；编辑用 app_hint / path / id@version。\n' +
           '只有工具明确成功才能说“已完成”；失败必须如实反馈错误。\n' +
           '默认直接执行并给结果，减少模板化空话。'
         )
@@ -1088,12 +1097,15 @@ class Orchestrator {
           (typeof finalContent === 'string' && !String(finalContent).trim()) ||
           (Array.isArray(finalContent) && (!finalContent.length || finalContent.every(c => !String((c && c.text) || '').trim())))
 
-        // 若上一轮唯一/最后有 sessions_spawn 且模型返回空，用 envelope.summary 兜底，避免「有恢复无后续」
+        // 若上一轮有 sessions_spawn / webapp_studio_invoke 且模型返回空，用 envelope.summary 兜底，避免「有恢复无后续」
         if (isEmptyContent) {
           const lastAssistant = [...currentMessages].reverse().find(m => m.role === 'assistant')
-          const hadSessionsSpawn = lastAssistant && lastAssistant.tool_calls &&
-            lastAssistant.tool_calls.some(tc => (tc.function && tc.function.name === 'sessions_spawn') || tc.name === 'sessions_spawn')
-          if (hadSessionsSpawn) {
+          const hadDelegatedAgent = lastAssistant && lastAssistant.tool_calls &&
+            lastAssistant.tool_calls.some((tc) => {
+              const n = (tc.function && tc.function.name) || tc.name
+              return n === 'sessions_spawn' || n === 'webapp_studio_invoke'
+            })
+          if (hadDelegatedAgent) {
             let fallbackSummary = ''
             for (let i = currentMessages.length - 1; i >= 0; i--) {
               const m = currentMessages[i]
@@ -1107,7 +1119,7 @@ class Orchestrator {
               } catch (_) {}
             }
             finalContent = fallbackSummary ? `子任务已完成：${fallbackSummary}` : '子任务已结束，详见上方工具输出。'
-            appLogger?.info?.('[AI] sessions_spawn 后模型返回空，已用 envelope 兜底', { fallbackLen: String(finalContent).length })
+            appLogger?.info?.('[AI] 委派工具后模型返回空，已用 envelope 兜底', { fallbackLen: String(finalContent).length })
           }
         }
 
@@ -2231,6 +2243,32 @@ class Orchestrator {
       // 无真实项目路径时，默认将相对路径落到统一 workspace 根目录
       args = { ...args, path: path.join(defaultWorkspaceCwd, args.path) }
     }
+
+    // 主会话 / 非应用工作室：禁止直接改写已安装沙箱应用目录（须 webapp_studio_invoke）
+    if (!webAppSandbox) {
+      if (name === 'file_operation' && args && String(args.action || '') === 'write' && args.path && isPathUnderWebAppsInstallRoot(args.path)) {
+        return { success: false, error: WEBAPP_DELEGATION_REQUIRED_MSG }
+      }
+      if (name === 'apply_patch' && args && Array.isArray(args.changes)) {
+        const touched = args.changes.some(
+          (ch) => ch && typeof ch.path === 'string' && isPathUnderWebAppsInstallRoot(ch.path)
+        )
+        if (touched) {
+          return { success: false, error: WEBAPP_DELEGATION_REQUIRED_MSG }
+        }
+      }
+      if (name === 'execute_command' && args && typeof args.cwd === 'string' && isPathUnderWebAppsInstallRoot(args.cwd)) {
+        return { success: false, error: WEBAPP_DELEGATION_REQUIRED_MSG }
+      }
+      if (name === 'git_operation' && args && typeof args.repo_path === 'string' && isPathUnderWebAppsInstallRoot(args.repo_path)) {
+        const readOnlyGit = new Set(['status', 'branch_list', 'current_branch', 'diff', 'log', 'stash_list', 'remote'])
+        const op = String(args.operation || '').trim()
+        if (!readOnlyGit.has(op)) {
+          return { success: false, error: WEBAPP_DELEGATION_REQUIRED_MSG }
+        }
+      }
+    }
+
     // 飞书会话下调用发消息/发文件/发语音时，优先使用当前会话 chat_id。
     // 子 Agent 偶发会把 session/run id 当作 chat_id，导致 invalid receive_id，这里统一兜底纠正。
     const feishuSendToolNames = ['feishu_send_message', 'feishu_send_file_message', 'feishu_send_voice_message']

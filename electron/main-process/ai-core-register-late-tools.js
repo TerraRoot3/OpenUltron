@@ -22,6 +22,19 @@ function registerMidStackAiTools(deps) {
     console.warn('加载 sessions_spawn 工具失败:', e.message)
   }
   try {
+    const { createWebappStudioInvokeTool } = require('../ai/tools/webapp-studio-invoke')
+    aiToolRegistry.register('webapp_studio_invoke', createWebappStudioInvokeTool(runSubChat))
+  } catch (e) {
+    console.warn('加载 webapp_studio_invoke 工具失败:', e.message)
+  }
+  try {
+    const { createWebAppsListTool, createWebAppsCreateTool } = require('../ai/tools/web-apps-ai-manage')
+    aiToolRegistry.register('web_apps_list', createWebAppsListTool())
+    aiToolRegistry.register('web_apps_create', createWebAppsCreateTool())
+  } catch (e) {
+    console.warn('加载 web_apps_list / web_apps_create 工具失败:', e.message)
+  }
+  try {
     const { createConsolidateLessonsTool } = require('../ai/tools/consolidate-lessons-learned')
     aiToolRegistry.register(
       'consolidate_lessons_learned',

@@ -148,7 +148,10 @@ function createGatewaySideEffectHandlers (deps) {
     })
     const hasSpawnCall = Array.isArray(data.messages) && data.messages.some(m =>
       m && m.role === 'assistant' && Array.isArray(m.tool_calls) &&
-      m.tool_calls.some(tc => tc?.function?.name === 'sessions_spawn')
+      m.tool_calls.some(tc => {
+        const n = tc?.function?.name
+        return n === 'sessions_spawn' || n === 'webapp_studio_invoke'
+      })
     )
     const visibleResultText = String(cleanedFeishu || cleanedSpawn || latestVisibleText || '').trim()
     let rawTextToSend = visibleResultText || (

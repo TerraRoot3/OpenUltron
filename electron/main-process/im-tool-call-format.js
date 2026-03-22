@@ -34,6 +34,24 @@ function formatCommandFromToolCall(tc) {
       if (runtime || role) return `- sessions_spawn${runtime ? ` runtime=${runtime}` : ''}${role ? ` role=${role}` : ''}`
       return '- sessions_spawn'
     }
+    if (name === 'web_apps_list') {
+      return '- web_apps_list'
+    }
+    if (name === 'web_apps_create') {
+      const n = readStr(args?.name)
+      return n ? `- web_apps_create ${n}` : '- web_apps_create'
+    }
+    if (name === 'webapp_studio_invoke') {
+      const aid = readStr(args?.app_id)
+      const ver = readStr(args?.version)
+      const p = readStr(args?.project_path)
+      const hint = readStr(args?.app_hint)
+      if (args?.create_new === true) return '- webapp_studio_invoke create_new'
+      if (hint) return '- webapp_studio_invoke hint=…'
+      if (aid && ver) return `- webapp_studio_invoke ${aid}@${ver}`
+      if (p) return `- webapp_studio_invoke path=…`
+      return '- webapp_studio_invoke'
+    }
     return `- ${name}`
   } catch (_) {
     return '- 调用工具'

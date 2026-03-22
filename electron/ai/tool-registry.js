@@ -21,8 +21,10 @@ class ToolRegistry {
   // 获取所有工具的 OpenAI function calling 格式定义
   getToolDefinitions() {
     const definitions = []
+    let insertOrder = 0
     for (const [name, tool] of this.tools) {
       definitions.push({
+        _ord: insertOrder++,
         type: 'function',
         function: {
           name,
@@ -31,7 +33,21 @@ class ToolRegistry {
         }
       })
     }
-    return definitions
+    /** 侧栏「应用」/沙箱：提前排序，减少模型在长列表里扫不到的情况 */
+    const WEB_APP_TOOL_RANK = new Map([
+      ['web_apps_list', 0],
+      ['web_apps_create', 1],
+      ['webapp_studio_invoke', 2]
+    ])
+    definitions.sort((a, b) => {
+      const na = a.function.name
+      const nb = b.function.name
+      const ra = WEB_APP_TOOL_RANK.has(na) ? WEB_APP_TOOL_RANK.get(na) : 100
+      const rb = WEB_APP_TOOL_RANK.has(nb) ? WEB_APP_TOOL_RANK.get(nb) : 100
+      if (ra !== rb) return ra - rb
+      return a._ord - b._ord
+    })
+    return definitions.map(({ _ord, ...rest }) => rest)
   }
 
   // 获取所有工具名

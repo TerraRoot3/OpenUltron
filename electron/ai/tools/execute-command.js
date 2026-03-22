@@ -7,7 +7,8 @@ const os = require('os')
 const path = require('path')
 
 const definition = {
-  description: '在指定目录执行 shell（Bash）命令。支持：查看文件(cat/head/ls)、搜索(grep/find)、Git(git status/commit/push)、构建(npm/yarn)、执行 Bash 脚本(bash script.sh)、执行 Node.js 脚本(node script.js)等。一条命令可用 && 或 | 组合。',
+  description:
+    '在指定目录执行 shell（Bash）命令。支持：查看文件(cat/head/ls)、搜索(grep/find)、Git、构建(npm/yarn)、脚本等。**勿**将 cwd 设为 ~/.openultron/web-apps 下应用目录以修改沙箱代码（会被拒绝）；改沙箱须 **webapp_studio_invoke**。一条命令可用 && 或 | 组合。',
   parameters: {
     type: 'object',
     properties: {

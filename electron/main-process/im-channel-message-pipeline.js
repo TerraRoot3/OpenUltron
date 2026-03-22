@@ -101,6 +101,11 @@ function summarizeTaskText(text, maxLen = 44) {
   return s.length > maxLen ? `${s.slice(0, maxLen)}...` : s
 }
 
+function isDelegatedAgentToolName(name) {
+  const n = String(name || '').trim()
+  return n === 'sessions_spawn' || n === 'webapp_studio_invoke'
+}
+
 function updateRunEntry(key, runSessionId, patch = {}) {
   const runs = channelCurrentRun.get(key) || []
   const idx = runs.findIndex(r => r.runSessionId === runSessionId)
@@ -112,6 +117,7 @@ function humanizeLastAction(action) {
   const a = String(action || '').trim()
   if (!a) return ''
   if (/调用工具:\s*sessions_spawn/i.test(a)) return '已派发给子 Agent 执行'
+  if (/调用工具:\s*webapp_studio_invoke/i.test(a)) return '已委派应用工作室 Agent'
   if (/调用工具:\s*/i.test(a)) return a.replace(/^调用工具:\s*/i, '正在执行：')
   return a
 }
@@ -495,7 +501,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
         if (channel === 'ai-chat-tool-call' && data && data.toolCall) {
           const tc = data.toolCall
           // 仅展示与子 Agent 执行相关的命令过程
-          if (String(tc.name || '').trim() === 'sessions_spawn') {
+          if (isDelegatedAgentToolName(tc.name)) {
             appendCommandLine(formatCommandFromToolCall(tc))
             scheduleStreamFlush()
           }
@@ -507,6 +513,16 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
               updateRunEntry(key, runSessionId, {
                 delegatedTask: delegatedTask || undefined,
                 delegatedRole: delegatedRole || undefined
+              })
+            }
+          }
+          if (tc.name === 'webapp_studio_invoke') {
+            const args = parseToolCallArgs(tc.arguments)
+            const delegatedTask = summarizeTaskText(args && args.task ? args.task : '')
+            if (delegatedTask) {
+              updateRunEntry(key, runSessionId, {
+                delegatedTask,
+                delegatedRole: '应用工作室'
               })
             }
           }
@@ -526,7 +542,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
             }
             for (const item of items) collectedScreenshots.push(item)
             // 子 Agent 流式日志里仅提取“执行了什么命令”，不展示执行结果
-            if (String(data.name || '').trim() === 'sessions_spawn') {
+            if (isDelegatedAgentToolName(data.name)) {
               try {
                 const obj = JSON.parse(raw)
                 const lines = Array.isArray(obj?.log_lines) ? obj.log_lines : []
@@ -706,7 +722,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
     }
     let hasSpawnCall = currentRound.some((m) =>
       m && m.role === 'assistant' && Array.isArray(m.tool_calls) &&
-      m.tool_calls.some((tc) => tc?.function?.name === 'sessions_spawn')
+      m.tool_calls.some((tc) => isDelegatedAgentToolName(tc?.function?.name))
     )
     const latestVisibleText = String(extractLatestVisibleText(currentRound) || '').trim()
     const seedFallbackText = (toSend && String(toSend).trim())

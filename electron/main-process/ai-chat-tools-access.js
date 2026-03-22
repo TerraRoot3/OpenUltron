@@ -58,23 +58,33 @@ function createAiChatToolsAccess(deps) {
     return tools
   }
 
-  function getToolsForSubChat() {
+  /** @param {{ projectPath?: string }} [opts] 传入应用根路径时合并 webapp__* 等（与主会话一致） */
+  function getToolsForSubChat(opts = {}) {
+    return getToolsForChat(opts).filter((t) => {
+      const name = String(t?.function?.name || '').trim()
+      if (CHANNEL_SEND_TOOL_REGEX.test(name)) return false
+      if (name === 'sessions_spawn') return false
+      if (name === 'webapp_studio_invoke') return false
+      if (name === 'web_apps_create') return false
+      return true
+    })
+  }
+
+  function getToolsForCoordinatorChat() {
+    const noChannelSend = (t) => {
+      const name = String(t?.function?.name || '').trim()
+      return !CHANNEL_SEND_TOOL_REGEX.test(name)
+    }
+    if (coordinatorIncludesSessionsSpawn()) {
+      return getToolsForChat().filter(noChannelSend)
+    }
+    // 与 getToolsForSubChat 一致但保留 webapp_studio_invoke，便于飞书等协调会话委派应用工作室（无需开启 sessions_spawn）
     return getToolsForChat().filter((t) => {
       const name = String(t?.function?.name || '').trim()
       if (CHANNEL_SEND_TOOL_REGEX.test(name)) return false
       if (name === 'sessions_spawn') return false
       return true
     })
-  }
-
-  function getToolsForCoordinatorChat() {
-    if (coordinatorIncludesSessionsSpawn()) {
-      return getToolsForChat().filter((t) => {
-        const name = String(t?.function?.name || '').trim()
-        return !CHANNEL_SEND_TOOL_REGEX.test(name)
-      })
-    }
-    return getToolsForSubChat()
   }
 
   function getCoordinatorSystemPrompt(channel = '') {
@@ -93,12 +103,14 @@ function createAiChatToolsAccess(deps) {
           '默认使用 sessions_spawn(runtime="auto")，其默认走 internal。仅当用户明确指定外部子 Agent（如“用 codex”“用 claude”）时，才使用 external:<name>。',
           '若用户明确指定某子 Agent（如“用 codex”“用 claude”），必须把 runtime 设为 external:<name>（例如 external:codex）；若不可用再按系统回退链执行，并在回复里说明已回退。',
           '仅允许一级派发：子 Agent 不得再派发子 Agent。',
-          '当用户要求飞书文档编写/改写/追加时，优先直接使用文档能力工具（如 feishu_doc_capability 或 lark docx 相关工具）执行；仅在明显需要长流程/并行时再派发子 Agent。'
+          '当用户要求飞书文档编写/改写/追加时，优先直接使用文档能力工具（如 feishu_doc_capability 或 lark docx 相关工具）执行；仅在明显需要长流程/并行时再派发子 Agent。',
+          '用户提到侧栏「应用」/ 沙箱 / web-apps：**必须** **webapp_studio_invoke** 改代码，**禁止**在本会话 file_operation 写入或 apply_patch 该目录（会失败）。**优先 web_apps_list** 再委派；新建：**web_apps_create** 或 webapp_studio_invoke(create_new)；编辑：**app_hint** 或 path。完成后据工具返回值汇报。'
         ]
       : [
           '当前配置下你**没有** sessions_spawn 工具：必须在当前会话内用已有工具直接完成任务，不得假设可以派生子 Agent，也不得声称“已派发子 Agent”。',
           '复杂或耗时任务仍须在本会话内顺序执行并汇报进度；若用户明确要求子 Agent 能力，可说明需在「消息通知」中开启「协调 Agent 允许 sessions_spawn」。',
-          '当用户要求飞书文档编写/改写/追加时，优先直接使用文档能力工具（如 feishu_doc_capability 或 lark docx 相关工具）执行。'
+          '当用户要求飞书文档编写/改写/追加时，优先直接使用文档能力工具（如 feishu_doc_capability 或 lark docx 相关工具）执行。',
+          '侧栏「应用」沙箱：**必须 webapp_studio_invoke**，勿直接 file_operation/apply_patch；**优先 web_apps_list**。**web_apps_create** / create_new 新建。完成后据工具返回值汇报（无需 sessions_spawn）。'
         ]
     const tail = [
       '可使用 stop_previous_task / wait_for_previous_run 管理当前会话任务池中的其他运行任务。',
