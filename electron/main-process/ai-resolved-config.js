@@ -36,9 +36,8 @@ function createAiResolvedConfig(deps) {
       const ids = validated
         .map(m => (m.id || m.name || '').trim())
         .filter(Boolean)
+      // 校验列表只供 list_providers_and_models 等展示「测过可用」的模型，不得并入故障转移链，否则会把整站目录当备用模型逐个重试
       if (!defaultModel && ids.length > 0) defaultModel = ids[0]
-      const extra = ids.filter(id => id !== defaultModel && !fallbackModels.includes(id))
-      fallbackModels = [...fallbackModels, ...extra]
     }
     const providerMap = new Map((legacy.raw?.providers || []).filter(p => p && p.baseUrl).map(p => [p.baseUrl, p]))
     const providerKeys = legacy.providerKeys || {}

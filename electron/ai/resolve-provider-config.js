@@ -68,9 +68,8 @@ function getResolvedAIConfigForProvider(providerKey, ctx) {
     const ids = validated
       .map(m => (m.id || m.name || '').trim())
       .filter(Boolean)
+    // 与 getResolvedAIConfig 一致：aiModelsValidatedByProvider 仅用于展示，不扩展 fallback
     if (!defaultModel && ids.length > 0) defaultModel = ids[0]
-    const extra = ids.filter(id => id !== defaultModel && !fallbackModels.includes(id))
-    fallbackModels = [...fallbackModels, ...extra]
   }
   if (!defaultModel) {
     const dmProvider = String(bindings[globalDefaultModel] || defaultProvider).trim()

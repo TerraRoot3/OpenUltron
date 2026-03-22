@@ -39,6 +39,17 @@ describe('resolve-provider-config', () => {
     expect(cfg.toolDefinitions.slimMode).toBe('always')
   })
 
+  it('does not append aiModelsValidatedByProvider catalog to fallbackModels', () => {
+    const store = {
+      get: (k) => (k === 'aiModelsValidatedByProvider'
+        ? { 'https://api.openai.com': [{ id: 'gpt-4' }, { id: 'x/y-1' }, { id: 'x/y-2' }] }
+        : {})
+    }
+    const cfg = getResolvedAIConfigForProvider('https://api.openai.com', { legacy: legacyBase, store })
+    expect(cfg.fallbackModels).toEqual(['gpt-4o'])
+    expect(cfg.modelPool).toEqual(['gpt-4', 'gpt-4o'])
+  })
+
   it('getResolvedAIConfigForProvider resolves by provider name', () => {
     const cfg = getResolvedAIConfigForProvider('OpenAI', { legacy: legacyBase })
     expect(cfg?.apiBaseUrl).toBe('https://api.openai.com')
