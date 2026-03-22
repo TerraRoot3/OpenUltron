@@ -39,7 +39,8 @@ function createSubagentDispatch(deps) {
       '子 Agent 只负责执行与产出，不直接向外部渠道发送消息。',
       '严禁调用任何 send_message 类工具或 IM 发送接口（例如 feishu_send_message / telegram_send_message / dingtalk_send_message / lark.im_v1_message_create）。',
       '当任务产出图片/截图/文件时，返回：产物绝对路径 + 简洁执行结论。',
-      '是否对外发送由主 Agent 统一处理。'
+      '是否对外发送由主 Agent 统一处理。',
+      '若任务涉及实现功能、改代码或改页面：最后一轮**必须用自然语言**说明是否已按需求完成、改了哪些路径/文件、如何验证（例如打开哪个路由/入口）；禁止在仅改文件后无说明就结束，否则主会话无法向用户交代。'
     ].join('\n')
   }
 
@@ -265,6 +266,14 @@ function createSubagentDispatch(deps) {
       resultText = stripToolProtocolAndJsonNoise(visible, { dropJsonEnvelope: true }).trim()
     }
     if (looksLikeNoResultPlaceholderText(resultText)) resultText = ''
+    if (!String(resultText || '').trim()) {
+      try {
+        appLogger?.warn?.('[SubAgentDispatch] internal 子 Agent 无最终 assistant 文本，主会话将依赖 envelope.summary / commandLogs', {
+          subSessionId,
+          lastMsgRoles: msgs.slice(-6).map((m) => m && m.role).filter(Boolean)
+        })
+      } catch (_) {}
+    }
     return { success: true, result: resultText, subSessionId, messages: msgs, runtime: 'internal' }
   }
 

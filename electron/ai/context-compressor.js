@@ -13,9 +13,9 @@ const DEFAULT_CONFIG = {
   aggressiveKeepRecent: 10,
   /**
    * OpenRouter：与 threshold 取 min，作为「对话部分」的触发上限（仍为粗估 char/3）。
-   * 过低会导致工具多轮尚未收尾就压缩；可根据账号 prompt 上限在 openultron.json 微调。
+   * 默认与 threshold 对齐，避免过早压缩导致模型误以为任务已结束；若账号 prompt 上限较紧可在 openultron.json 单独调低。
    */
-  openRouterSoftBudget: 12000,
+  openRouterSoftBudget: 24000,
   /**
    * 估算节省的 tokens 低于此值则放弃本次压缩（避免摘要比原文还长、白耗一次模型调用）。
    */
@@ -33,6 +33,9 @@ const DEFAULT_CONFIG = {
 }
 
 const COMPRESSION_SUMMARY_MARKER = '[对话摘要（早期消息已压缩）]'
+/** 附在摘要后，降低模型在压缩后提前收尾的概率 */
+const COMPRESSION_CONTINUATION_HINT =
+  '\n\n（系统：上文为摘要，请继续完成用户尚未完成的目标与操作；不要仅因摘要而结束任务。）'
 
 /**
  * 压缩切分不得落在「工具轮」中间，否则 recent 会以 tool 开头、或丢掉 assistant(tool_calls) 与 tool 的配对，导致下一轮 Responses/Chat 请求非法。
@@ -212,7 +215,7 @@ async function compressMessages(messages, config = {}, callLLM) {
 
   const summaryMessage = {
     role: 'system',
-    content: `${COMPRESSION_SUMMARY_MARKER}\n` + summaryText
+    content: `${COMPRESSION_SUMMARY_MARKER}\n` + summaryText + COMPRESSION_CONTINUATION_HINT
   }
 
   const maxStack = Math.max(1, Math.min(4, Number(cfg.maxCompressionSummaryStack) || 2))

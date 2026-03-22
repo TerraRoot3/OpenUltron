@@ -4,7 +4,7 @@
 
 const path = require('path')
 const fs = require('fs')
-const { buildExecutionEnvelope } = require('../execution-envelope')
+const { buildExecutionEnvelope, truncateDelegationStdoutPreview } = require('../execution-envelope')
 const { ingestEnvelopeArtifacts } = require('../artifact-hub')
 const { listInstalledApps, getWebAppsRoot, createBlankWebApp } = require('../../web-apps/registry')
 
@@ -280,12 +280,14 @@ function createWebappStudioInvokeTool(runSubChat) {
         })
       } catch (_) {}
 
+      const stdoutPreview = truncateDelegationStdoutPreview(out?.commandLogs)
       if (!out || !out.success) {
         return {
           success: false,
-          error: out?.error || '应用工作室 Agent 执行失败',
-          stdout: Array.isArray(out?.commandLogs) ? out.commandLogs.join('\n') : '',
+          message: envelope.summary,
           envelope,
+          error: out?.error || '应用工作室 Agent 执行失败',
+          stdout: stdoutPreview,
           studio_path: studioPath,
           ...(createdApp ? { created_app: createdApp } : {}),
           ...(resolvedApp ? { resolved_app: resolvedApp } : {})
@@ -293,12 +295,12 @@ function createWebappStudioInvokeTool(runSubChat) {
       }
       return {
         success: true,
-        result: out.result ?? '',
-        stdout: Array.isArray(out?.commandLogs) ? out.commandLogs.join('\n') : '',
-        sub_session_id: out.subSessionId ?? null,
-        runtime: out.runtime || 'internal',
         message: envelope.summary,
         envelope,
+        result: out.result ?? '',
+        stdout: stdoutPreview,
+        sub_session_id: out.subSessionId ?? null,
+        runtime: out.runtime || 'internal',
         studio_path: studioPath,
         ...(createdApp ? { created_app: createdApp } : {}),
         ...(resolvedApp ? { resolved_app: resolvedApp } : {})
@@ -317,6 +319,7 @@ function createWebappStudioInvokeTool(runSubChat) {
       } catch (_) {}
       return {
         success: false,
+        message: envCatch.summary,
         error: e.message || String(e),
         envelope: envCatch,
         studio_path: studioPath || undefined,

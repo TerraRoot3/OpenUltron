@@ -798,7 +798,8 @@ class Orchestrator {
         compressNoticeSent = true
         wrappedSender.send('ai-chat-token', {
           sessionId,
-          token: '\n\n> 📎 **上下文过长**：已自动将早期对话总结压缩为摘要并延续当前任务（等效「干净延续」，无需手动开新会话）。\n\n'
+          token:
+            '\n\n> 📎 **对话过长**：已自动将更早内容压缩为摘要以节省上下文，**后续仍会照常调用模型**；若模型突然只给很短的收尾，请再发一句「继续」或补充需求。\n\n'
         })
       }
       return changed
@@ -1064,11 +1065,16 @@ class Orchestrator {
           // 工具结果过长时截断；浏览器 MCP（快照/DOM/网络等）单条常极大，单独收紧
           const TOOL_RESULT_MAX_LEN = 6000
           const TOOL_RESULT_BROWSER_MAX_LEN = 3000
+          /** 委派类工具含 envelope/message，需避免截断掉 JSON 尾部 */
+          const TOOL_RESULT_DELEGATION_MAX_LEN = 32000
           for (let i = 0; i < toolResults.length; i++) {
             const { toolCall, resultStr } = toolResults[i]
             const toolName = String(toolCall?.function?.name || toolCall?.name || '')
             const browserHeavy = /mcp__chrome|snapshot|take_snapshot|evaluate|get_console|network|performance|wait_for|scroll|fill|click/i.test(toolName)
-            const maxLen = browserHeavy ? TOOL_RESULT_BROWSER_MAX_LEN : TOOL_RESULT_MAX_LEN
+            const delegationHeavy = toolName === 'sessions_spawn' || toolName === 'webapp_studio_invoke'
+            const maxLen = browserHeavy
+              ? TOOL_RESULT_BROWSER_MAX_LEN
+              : (delegationHeavy ? TOOL_RESULT_DELEGATION_MAX_LEN : TOOL_RESULT_MAX_LEN)
             let content = resultStr
             if (typeof resultStr === 'string' && resultStr.length > maxLen) {
               content = resultStr.slice(0, maxLen) + `\n...(已截断，共 ${resultStr.length} 字)`

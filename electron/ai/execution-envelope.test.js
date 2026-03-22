@@ -37,6 +37,17 @@ describe('execution-envelope', () => {
     expect(e.summary).toMatch(/invalid receive_id/i)
   })
 
+  it('buildExecutionEnvelope success uses log tail when result empty', () => {
+    const e = buildExecutionEnvelope({
+      success: true,
+      result: '   ',
+      commandLogs: ['[meta] start', '[tool_call] x', 'line-a', 'line-b']
+    }, 'internal')
+    expect(e.success).toBe(true)
+    expect(e.summary).toMatch(/近期执行记录/)
+    expect(e.summary).toMatch(/line-b/)
+  })
+
   it('buildExecutionEnvelope metrics carries parent_run_id and sub_session_id', () => {
     const e = buildExecutionEnvelope({
       success: true,

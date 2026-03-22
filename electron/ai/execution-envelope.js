@@ -15,20 +15,23 @@ function normalizeErrorCode(errorText = '') {
 
 function buildExecutionEnvelope(out = {}, runtime = 'internal') {
   const success = !!out.success
-  const result = out.result != null ? String(out.result) : ''
+  const result = out.result != null ? String(out.result).trim() : ''
   const stdout = Array.isArray(out.commandLogs)
     ? out.commandLogs.join('\n')
     : (out.stdout != null ? String(out.stdout) : '')
   const errorMessage = out.error != null ? String(out.error) : ''
+  const logLines = stdout ? stdout.split('\n').map((l) => l.trim()).filter(Boolean) : []
+  const logTail = logLines.slice(-20).join('\n')
+  /** 子 Agent 常无最终 assistant 文字，但有工具/命令日志；summary 必须对主会话可读 */
   const summary = success
-    ? (result || '子 Agent 已完成。')
+    ? (result || (logTail ? `子 Agent 已结束（无最终说明）。近期执行记录：\n${logTail}` : '子 Agent 已完成（未返回文字说明与执行日志摘要）。'))
     : (errorMessage || '子 Agent 执行失败')
 
   const envelope = {
     success,
     summary,
     artifacts: Array.isArray(out.artifacts) ? out.artifacts : [],
-    logs: stdout ? stdout.split('\n').filter(Boolean).slice(-400) : [],
+    logs: logLines.slice(-80),
     tool_events: Array.isArray(out.toolEvents) ? out.toolEvents : [],
     error: success
       ? null
@@ -48,8 +51,20 @@ function buildExecutionEnvelope(out = {}, runtime = 'internal') {
   return envelope
 }
 
+/**
+ * 委派工具返回给主会话的 JSON 不宜把整段 commandLogs 放在 envelope 之前，否则易被 orchestrator 6000 字截断切掉 envelope。
+ * 详细日志仍在 envelope.logs（已条数封顶）。
+ */
+function truncateDelegationStdoutPreview(logs, maxChars = 4000) {
+  const raw = Array.isArray(logs) ? logs.join('\n') : String(logs || '')
+  if (raw.length <= maxChars) return raw
+  const tail = raw.slice(-maxChars)
+  return `…(stdout 共 ${raw.length} 字已截断；完整脉络见 envelope.logs 与 message)\n${tail}`
+}
+
 module.exports = {
   buildExecutionEnvelope,
-  normalizeErrorCode
+  normalizeErrorCode,
+  truncateDelegationStdoutPreview
 }
 

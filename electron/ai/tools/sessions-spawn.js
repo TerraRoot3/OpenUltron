@@ -3,11 +3,11 @@
  * 多会话协调：sessions_spawn。
  */
 
-const { buildExecutionEnvelope } = require('../execution-envelope')
+const { buildExecutionEnvelope, truncateDelegationStdoutPreview } = require('../execution-envelope')
 const { ingestEnvelopeArtifacts } = require('../artifact-hub')
 
 const definition = {
-  description: '派生子 Agent 执行一项任务。主 Agent 将任务与可选系统提示交给子 Agent，子 Agent 在独立会话中运行直至完成，最后把最终回复文本返回给主 Agent。用于任务分派、多角色协作、或需隔离上下文的子任务。可通过 provider 与 model 指定子 Agent 使用的供应商与模型（先调用 list_providers_and_models 获取可用列表）。',
+  description: '派生子 Agent 执行一项任务。主 Agent 将任务与可选系统提示交给子 Agent，子 Agent 在独立会话中运行直至完成，最后把最终回复文本返回给主 Agent。子 Agent **必须在最后一轮用自然语言说明**：是否已按要求实现、改了哪些路径/文件、若涉及页面/功能如何验证；勿在仅改文件后沉默结束。工具返回值含 **message** 与 **envelope.summary** 会同步给主会话。可通过 provider 与 model 指定子 Agent 使用的供应商与模型（先调用 list_providers_and_models 获取可用列表）。',
   parameters: {
     type: 'object',
     properties: {
@@ -97,23 +97,25 @@ function createSessionsSpawnTool(runSubChat) {
           source: 'sessions_spawn'
         })
       } catch (_) {}
+      const stdoutPreview = truncateDelegationStdoutPreview(out?.commandLogs)
       if (!out || !out.success) {
         return {
           success: false,
+          message: envelope.summary,
+          envelope,
           error: out?.error || '子 Agent 执行失败',
-          stdout: Array.isArray(out?.commandLogs) ? out.commandLogs.join('\n') : '',
-          envelope
+          stdout: stdoutPreview
         }
       }
       return {
         success: true,
+        message: envelope.summary,
+        envelope,
         result: out.result ?? '',
-        stdout: Array.isArray(out.commandLogs) ? out.commandLogs.join('\n') : '',
         sub_session_id: out.subSessionId ?? null,
         runtime: out.runtime || 'internal',
         attempted_runtimes: Array.isArray(out.attemptedRuntimes) ? out.attemptedRuntimes : [],
-        message: envelope.summary,
-        envelope
+        stdout: stdoutPreview
       }
     } catch (e) {
       const parentRunIdCatch = String(context.runId || '').trim()
@@ -134,7 +136,7 @@ function createSessionsSpawnTool(runSubChat) {
           source: 'sessions_spawn'
         })
       } catch (_) {}
-      return { ...out, envelope: envCatch }
+      return { ...out, message: envCatch.summary, envelope: envCatch }
     }
   }
 
