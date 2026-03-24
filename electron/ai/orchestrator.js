@@ -978,6 +978,7 @@ class Orchestrator {
                   const classify = this._classifyLlmError(modeErr)
                   const shouldRetryWithoutTools = mode.withTools &&
                     classify.action === 'disable_tools_then_retry' &&
+                    !webAppSandbox &&
                     ti < toolModes.length - 1
                   if (shouldRetryWithoutTools) {
                     console.warn(`[AI] 模型 ${tryModel} 工具调用受限（${classify.kind}），自动改为无工具模式重试，故本轮不会执行 MCP/浏览器等工具:`, modeErr.message)
