@@ -2,6 +2,7 @@
  * createGateway 副作用：工具截图缓冲、应用内飞书会话完成回发、主窗口转发、会话落库
  */
 const { FEISHU_PROJECT, TELEGRAM_PROJECT, DINGTALK_PROJECT } = require('./session-constants')
+const { resolveDeterministicOutboundText } = require('../../outbound-result-text')
 
 /**
  * @param {object} deps
@@ -145,22 +146,15 @@ function createGatewaySideEffectHandlers (deps) {
       role: 'assistant'
     })
     const visibleResultText = String(cleanedFeishu || cleanedSpawn || latestVisibleText || '').trim()
-    const safeVisibleResultText = hasUsefulVisibleResult(visibleResultText) ? visibleResultText : ''
-    const rawTextToSend = safeVisibleResultText || (
-      imageItems.length > 0
-        ? '截图已发至当前会话。'
-        : (fileItems.length > 0 ? '文件已发至当前会话。' : '任务已执行完成，但未生成可展示的文本结果。')
-    )
-    const safeRawTextToSend = stripToolProtocolAndJsonNoise(rawTextToSend, { dropJsonEnvelope: true })
-    const textToSend = stripFalseDeliveredClaims(safeRawTextToSend, {
+    const textToSend = resolveDeterministicOutboundText({
+      candidates: [visibleResultText],
+      stripToolProtocolAndJsonNoise,
+      hasUsefulVisibleResult,
+      stripFalseDeliveredClaims,
+      channel: 'feishu',
       hasImages: imageItems.length > 0,
-      hasFiles: fileItems.length > 0,
-      channel: 'feishu'
-    }) || (
-      imageItems.length > 0
-        ? '截图已发至当前会话。'
-        : (fileItems.length > 0 ? '文件已发至当前会话。' : '任务已执行完成，但未生成可展示的文本结果。')
-    )
+      hasFiles: fileItems.length > 0
+    })
     const outBinding = { sessionId, projectPath: FEISHU_PROJECT, channel: 'feishu', remoteId: chatId, feishuChatId: chatId }
     const outPayload = { text: textToSend, images: imageItems, files: fileItems }
     try {

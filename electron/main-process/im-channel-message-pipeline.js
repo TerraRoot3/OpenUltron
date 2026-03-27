@@ -1,6 +1,7 @@
 'use strict'
 
 const { parseToolCallArgs, formatCommandFromToolCall } = require('./im-tool-call-format')
+const { resolveDeterministicOutboundText } = require('./outbound-result-text')
 
 function channelSessionKey(binding) {
   return `${binding.projectPath}:${binding.sessionId}`
@@ -806,13 +807,16 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
         } catch (_) {}
       }
     }
-    let textToSend = stripFalseDeliveredClaims(safeUsefulBaseTextToSend, {
+    let textToSend = resolveDeterministicOutboundText({
+      candidates: [safeUsefulBaseTextToSend, directRetryResolvedText, safeUsefulRawFallbackText],
+      stripToolProtocolAndJsonNoise,
+      hasUsefulVisibleResult,
+      stripFalseDeliveredClaims,
+      channel: binding.channel,
       hasImages: imageItems.length > 0,
       hasFiles: fileItems.length > 0,
-      channel: binding.channel
-    }) || (directRetryResolvedText || safeUsefulRawFallbackText || directRetryErrorText || (imageItems.length > 0
-      ? '截图已发至当前会话。'
-      : '任务已执行完成，但未生成可展示的文本结果。'))
+      explicitErrorText: directRetryErrorText
+    })
     
     const noArtifacts = imageItems.length === 0 && fileItems.length === 0
     const visibleResultText = String(cleanedSpawnTrim || cleanedTextTrim || safeRawFallbackText || '').trim()

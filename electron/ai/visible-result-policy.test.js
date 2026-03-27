@@ -9,6 +9,7 @@ describe('visible-result-policy', () => {
     expect(looksLikeExecutionPromiseWithoutResult('收到！现在就按这个方案执行：生成 `poster.html` 并导出 `poster.png`，完成后我第一时间把图片路径发你。')).toBe(true)
     expect(looksLikeExecutionPromiseWithoutResult('还没完成，我这边刚刚被会话抖动打断了。请在你电脑终端执行这两步，保证一次成功。')).toBe(true)
     expect(looksLikeExecutionPromiseWithoutResult('你说得对，我现在给你一个稳妥交付方式，你点头我立刻执行。')).toBe(true)
+    expect(looksLikeExecutionPromiseWithoutResult('好！我直接给你做完这整套：写海报 → 打开浏览器 → 截图 → 发你图片。我现在开始执行，完成后只给你结果路径和图片。')).toBe(true)
   })
 
   it('does not treat real artifact paths as execution promises', () => {

@@ -523,6 +523,43 @@ class Orchestrator {
     // Memory 注入：全局 MEMORY.md + 项目相关 top-5 记忆
     try {
       const memParts = []
+      const promptStyle = String(process.env.OPENULTRON_PROMPT_STYLE || 'minimal').trim().toLowerCase()
+      const minimalPromptMode = promptStyle !== 'rich'
+      const activeSession = this.activeSessions.get(sessionId)
+      const minimalToolNames = Array.isArray(tools)
+        ? tools
+          .map((t) => String(t?.function?.name || '').trim())
+          .filter(Boolean)
+          .slice(0, 120)
+        : []
+      const minimalParts = minimalPromptMode
+        ? (() => {
+            const p = []
+            if (webAppSandbox) {
+              p.push(buildWebAppStudioSandboxMemoryBlock(String(projectPath || '').trim()))
+            } else {
+              p.push(
+                '[执行契约]\n' +
+                '目标：完成用户需求；禁止空承诺（如“我现在执行，稍后给结果”）。\n' +
+                '规则：只有工具真实成功后才能说已完成；失败要返回真实错误与下一步。\n' +
+                `工作空间：${getWorkspaceRoot()}`
+              )
+            }
+            p.push(
+              '[工具与执行]\n' +
+              `可用工具（节选）：${minimalToolNames.length ? minimalToolNames.join(', ') : '（无）'}\n` +
+              '优先直接调用工具完成任务；需要文件改动时做最小改动并返回可验证产物（路径/链接/截图）。'
+            )
+            if (activeSession && activeSession.feishuChatId) {
+              p.push(
+                '[渠道约束: 飞书]\n' +
+                '需发图/文件时必须有真实附件；禁止只发“已发送”文本。'
+              )
+            }
+            p.push(buildLocalNowContextBlock())
+            return p
+          })()
+        : null
       const sandboxRoot = webAppSandbox ? String(projectPath).trim() : ''
 
       // 0. 当前应用边界（最高优先级）
@@ -729,6 +766,10 @@ class Orchestrator {
         '• **lesson_save**：踩坑与可复用做法、命令/路径/步骤类「经验教训」（写入 LESSONS_LEARNED）；用户明确拒绝某类操作时用 category **策略**。\n' +
         '偏「是什么」走 memory_save；偏「下次别怎样 / 怎样做」走 lesson_save，避免混用。'
       )
+
+      if (minimalPromptMode && Array.isArray(minimalParts) && minimalParts.length > 0) {
+        memParts.splice(0, memParts.length, ...minimalParts)
+      }
 
       const memSystemMsg = {
         role: 'system',
@@ -1769,6 +1810,13 @@ class Orchestrator {
     const base = String(err && err.message ? err.message : err || '未知错误')
     const status = Number(err && err.httpStatus) || 0
     const lower = base.toLowerCase()
+    const isCodexSessionExpired =
+      status === 401 &&
+      /chatgpt\.com\/backend-api\/codex\/responses/.test(lower) &&
+      /session expired|expired before this request finished/.test(lower)
+    if (isCodexSessionExpired) {
+      return `${base}\n\n💡 说明：当前 ChatGPT 会话已过期，Codex 后端请求被拒绝。请先在应用内重新登录 ChatGPT（刷新 access_token）后重试；若希望长期稳定，建议改用 platform.openai.com 的 sk- API Key。`
+    }
     // OpenRouter 402「Prompt tokens limit exceeded」：是**输入/上下文**超限（与 max_tokens 输出上限不是一回事）
     const isOpenRouterPromptTooLarge =
       /prompt tokens limit exceeded|input tokens.*exceed|context length exceeded|maximum context|token limit.*prompt/i.test(base)
@@ -1791,7 +1839,7 @@ class Orchestrator {
     const msg = raw.toLowerCase()
 
     const isAuth = status === 401 || status === 403 ||
-      /invalid api key|unauthorized|authentication|auth failed|forbidden/.test(msg)
+      /invalid api key|unauthorized|authentication|auth failed|forbidden|session expired|expired before this request finished/.test(msg)
     if (isAuth) return { kind: 'auth', action: 'fail_fast' }
 
     const isBilling = status === 402 ||

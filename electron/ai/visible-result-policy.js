@@ -53,6 +53,11 @@ function looksLikeExecutionPromiseWithoutResult(text = '') {
   const t = normalizeVisibleReplyText(text)
   if (!t) return false
   if (hasConcreteArtifactSignal(t)) return false
+  const mentionsImmediateExecution =
+    /(我|咱|马上|立刻|这就|先|现在)[^。！\n]{0,24}(开始|执行|处理|做|落地|搞定)/.test(t)
+  const promisesLaterDelivery =
+    /(完成后|做好后|结束后|随后|再|等会儿)[^。！\n]{0,24}(给你|发你|回你|返回)[^。！\n]{0,24}(路径|图片|截图|结果|文件)/.test(t)
+  if (mentionsImmediateExecution && promisesLaterDelivery) return true
   const patterns = [
     /我现在就按你说的执行/,
     /现在就按这个方案执行/,
