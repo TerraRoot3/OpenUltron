@@ -56,9 +56,8 @@ function registerLocalResourceProtocol(deps) {
         if (ctx && (ctx.appId !== target.appId || ctx.version !== target.version)) {
           return new Response('Forbidden', { status: 403 })
         }
-        if (!ctx && ext !== '.html') {
-          return new Response('Forbidden', { status: 403 })
-        }
+        // 不再要求子资源必须带 Referer：部分 Chromium/正式包构建下 CSS/JS 请求无 Referer，
+        // 会误拦 403 导致「有 HTML 无样式」。路径已限定 web-apps/<id>/<version>/，跨应用仍由上一段拦截。
       }
       if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile()) {
         return new Response('Not Found', { status: 404 })
