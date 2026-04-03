@@ -28,11 +28,26 @@ function hasResultSignals(text = '') {
   return false
 }
 
+/** 身份 / 模型 / 版本类短答：易低于 60 字阈值，但应对用户可见（如飞书问「你是什么模型」） */
+function hasConversationalIdentityOrMetaSignal(text = '') {
+  const t = String(text || '').trim()
+  if (!t || t.length > 120) return false
+  if (/\b(I(?:'| a|')?m (?:an |the )?(?:AI|assistant|language model)|powered by|based on)\b/i.test(t)) return true
+  if (/(?:当前对话|本对话|本助手|本应用|本会话)/.test(t) && /(模型|Model|provider)/i.test(t)) return true
+  const hasModelOrVendor =
+    /(模型|大语言|LLM|language model|assistant|Qwen|GPT|Claude|Gemini|OpenAI|Anthropic|DeepSeek|通义|OpenRouter|ultron)/i.test(t)
+  const hasStrongIdentity =
+    /(?:^|[\s，。])(我是|我是由|本助手为|我是基于|当前(?:对话)?(?:使用|基于|运行于))/.test(t)
+  if (hasModelOrVendor && hasStrongIdentity) return true
+  return false
+}
+
 function isLowInformationReply(text = '') {
   const t = normalizeVisibleReplyText(text)
   if (!t) return true
   if (/[?？]\s*$/.test(t)) return false
   if (hasResultSignals(t)) return false
+  if (hasConversationalIdentityOrMetaSignal(t)) return false
   return t.length <= 60
 }
 
@@ -91,13 +106,28 @@ function hasUsefulVisibleResult(text = '') {
   return true
 }
 
+/**
+ * 飞书 / Telegram / 钉钉 外发：在「占位句、空承诺」仍拦截的前提下，比 hasUsefulVisibleResult 更宽松，
+ * 避免正常中短句（含身份/闲聊）被误判后只发兜底文案。
+ */
+function hasOutboundVisibleResult(text = '') {
+  const t = String(text || '').trim()
+  if (!t) return false
+  if (shouldForceExecutionContinuation(t)) return false
+  if (hasUsefulVisibleResult(t)) return true
+  if (t.length >= 12) return true
+  return false
+}
+
 module.exports = {
   normalizeVisibleReplyText,
   hasConcreteArtifactSignal,
   hasResultSignals,
+  hasConversationalIdentityOrMetaSignal,
   isLowInformationReply,
   looksLikeNoResultPlaceholderText,
   looksLikeExecutionPromiseWithoutResult,
   shouldForceExecutionContinuation,
-  hasUsefulVisibleResult
+  hasUsefulVisibleResult,
+  hasOutboundVisibleResult
 }

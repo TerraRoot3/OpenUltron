@@ -1,7 +1,9 @@
 const {
   looksLikeExecutionPromiseWithoutResult,
   shouldForceExecutionContinuation,
-  hasUsefulVisibleResult
+  hasUsefulVisibleResult,
+  hasOutboundVisibleResult,
+  hasConversationalIdentityOrMetaSignal
 } = require('./visible-result-policy')
 
 describe('visible-result-policy', () => {
@@ -23,5 +25,18 @@ describe('visible-result-policy', () => {
     expect(shouldForceExecutionContinuation('任务已执行完成，但未生成可展示的文本结果')).toBe(true)
     expect(shouldForceExecutionContinuation('收到！马上开始。我先创建文件并执行浏览器截图，然后把产物路径发你。')).toBe(true)
     expect(hasUsefulVisibleResult('收到！马上开始。我先创建文件并执行浏览器截图，然后把产物路径发你。')).toBe(false)
+  })
+
+  it('treats short model/identity answers as useful (not low-information)', () => {
+    expect(hasConversationalIdentityOrMetaSignal('我是 Qwen')).toBe(true)
+    expect(hasUsefulVisibleResult('我是 Qwen3.6 大模型。')).toBe(true)
+    expect(hasUsefulVisibleResult('本对话使用 OpenRouter 上的 qwen 模型。')).toBe(true)
+    expect(hasUsefulVisibleResult("I'm an AI assistant powered by OpenRouter.")).toBe(true)
+  })
+
+  it('hasOutboundVisibleResult allows mid-length conversational text strict mode would drop', () => {
+    expect(hasUsefulVisibleResult('今天天气不错，适合写代码。')).toBe(false)
+    expect(hasOutboundVisibleResult('今天天气不错，适合写代码。')).toBe(true)
+    expect(hasOutboundVisibleResult('收到！马上开始。我先创建文件并执行浏览器截图，然后把产物路径发你。')).toBe(false)
   })
 })

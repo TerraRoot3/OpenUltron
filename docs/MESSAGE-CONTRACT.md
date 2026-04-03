@@ -52,8 +52,11 @@
 工具返回体若为 JSON 字符串，可含：
 
 - `envelope`：`execution-envelope.js` 产出的统一成功/失败/产物结构（子 Agent、`sessions_spawn` 等）。
+- `envelope.exitKind`（运行时）：`completed` | `timeout` | `aborted` | `error`，由 `computeExitKind` 根据成功/失败原因与取消语义推导，**不依赖模型正文**。
 
-解析与展示应优先读 `envelope.success` / `envelope.error.code`，避免被乐观 `result` 文本误导（与 `inbound-message-text.js` 策略一致）。
+解析与展示应优先读 `envelope.success` / `envelope.exitKind` / `envelope.error.code`，避免被乐观 `result` 文本误导（与 `inbound-message-text.js` 策略一致）。
+
+**异步子 Agent（P1）**：`sessions_spawn` 可传 `wait_for_result: false`，立即返回 `sub_session_id`；结果用 **`sessions_subagent_poll(sub_session_id=...)`** 轮询；完成后事件总线可收到 **`subagent.async.completed`**（与 `chat.*` 并列的扩展名，订阅方可选）。
 
 ---
 

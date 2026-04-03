@@ -61,6 +61,12 @@ function registerMidStackAiTools(deps) {
   } catch (e) {
     console.warn('加载 verify_provider_model 工具失败:', e.message)
   }
+  try {
+    const { createSessionsSubagentPollTool } = require('../ai/tools/sessions-subagent-poll')
+    aiToolRegistry.register('sessions_subagent_poll', createSessionsSubagentPollTool())
+  } catch (e) {
+    console.warn('加载 sessions_subagent_poll 工具失败:', e.message)
+  }
 }
 
 /**

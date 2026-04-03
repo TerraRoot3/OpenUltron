@@ -121,6 +121,19 @@ const DEFAULT_IM_COORDINATOR = {
   include_sessions_spawn: false
 }
 
+/** 子 Agent 编排：并发、深度、Profile 白名单（见 docs/plans/agent-orchestration-redesign.md） */
+const DEFAULT_SUBAGENT_ORCHESTRATION = {
+  maxSpawnDepth: 1,
+  maxConcurrent: 8,
+  maxChildrenPerAgent: 5,
+  /** 允许 sessions_spawn 使用的 profile id；`*` 表示全部 */
+  allowedProfiles: ['*'],
+  /** 子会话默认不注入 SOUL/IDENTITY/USER 等长身份块（executor 等仍可在 profile 中 inherit_identity） */
+  subagentMinimalMemory: true,
+  /** 允许 wait_for_result=false 异步 spawn（后台跑 + sessions_subagent_poll 取结果） */
+  allowAsyncSpawn: true
+}
+
 /** 默认含 ClawHub；list_remote 对 type=clawhub 走搜索 API（见 get-skill.js） */
 const DEFAULT_SKILLS_SOURCES = [
   { name: 'ClawHub', url: 'https://clawhub.ai/', enabled: true, type: 'clawhub' }
@@ -234,6 +247,12 @@ function readAll() {
       const imCoordinator = data.imCoordinator && typeof data.imCoordinator === 'object'
         ? { ...DEFAULT_IM_COORDINATOR, ...data.imCoordinator }
         : { ...DEFAULT_IM_COORDINATOR }
+      const subOrc = data.subagentOrchestration && typeof data.subagentOrchestration === 'object'
+        ? { ...DEFAULT_SUBAGENT_ORCHESTRATION, ...data.subagentOrchestration }
+        : { ...DEFAULT_SUBAGENT_ORCHESTRATION }
+      if (subOrc.allowedProfiles != null && !Array.isArray(subOrc.allowedProfiles)) {
+        subOrc.allowedProfiles = DEFAULT_SUBAGENT_ORCHESTRATION.allowedProfiles
+      }
       return {
         ai,
         feishu: { ...DEFAULT_FEISHU, ...data.feishu },
@@ -243,7 +262,8 @@ function readAll() {
         hardware,
         proxy: { ...DEFAULT_PROXY, ...(data.proxy && typeof data.proxy === 'object' ? data.proxy : {}) },
         skills: skillsBlock,
-        imCoordinator
+        imCoordinator,
+        subagentOrchestration: subOrc
       }
     } catch (e) {
       console.warn('[openultron-config] 读取失败，使用默认:', e.message)
@@ -278,7 +298,8 @@ function readAll() {
     hardware: { ...DEFAULT_HARDWARE },
     proxy: { ...DEFAULT_PROXY },
     skills: normalizeSkillsBlock({}),
-    imCoordinator: { ...DEFAULT_IM_COORDINATOR }
+    imCoordinator: { ...DEFAULT_IM_COORDINATOR },
+    subagentOrchestration: { ...DEFAULT_SUBAGENT_ORCHESTRATION }
   }
   writeAll(merged)
   if (didMerge) {
@@ -516,6 +537,21 @@ function setImCoordinator(partial) {
   writeAll(all)
 }
 
+function getSubagentOrchestration() {
+  const all = readAll()
+  const m = all.subagentOrchestration && typeof all.subagentOrchestration === 'object'
+    ? all.subagentOrchestration
+    : {}
+  return {
+    maxSpawnDepth: Number.isFinite(Number(m.maxSpawnDepth)) ? Math.max(1, Math.min(5, Number(m.maxSpawnDepth))) : DEFAULT_SUBAGENT_ORCHESTRATION.maxSpawnDepth,
+    maxConcurrent: Number.isFinite(Number(m.maxConcurrent)) ? Math.max(1, Number(m.maxConcurrent)) : DEFAULT_SUBAGENT_ORCHESTRATION.maxConcurrent,
+    maxChildrenPerAgent: Number.isFinite(Number(m.maxChildrenPerAgent)) ? Math.max(1, Number(m.maxChildrenPerAgent)) : DEFAULT_SUBAGENT_ORCHESTRATION.maxChildrenPerAgent,
+    allowedProfiles: Array.isArray(m.allowedProfiles) && m.allowedProfiles.length > 0 ? m.allowedProfiles.map((x) => String(x || '').trim()).filter(Boolean) : DEFAULT_SUBAGENT_ORCHESTRATION.allowedProfiles,
+    subagentMinimalMemory: m.subagentMinimalMemory !== false,
+    allowAsyncSpawn: m.allowAsyncSpawn !== false
+  }
+}
+
 module.exports = {
   getPath,
   readAll,
@@ -540,6 +576,7 @@ module.exports = {
   setProxy,
   getImCoordinator,
   setImCoordinator,
+  getSubagentOrchestration,
   ensureMerged,
   DEFAULT_AI,
   DEFAULT_FEISHU,
@@ -548,4 +585,5 @@ module.exports = {
   DEFAULT_HARDWARE,
   DEFAULT_PROXY,
   DEFAULT_IM_COORDINATOR,
+  DEFAULT_SUBAGENT_ORCHESTRATION,
 }

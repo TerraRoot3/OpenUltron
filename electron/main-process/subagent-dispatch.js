@@ -4,6 +4,9 @@
 
 const { buildExecutionEnvelope } = require('../ai/execution-envelope')
 const { buildWebAppStudioDelegateCallerBlock } = require('../ai/webapp-studio-context')
+const { getSubagentOrchestration } = require('../openultron-config')
+const spawnReg = require('../ai/subagent-spawn-registry')
+const { resolveAgentProfile, isProfileAllowed } = require('../ai/agent-profile')
 
 /** @param {object} deps — 见 main.js 原 createSubagentDispatch 调用处 */
 function createSubagentDispatch(deps) {
@@ -30,7 +33,8 @@ function createSubagentDispatch(deps) {
     detectRequestedExternalRuntime,
     scanExternalSubAgents,
     EXTERNAL_SUBAGENT_SPECS,
-    sessionRegistry
+    sessionRegistry,
+    eventBus
   } = deps
 
   function buildSubAgentDeliveryPrompt(projectPath = '') {
@@ -195,7 +199,7 @@ function createSubagentDispatch(deps) {
     }
   }
 
-  async function runByInternalSubAgent({ task, systemPrompt, roleName, model, projectPath, provider, eventSink, feishuChatId, feishuTenantKey, feishuDocHost, feishuSenderOpenId, feishuSenderUserId, capability, webappStudioDelegate, parentSessionIdForDelegate }, subSessionId) {
+  async function runByInternalSubAgent({ task, systemPrompt, roleName, model, projectPath, provider, eventSink, feishuChatId, feishuTenantKey, feishuDocHost, feishuSenderOpenId, feishuSenderUserId, capability, webappStudioDelegate, parentSessionIdForDelegate, profileResolved, subagentMinimalMemory, inheritIdentityFromProfile }, subSessionId) {
     const messages = []
     const rolePrompt = roleName && String(roleName).trim()
       ? `你当前扮演的角色是「${String(roleName).trim()}」。请按该角色完成任务，并仅输出该角色应给出的结果。`
@@ -207,7 +211,9 @@ function createSubagentDispatch(deps) {
       ? buildWebAppStudioDelegateCallerBlock(parentSessionIdForDelegate)
       : ''
     const deliveryPrompt = buildSubAgentDeliveryPrompt(projectPath || '')
-    const mergedSystemPrompt = [delegateBlock, rolePrompt, capabilityPrompt, systemPrompt && String(systemPrompt).trim() ? String(systemPrompt).trim() : '', deliveryPrompt]
+    const pr = profileResolved && typeof profileResolved === 'object' ? profileResolved : null
+    const profileExtra = pr && String(pr.prompt || '').trim() ? String(pr.prompt).trim() : ''
+    const mergedSystemPrompt = [delegateBlock, rolePrompt, capabilityPrompt, systemPrompt && String(systemPrompt).trim() ? String(systemPrompt).trim() : '', profileExtra, deliveryPrompt]
       .filter(Boolean)
       .join('\n\n')
     if (mergedSystemPrompt) messages.push({ role: 'system', content: mergedSystemPrompt })
@@ -221,8 +227,15 @@ function createSubagentDispatch(deps) {
       }
     }
     if (!resolvedConfig) resolvedConfig = getResolvedAIConfig()
-    if (model != null && String(model).trim() !== '') {
-      const pick = String(model).trim()
+    if (pr && pr.max_turns > 0) {
+      resolvedConfig = { ...resolvedConfig, maxToolIterations: pr.max_turns }
+    }
+    let pickModel = model
+    if ((pickModel == null || String(pickModel).trim() === '') && pr && pr.model && String(pr.model).trim()) {
+      pickModel = String(pr.model).trim()
+    }
+    if (pickModel != null && String(pickModel).trim() !== '') {
+      const pick = String(pickModel).trim()
       const pool = Array.isArray(resolvedConfig.modelPool)
         ? resolvedConfig.modelPool.map(x => String(x || '').trim()).filter(Boolean)
         : []
@@ -239,8 +252,8 @@ function createSubagentDispatch(deps) {
     const result = await aiOrchestrator.startChat({
       sessionId: subSessionId,
       messages,
-      model: model && String(model).trim() ? String(model).trim() : undefined,
-      tools: getToolsForSubChat({ projectPath: pp }),
+      model: pickModel && String(pickModel).trim() ? String(pickModel).trim() : undefined,
+      tools: getToolsForSubChat({ projectPath: pp, profile: pr }),
       sender: eventSink || null,
       config: resolvedConfig,
       projectPath: pp,
@@ -249,7 +262,9 @@ function createSubagentDispatch(deps) {
       feishuTenantKey: feishuTenantKey && String(feishuTenantKey).trim() ? String(feishuTenantKey).trim() : undefined,
       feishuDocHost: feishuDocHost && String(feishuDocHost).trim() ? String(feishuDocHost).trim() : undefined,
       feishuSenderOpenId: feishuSenderOpenId && String(feishuSenderOpenId).trim() ? String(feishuSenderOpenId).trim() : undefined,
-      feishuSenderUserId: feishuSenderUserId && String(feishuSenderUserId).trim() ? String(feishuSenderUserId).trim() : undefined
+      feishuSenderUserId: feishuSenderUserId && String(feishuSenderUserId).trim() ? String(feishuSenderUserId).trim() : undefined,
+      subagentMinimalMemory: !!subagentMinimalMemory,
+      inheritIdentityFromProfile: !!inheritIdentityFromProfile
     })
     if (!result.success) {
       return { success: false, error: result.error || '子 Agent 执行失败', subSessionId, runtime: 'internal' }
@@ -278,12 +293,64 @@ function createSubagentDispatch(deps) {
   }
 
   async function runSubChat(opts) {
-    const { task, systemPrompt, roleName, model, projectPath, provider, runtime, parentSessionId, parentRunId, feishuChatId, feishuTenantKey, feishuDocHost, feishuSenderOpenId, feishuSenderUserId, stream, webappStudioDelegate } = opts || {}
+    const { task, systemPrompt, roleName, model, projectPath, provider, runtime, parentSessionId, parentRunId, feishuChatId, feishuTenantKey, feishuDocHost, feishuSenderOpenId, feishuSenderUserId, stream, webappStudioDelegate, profile, agent, waitForResult = true } = opts || {}
     const subSessionId = `sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     const parentRun = String(parentRunId || '').trim()
+    const pp0 = (projectPath != null && String(projectPath).trim() !== '')
+      ? String(projectPath).trim()
+      : '__main_chat__'
+    const subOrc = getSubagentOrchestration()
+    const profileId = String(profile || agent || 'executor').trim() || 'executor'
+    const profileResolved = resolveAgentProfile(profileId, pp0) || resolveAgentProfile('executor', pp0)
+    if (!isProfileAllowed(profileId, subOrc.allowedProfiles)) {
+      const err = `子 Agent profile 不在允许列表: ${profileId}`
+      return {
+        success: false,
+        error: err,
+        subSessionId,
+        parentRunId: parentRun || undefined,
+        envelope: buildExecutionEnvelope({ success: false, error: err, subSessionId, parentRunId: parentRun || undefined }, 'internal')
+      }
+    }
+    const nest = spawnReg.validateNestedSpawnEligibility(parentSessionId || '', subOrc)
+    if (!nest.ok) {
+      return {
+        success: false,
+        error: nest.error,
+        subSessionId,
+        parentRunId: parentRun || undefined,
+        envelope: buildExecutionEnvelope({ success: false, error: nest.error, subSessionId, parentRunId: parentRun || undefined }, 'internal')
+      }
+    }
+    if (waitForResult === false && subOrc.allowAsyncSpawn === false) {
+      const err = '异步 spawn 未启用（请在 openultron.json 将 subagentOrchestration.allowAsyncSpawn 设为 true）'
+      return {
+        success: false,
+        error: err,
+        subSessionId,
+        parentRunId: parentRun || undefined,
+        envelope: buildExecutionEnvelope({ success: false, error: err, subSessionId, parentRunId: parentRun || undefined }, 'internal')
+      }
+    }
+    const slot = spawnReg.acquireSpawnSlot(parentSessionId || '', subOrc)
+    if (!slot.ok) {
+      const msg = slot.reason === 'subagent_global_concurrent_cap' ? '子 Agent 全局并发已达上限' : '当前会话子 Agent 数量已达上限'
+      return {
+        success: false,
+        error: msg,
+        subSessionId,
+        parentRunId: parentRun || undefined,
+        envelope: buildExecutionEnvelope({ success: false, error: msg, subSessionId, parentRunId: parentRun || undefined, commandLogs: [] }, 'internal')
+      }
+    }
+    spawnReg.registerSubagentSpawn(parentSessionId || '', subSessionId, profileId)
+    const useMinimalMem = subOrc.subagentMinimalMemory && !(profileResolved && profileResolved.inherit_identity)
+    const inheritIdentityFromProfile = !!(profileResolved && profileResolved.inherit_identity)
+    const subagentAsyncOutcomes = require('../ai/subagent-async-outcomes')
+    const runSubChatBody = async () => {
     const route = resolveCapabilityRoute({ text: String(task || ''), runtime: String(runtime || '') }, appLogger)
     let delegatedTask = buildDelegatedTaskWithParentContext(task, {
-      projectPath: projectPath || '__main_chat__',
+      projectPath: pp0,
       parentSessionId: parentSessionId || ''
     })
     if (route.capability === 'docs') {
@@ -440,7 +507,10 @@ function createSubagentDispatch(deps) {
               feishuSenderOpenId,
               feishuSenderUserId,
               webappStudioDelegate: webappStudioDelegate === true,
-              parentSessionIdForDelegate: parentSessionId || ''
+              parentSessionIdForDelegate: parentSessionId || '',
+              profileResolved,
+              subagentMinimalMemory: useMinimalMem,
+              inheritIdentityFromProfile
             }, subSessionId)
             if (out.success) {
               pushCommandLog('[meta] attempt internal success')
@@ -696,6 +766,63 @@ function createSubagentDispatch(deps) {
         }
       }
       throw e
+    }
+    }
+
+    if (waitForResult === false && subOrc.allowAsyncSpawn !== false) {
+      subagentAsyncOutcomes.markPending(subSessionId, {
+        parentSessionId: parentSessionId || '',
+        parentRunId: parentRun || undefined,
+        taskPreview: String(task || '').slice(0, 200)
+      })
+      runSubChatBody()
+        .then((out) => {
+          try {
+            if (eventBus && typeof eventBus.emitAsync === 'function') {
+              eventBus.emitAsync('subagent.async.completed', {
+                subSessionId,
+                parentSessionId: parentSessionId || '',
+                success: !!(out && out.success !== false)
+              })
+            }
+          } catch (_) {}
+          subagentAsyncOutcomes.complete(subSessionId, out)
+        })
+        .catch((e) => {
+          subagentAsyncOutcomes.complete(subSessionId, {
+            success: false,
+            error: e.message || String(e),
+            subSessionId,
+            parentRunId: parentRun || undefined,
+            envelope: buildExecutionEnvelope(
+              { success: false, error: e.message || String(e), subSessionId, parentRunId: parentRun || undefined },
+              'internal'
+            )
+          })
+        })
+        .finally(() => {
+          try { spawnReg.unregisterSubagentChild(parentSessionId || '', subSessionId) } catch (_) {}
+          try { spawnReg.clearSubagentSpawnMeta(subSessionId) } catch (_) {}
+          try { spawnReg.releaseSpawnSlot(parentSessionId || '') } catch (_) {}
+        })
+      return {
+        success: true,
+        async: true,
+        accepted: true,
+        subSessionId,
+        sub_session_id: subSessionId,
+        parentRunId: parentRun || undefined,
+        parent_run_id: parentRun || undefined,
+        message: '子 Agent 已在后台运行。请用 sessions_subagent_poll(sub_session_id=...) 获取结果。'
+      }
+    }
+
+    try {
+      return await runSubChatBody()
+    } finally {
+      try { spawnReg.unregisterSubagentChild(parentSessionId || '', subSessionId) } catch (_) {}
+      try { spawnReg.clearSubagentSpawnMeta(subSessionId) } catch (_) {}
+      try { spawnReg.releaseSpawnSlot(parentSessionId || '') } catch (_) {}
     }
   }
 

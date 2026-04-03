@@ -32,6 +32,11 @@ describe('inbound-message-text', () => {
     expect(h.hasUsefulVisibleResult('已完成：见 https://example.com/doc')).toBe(true)
   })
 
+  it('hasUsefulVisibleResult accepts short identity/model answers for Feishu-style Q&A', () => {
+    expect(h.hasUsefulVisibleResult('我是 Qwen3.6 大模型。')).toBe(true)
+    expect(h.hasUsefulVisibleResult('本对话使用 OpenRouter 上的 qwen 模型。')).toBe(true)
+  })
+
   it('hasUsefulVisibleResult rejects action-promise text without real results', () => {
     expect(h.hasUsefulVisibleResult('太棒了，收到确认！我现在就按你说的执行：写好 HTML → 浏览器打开 → 截图回你。开始操作中…')).toBe(false)
     expect(h.hasUsefulVisibleResult('收到！马上开始。我先创建文件并执行浏览器截图，然后把产物路径发你。')).toBe(false)

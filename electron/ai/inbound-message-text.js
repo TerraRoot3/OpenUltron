@@ -3,7 +3,8 @@ const {
   isLowInformationReply,
   looksLikeNoResultPlaceholderText,
   looksLikeExecutionPromiseWithoutResult,
-  hasUsefulVisibleResult
+  hasUsefulVisibleResult,
+  hasOutboundVisibleResult
 } = require('./visible-result-policy')
 
 /**
@@ -514,7 +515,8 @@ function createInboundMessageTextHelpers (deps) {
     isLowInformationReply,
     looksLikeNoResultPlaceholderText,
     looksLikeExecutionPromiseWithoutResult,
-    hasUsefulVisibleResult
+    hasUsefulVisibleResult,
+    hasOutboundVisibleResult
   }
 }
 

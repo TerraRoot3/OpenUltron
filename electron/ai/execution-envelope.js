@@ -13,8 +13,28 @@ function normalizeErrorCode(errorText = '') {
   return 'UNKNOWN'
 }
 
+/**
+ * 运行时退出类别（非模型生成）：用于 Announce 对齐与渠道展示。
+ * @param {object} out
+ * @param {boolean} out.success
+ * @param {string} [out.error]
+ * @param {string} [out.exitKind] — 若调用方已设则优先
+ */
+function computeExitKind(out = {}) {
+  if (out && out.exitKind && /^(completed|timeout|aborted|error)$/.test(String(out.exitKind))) {
+    return String(out.exitKind)
+  }
+  if (out && out.success) return 'completed'
+  const err = String(out.error || '')
+  const code = normalizeErrorCode(err)
+  if (code === 'CANCELLED') return 'aborted'
+  if (code === 'RUN_TIMEOUT' || code === 'NETWORK_TIMEOUT') return 'timeout'
+  return 'error'
+}
+
 function buildExecutionEnvelope(out = {}, runtime = 'internal') {
   const success = !!out.success
+  const exitKind = computeExitKind(out)
   const result = out.result != null ? String(out.result).trim() : ''
   const stdout = Array.isArray(out.commandLogs)
     ? out.commandLogs.join('\n')
@@ -29,6 +49,7 @@ function buildExecutionEnvelope(out = {}, runtime = 'internal') {
 
   const envelope = {
     success,
+    exitKind,
     summary,
     artifacts: Array.isArray(out.artifacts) ? out.artifacts : [],
     logs: logLines.slice(-80),
@@ -64,6 +85,7 @@ function truncateDelegationStdoutPreview(logs, maxChars = 4000) {
 
 module.exports = {
   buildExecutionEnvelope,
+  computeExitKind,
   normalizeErrorCode,
   truncateDelegationStdoutPreview
 }

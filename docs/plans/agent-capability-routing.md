@@ -7,6 +7,8 @@
 - `docs/OPTIMIZATION-ROADMAP.md`（跨域优先级）
 - `docs/MESSAGE-CONTRACT.md`（消息与 envelope 契约）
 - `docs/plans/agent-cognitive-architecture-plan.md`（认知层主线）
+- `docs/plans/agent-orchestration-main-sub.md`（主–子编排：主汇总对外、与 envelope/渠道一致）
+- `docs/plans/agent-orchestration-redesign.md`（对比 Claude Code/OpenClaw 后的目标方案与落地阶段）
 
 ---
 

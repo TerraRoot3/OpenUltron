@@ -2,6 +2,7 @@
 
 const path = require('path')
 const { getWebAppsRoot } = require('../web-apps/registry')
+const { filterToolsByProfile } = require('../ai/agent-profile')
 
 /**
  * 应用工作室侧栏：会话已绑定某沙箱应用根目录，应直接改文件，勿再 webapp_studio_invoke / sessions_spawn。
@@ -82,16 +83,19 @@ function createAiChatToolsAccess(deps) {
     return tools
   }
 
-  /** @param {{ projectPath?: string }} [opts] 传入应用根路径时合并 webapp__* 等（与主会话一致） */
+  /** @param {{ projectPath?: string, profile?: object | null }} [opts] 传入应用根路径时合并 webapp__* 等；profile 时按 allow/deny 裁剪 */
   function getToolsForSubChat(opts = {}) {
-    return getToolsForChat(opts).filter((t) => {
+    const pr = opts.profile || null
+    const isCoordinator = pr && String(pr.id || '').trim() === 'coordinator'
+    const base = getToolsForChat(opts).filter((t) => {
       const name = String(t?.function?.name || '').trim()
       if (CHANNEL_SEND_TOOL_REGEX.test(name)) return false
-      if (name === 'sessions_spawn') return false
+      if (name === 'sessions_spawn') return isCoordinator
       if (name === 'webapp_studio_invoke') return false
       if (name === 'web_apps_create') return false
       return true
     })
+    return filterToolsByProfile(base, pr)
   }
 
   function getToolsForCoordinatorChat() {

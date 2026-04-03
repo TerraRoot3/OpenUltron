@@ -34,6 +34,7 @@ const { createChatRunId } = require('./run-id')
 const { buildWebAppStudioSandboxMemoryBlock } = require('./webapp-studio-context')
 const { getWebAppsRoot } = require('../web-apps/registry')
 const { shouldForceExecutionContinuation } = require('./visible-result-policy')
+const { getChildSubSessionIdsForParent, clearChildrenForParent } = require('./subagent-spawn-registry')
 
 /** 是否为相对路径（与仅以 `/` 开头区分，兼容 Windows 绝对路径） */
 function isRelativeFilePath(p) {
@@ -376,7 +377,7 @@ class Orchestrator {
   }
 
   // ---------- 启动 Agent 对话循环 ----------
-  async startChat({ sessionId, messages, model, tools, sender, config: externalConfig, projectPath, panelId, feishuChatId, feishuTenantKey, feishuDocHost, feishuSenderOpenId, feishuSenderUserId }) {
+  async startChat({ sessionId, messages, model, tools, sender, config: externalConfig, projectPath, panelId, feishuChatId, feishuTenantKey, feishuDocHost, feishuSenderOpenId, feishuSenderUserId, subagentMinimalMemory = false, inheritIdentityFromProfile = false }) {
     const chatRunId = createChatRunId(sessionId)
     let config = externalConfig || this.getConfig()
     const requestedModel = model && String(model).trim() ? String(model).trim() : ''
@@ -510,6 +511,8 @@ class Orchestrator {
     let forcedContinuationCount = 0
     const intentText = pickRecentUserIntentText(currentMessages)
     const promptIntentFlags = detectPromptIntentFlags(intentText)
+    /** 子会话瘦身：不注入 SOUL/IDENTITY/USER 等（见 agent-orchestration-redesign）；profile inherit_identity 时可恢复身份块 */
+    const subMinimal = !!subagentMinimalMemory && String(sessionId || '').startsWith('sub-') && !inheritIdentityFromProfile
 
     // 循环检测状态
     const loopDetector = {
@@ -565,7 +568,7 @@ class Orchestrator {
       // 0. 当前应用边界（最高优先级）
       if (webAppSandbox) {
         memParts.push(buildWebAppStudioSandboxMemoryBlock(sandboxRoot))
-      } else {
+      } else if (!subMinimal) {
         memParts.push(
           '[当前应用]\n' +
           '你正在运行并直接操作的应用是 **OpenUltron**（本应用）。\n' +
@@ -673,11 +676,13 @@ class Orchestrator {
       if (toolGapFallbackText) memParts.push(toolGapFallbackText)
 
       // 1. 全局偏好文件 MEMORY.md
-      const globalMd = readGlobalMemoryMd()
-      if (globalMd) memParts.push(`[全局偏好 - MEMORY.md]\n${clipInjectedSection(globalMd, 1800)}`)
+      if (!subMinimal) {
+        const globalMd = readGlobalMemoryMd()
+        if (globalMd) memParts.push(`[全局偏好 - MEMORY.md]\n${clipInjectedSection(globalMd, 1800)}`)
+      }
 
       // 2. 本应用 SOUL.md / IDENTITY.md（应用工作室沙箱会话不注入，避免与「改 Hello 页面」冲突）
-      if (!webAppSandbox) {
+      if (!webAppSandbox && !subMinimal) {
         const soulMd = readSoulMd()
         if (soulMd) memParts.push(`[SOUL.md - 性格与原则]\n${clipInjectedSection(soulMd, 1800)}`)
 
@@ -698,12 +703,14 @@ class Orchestrator {
       }
 
       // 2.2 USER.md（用户信息：姓名、时区、工作、偏好等）
-      const userMd = readUserMd()
-      if (userMd) memParts.push(`[USER.md]\n${clipInjectedSection(userMd, 1200)}`)
+      if (!subMinimal) {
+        const userMd = readUserMd()
+        if (userMd) memParts.push(`[USER.md]\n${clipInjectedSection(userMd, 1200)}`)
 
-      // 2.3 BOOT.md（会话启动时简短指令）
-      const bootMd = readBootMd()
-      if (bootMd) memParts.push(`[BOOT.md - 启动指令]\n${clipInjectedSection(bootMd, 900)}`)
+        // 2.3 BOOT.md（会话启动时简短指令）
+        const bootMd = readBootMd()
+        if (bootMd) memParts.push(`[BOOT.md - 启动指令]\n${clipInjectedSection(bootMd, 900)}`)
+      }
 
       // 2.4 AGENTS.md / TOOLS.md（工作区 Agent 与工具说明，若存在则注入）
       const agentsMd = readAgentsMd()
@@ -711,17 +718,17 @@ class Orchestrator {
       const toolsMd = readToolsMd()
       if (toolsMd) memParts.push(`[TOOLS.md - 工作区工具说明]\n${clipInjectedSection(toolsMd, 1200)}`)
 
-      // 2.5 学习新技能流程（prompts/learn-skill-flow.md）
-      const learnFlowText = loadPrompt('learn-skill-flow')
-      if (learnFlowText && promptIntentFlags.learnSkill) memParts.push(clipInjectedSection(learnFlowText, 1800))
+      // 2.5–2.7 学习/配置引导（子会话瘦身时跳过）
+      if (!subMinimal) {
+        const learnFlowText = loadPrompt('learn-skill-flow')
+        if (learnFlowText && promptIntentFlags.learnSkill) memParts.push(clipInjectedSection(learnFlowText, 1800))
 
-      // 2.6 从网上学习社区技能与玩法（prompts/learn-skills-from-web.md）
-      const learnWebText = loadPrompt('learn-skills-from-web')
-      if (learnWebText && promptIntentFlags.learnFromWeb) memParts.push(clipInjectedSection(learnWebText, 1800))
+        const learnWebText = loadPrompt('learn-skills-from-web')
+        if (learnWebText && promptIntentFlags.learnFromWeb) memParts.push(clipInjectedSection(learnWebText, 1800))
 
-      // 2.7 OpenUltron 可配置能力与引导用户获取参数（prompts/openultron-config-guide.md）
-      const configGuideText = loadPrompt('openultron-config-guide')
-      if (configGuideText && promptIntentFlags.configGuide) memParts.push(clipInjectedSection(configGuideText, 2200))
+        const configGuideText = loadPrompt('openultron-config-guide')
+        if (configGuideText && promptIntentFlags.configGuide) memParts.push(clipInjectedSection(configGuideText, 2200))
+      }
 
       // 2.8 可用供应商与模型（主会话 vs 子任务；先验证再切换）
       memParts.push(
@@ -732,7 +739,7 @@ class Orchestrator {
       )
 
       // 3. 项目相关碎片记忆
-      if (projectPath) {
+      if (!subMinimal && projectPath) {
         const topMemories = getTopMemoriesForProject(projectPath, 5)
         if (topMemories.length > 0) {
           const memText = topMemories.map((m, i) => `${i + 1}. ${clipInjectedSection(m.content, 220)}`).join('\n')
@@ -741,7 +748,7 @@ class Orchestrator {
       }
 
       // 3.1 项目 AGENT.md（与主窗口原 ChatPanel 注入路径一致：.gitManager/AGENT.md）
-      {
+      if (!subMinimal) {
         const pp = String(projectPath || '').trim()
         if (pp && !pp.startsWith('__') && path.isAbsolute(pp)) {
           try {
@@ -755,9 +762,11 @@ class Orchestrator {
       }
 
       // 4. 知识库经验教训（自动注入，无需再调 read_lessons_learned 即可直接利用）
-      const lessonsContent = readLessonsLearned()
-      if (lessonsContent && lessonsContent.trim()) {
-        memParts.push(`[知识库 - 经验教训]\n${clipInjectedSection(lessonsContent.trim(), 2200)}\n\n**使用方式**：优先复用上述经验，避免重复试错；写 lesson_save 时记录具体场景、原因、命令或路径。`)
+      if (!subMinimal) {
+        const lessonsContent = readLessonsLearned()
+        if (lessonsContent && lessonsContent.trim()) {
+          memParts.push(`[知识库 - 经验教训]\n${clipInjectedSection(lessonsContent.trim(), 2200)}\n\n**使用方式**：优先复用上述经验，避免重复试错；写 lesson_save 时记录具体场景、原因、命令或路径。`)
+        }
       }
 
       memParts.push(
@@ -1545,6 +1554,13 @@ class Orchestrator {
   }
 
   stopChat(sessionId) {
+    const childIds = getChildSubSessionIdsForParent(sessionId)
+    for (const cid of childIds) {
+      try {
+        this.stopChat(cid)
+      } catch (_) { /* ignore */ }
+    }
+    clearChildrenForParent(sessionId)
     const session = this.activeSessions.get(sessionId)
     if (session) {
       appLogger?.info?.('[Orchestrator] stopChat 中止会话', { sessionId: String(sessionId).slice(0, 24) })
@@ -2206,8 +2222,19 @@ class Orchestrator {
           error: err ? String(err.message || err) : ''
         })
       })
-      socket.once('connect', () => mark('tcp_connect'))
-      socket.once('secureConnect', () => mark('tls_connect'))
+      if (socket.connecting) {
+        socket.once('connect', () => mark('tcp_connect'))
+      } else {
+        mark('tcp_connect')
+      }
+      // keep-alive 复用同一 TLSSocket 时 secureConnect 已触发，再挂 once 会堆积并触发 MaxListenersExceededWarning
+      if (socket.encrypted) {
+        if (socket.secureConnecting) {
+          socket.once('secureConnect', () => mark('tls_connect'))
+        } else {
+          mark('tls_connect')
+        }
+      }
       socket.once('error', (e) => {
         mark('socket_error', {
           code: String(e?.code || ''),

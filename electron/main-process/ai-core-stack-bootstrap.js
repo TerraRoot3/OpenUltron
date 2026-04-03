@@ -325,7 +325,8 @@ function bootstrapAiCoreStack(deps) {
     detectRequestedExternalRuntime,
     scanExternalSubAgents,
     EXTERNAL_SUBAGENT_SPECS,
-    sessionRegistry
+    sessionRegistry,
+    eventBus
   })
 
   const GATEWAY_PORT_PROD = 28790

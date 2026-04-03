@@ -6,6 +6,8 @@
 
 - `docs/OPTIMIZATION-ROADMAP.md`（全局优先级）
 - `docs/plans/agent-capability-routing.md`（能力路由与交付语义）
+- `docs/plans/agent-orchestration-main-sub.md`（**主–子 Agent 编排**：目标行为、OpenClaw/Claude Code 对照、分阶段落地）
+- `docs/plans/agent-orchestration-redesign.md`（**对比上游后的 OpenUltron 重设计**：Profile、深度、Announce、并发 P0–P2）
 - `docs/MESSAGE-CONTRACT.md`（消息与 envelope 契约）
 - `docs/MAIN-PROCESS-MODULARIZATION.md`（主进程边界）
 
@@ -58,6 +60,10 @@
    - 目标：主会话、子任务、渠道回传在成功/失败语义上一致  
    - 验收：关键路径都能返回结构化 envelope 且用户可见结果一致
 
+4. **主–子编排语义落地**（详见 `agent-orchestration-main-sub.md`）  
+   - 目标：子 Agent 产出经主 Agent 判定与汇总后再触达用户；失败口径与 envelope 一致  
+   - 验收：协调/主会话 system 与 IM 外发路径与文档描述一致，抽检无「子成功话术覆盖 envelope 失败」
+
 3. **记忆写入质量治理**  
    - 目标：减少重复与低价值记忆  
    - 验收：新增记忆具备来源标识，重复率下降
@@ -81,6 +87,7 @@
 - **`OPTIMIZATION-ROADMAP.md`**：跨模块优先级与排期
 - **`MESSAGE-CONTRACT.md`**：字段与消息语义规范
 - **`agent-capability-routing.md`**：能力路由和交付细节方案
+- **`agent-orchestration-main-sub.md`**：主 Agent 分发、子 Agent 执行、主 Agent 汇总对外的目标架构与分阶段落地
 
 ---
 

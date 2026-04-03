@@ -53,7 +53,7 @@ function registerImChannelMessagePipeline(deps) {
     compactSpawnResultText,
     extractLatestVisibleText,
     overwriteLatestAssistantText,
-    hasUsefulVisibleResult,
+    hasOutboundVisibleResult,
     stripToolProtocolAndJsonNoise,
     redactSensitiveText,
     looksLikeGenericGreeting,
@@ -731,7 +731,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
           : ((latestVisibleText && String(latestVisibleText).trim()) ? String(latestVisibleText).trim() : ''))
     const rawFallbackText = seedFallbackText
     const safeRawFallbackText = stripToolProtocolAndJsonNoise(rawFallbackText, { dropJsonEnvelope: true })
-    const safeUsefulRawFallbackText = hasUsefulVisibleResult(safeRawFallbackText) ? safeRawFallbackText : ''
+    const safeUsefulRawFallbackText = hasOutboundVisibleResult(safeRawFallbackText) ? safeRawFallbackText : ''
     const cleanedTextTrim = String(cleanedText || '').trim()
     const cleanedSpawnTrim = String(cleanedSpawnText || '').trim()
     const preferSpawnText = !!cleanedSpawnTrim && (
@@ -739,17 +739,22 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
       !cleanedTextTrim ||
       looksLikeGenericGreeting(cleanedTextTrim)
     )
+    const spawnStripped = stripToolProtocolAndJsonNoise(cleanedSpawnTrim, { dropJsonEnvelope: true })
+    const spawnOutboundOk = hasOutboundVisibleResult(spawnStripped)
+    // 有委派时优先子 Agent 摘要；若摘要被判定为不可外发（空/噪声），回退主 Agent 正文，避免只剩兜底句
     const baseTextToSend = preferSpawnText
-      ? cleanedSpawnTrim
+      ? (spawnOutboundOk
+        ? cleanedSpawnTrim
+        : (cleanedTextTrim || cleanedSpawnTrim || (rawFallbackText || (imageItems.length > 0 ? '截图已发至当前会话。' : null))))
       : (cleanedTextTrim || cleanedSpawnTrim || (rawFallbackText || (imageItems.length > 0 ? '截图已发至当前会话。' : null)))
     const safeBaseTextToSend = stripToolProtocolAndJsonNoise(baseTextToSend, { dropJsonEnvelope: true })
-    const safeUsefulBaseTextToSend = hasUsefulVisibleResult(safeBaseTextToSend) ? safeBaseTextToSend : ''
+    const safeUsefulBaseTextToSend = hasOutboundVisibleResult(safeBaseTextToSend) ? safeBaseTextToSend : ''
     let directRetryResolvedText = ''
     let directRetryErrorText = ''
     let directRetryAddedArtifacts = false
     const shouldRescueByMain = !hasSpawnCall &&
       imageItems.length === 0 && fileItems.length === 0 &&
-      !hasUsefulVisibleResult(safeBaseTextToSend)
+      !hasOutboundVisibleResult(safeBaseTextToSend)
     if (shouldRescueByMain) {
       appendCommandLine('- 主Agent无结果，触发直执行重试')
       scheduleStreamFlush()
@@ -767,7 +772,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
         const retryText = String(directRetry.text || '').trim()
         if (retryText) {
           const retryClean = stripToolProtocolAndJsonNoise(retryText, { dropJsonEnvelope: true })
-          if (hasUsefulVisibleResult(retryClean)) {
+          if (hasOutboundVisibleResult(retryClean)) {
             directRetryResolvedText = retryClean
           }
         }
@@ -810,7 +815,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
     let textToSend = resolveDeterministicOutboundText({
       candidates: [safeUsefulBaseTextToSend, directRetryResolvedText, safeUsefulRawFallbackText],
       stripToolProtocolAndJsonNoise,
-      hasUsefulVisibleResult,
+      hasUsefulVisibleResult: hasOutboundVisibleResult,
       stripFalseDeliveredClaims,
       channel: binding.channel,
       hasImages: imageItems.length > 0,
@@ -820,7 +825,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
     
     const noArtifacts = imageItems.length === 0 && fileItems.length === 0
     const visibleResultText = String(cleanedSpawnTrim || cleanedTextTrim || safeRawFallbackText || '').trim()
-    const noUsefulResult = !hasUsefulVisibleResult(visibleResultText)
+    const noUsefulResult = !hasOutboundVisibleResult(visibleResultText)
     if (hasSpawnCall && noArtifacts && noUsefulResult) {
       appendCommandLine('- 子Agent空结果，主Agent直执行重试')
       scheduleStreamFlush()
@@ -838,7 +843,7 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
         const retryText = String(directRetry.text || '').trim()
         if (retryText) {
           const retryClean = stripToolProtocolAndJsonNoise(retryText, { dropJsonEnvelope: true })
-          if (hasUsefulVisibleResult(retryClean)) textToSend = retryClean
+          if (hasOutboundVisibleResult(retryClean)) textToSend = retryClean
         }
         const seenImagePath = new Set(imageItems.map(x => String(x?.path || '')).filter(Boolean))
         const seenFilePath = new Set(fileItems.map(x => String(x?.path || '')).filter(Boolean))

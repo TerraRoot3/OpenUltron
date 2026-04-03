@@ -1,4 +1,4 @@
-const { buildExecutionEnvelope, normalizeErrorCode } = require('./execution-envelope')
+const { buildExecutionEnvelope, normalizeErrorCode, computeExitKind } = require('./execution-envelope')
 
 describe('execution-envelope', () => {
   it('normalizeErrorCode maps known patterns', () => {
@@ -46,6 +46,21 @@ describe('execution-envelope', () => {
     expect(e.success).toBe(true)
     expect(e.summary).toMatch(/近期执行记录/)
     expect(e.summary).toMatch(/line-b/)
+  })
+
+  it('computeExitKind maps success and failure modes', () => {
+    expect(computeExitKind({ success: true })).toBe('completed')
+    expect(computeExitKind({ success: false, error: '子 Agent 执行超时' })).toBe('timeout')
+    expect(computeExitKind({ success: false, error: 'request was cancelled' })).toBe('aborted')
+    expect(computeExitKind({ success: false, error: 'something broke' })).toBe('error')
+    expect(computeExitKind({ success: false, exitKind: 'aborted' })).toBe('aborted')
+  })
+
+  it('buildExecutionEnvelope includes exitKind', () => {
+    const e = buildExecutionEnvelope({ success: true, result: 'ok' }, 'internal')
+    expect(e.exitKind).toBe('completed')
+    const e2 = buildExecutionEnvelope({ success: false, error: '子 Agent 执行超时' }, 'internal')
+    expect(e2.exitKind).toBe('timeout')
   })
 
   it('buildExecutionEnvelope metrics carries parent_run_id and sub_session_id', () => {

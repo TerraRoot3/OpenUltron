@@ -5,6 +5,8 @@
 
 const { buildExecutionEnvelope, truncateDelegationStdoutPreview } = require('../execution-envelope')
 const { ingestEnvelopeArtifacts } = require('../artifact-hub')
+const { getSubagentOrchestration } = require('../../openultron-config')
+const { validateNestedSpawnEligibility } = require('../subagent-spawn-registry')
 
 const definition = {
   description: '派生子 Agent 执行一项任务。主 Agent 将任务与可选系统提示交给子 Agent，子 Agent 在独立会话中运行直至完成，最后把最终回复文本返回给主 Agent。子 Agent **必须在最后一轮用自然语言说明**：是否已按要求实现、改了哪些路径/文件、若涉及页面/功能如何验证；勿在仅改文件后沉默结束。工具返回值含 **message** 与 **envelope.summary** 会同步给主会话。可通过 provider 与 model 指定子 Agent 使用的供应商与模型（先调用 list_providers_and_models 获取可用列表）。',
@@ -17,7 +19,10 @@ const definition = {
       runtime: { type: 'string', description: '可选。子 Agent 运行时：auto（默认，先尝试可用外部子 Agent，失败自动回退）/ internal（仅内置）/ external:<name>（如 external:codex、external:gateway_cli；网关 CLI 可设环境变量 OPENULTRON_GATEWAY_CLI 指定可执行文件名）' },
       provider: { type: 'string', description: '可选。子 Agent 使用的供应商：供应商名称（如「OpenAI」「DeepSeek」）或 base_url；不传则使用当前默认供应商' },
       model: { type: 'string', description: '可选。子 Agent 使用的模型 ID。根据任务复杂度选择：简单任务选 fast 模型；复杂代码/推理任务选 reasoning 模型。优先选已验证可用模型。' },
-      project_path: { type: 'string', description: '可选。子 Agent 的项目路径上下文，默认与主会话一致' }
+      project_path: { type: 'string', description: '可选。子 Agent 的项目路径上下文，默认与主会话一致' },
+      profile: { type: 'string', description: '可选。子 Agent 配置 profile（executor / read_only_fast / coordinator 或 .openultron/agents/*.md），默认 executor' },
+      agent: { type: 'string', description: '可选。与 profile 同义，便于兼容' },
+      wait_for_result: { type: 'boolean', description: '默认 true（同步等待子 Agent 跑完）。为 false 时立即返回 sub_session_id，后台执行，稍后通过 sessions_subagent_poll 取结果（需 openultron.json 允许 allowAsyncSpawn）。' }
     },
     required: ['task']
   }
@@ -39,15 +44,16 @@ function createSessionsSpawnTool(runSubChat) {
   }
 
   async function execute(args, context = {}) {
-    const { task, system_prompt, provider, model, project_path, role_name, runtime } = args || {}
+    const { task, system_prompt, provider, model, project_path, role_name, runtime, profile, agent, wait_for_result } = args || {}
     if (!task || String(task).trim() === '') {
       return { success: false, error: '缺少 task 参数' }
     }
-    if (context.sessionId && String(context.sessionId).startsWith('sub-')) {
-      return { success: false, error: '子 Agent 不允许再调用 sessions_spawn（已阻止递归派生）' }
+    const parentSessionId = normalizeParentSessionId(context.sessionId || '')
+    const nest = validateNestedSpawnEligibility(parentSessionId || '', getSubagentOrchestration())
+    if (!nest.ok) {
+      return { success: false, error: nest.error }
     }
 
-    const parentSessionId = normalizeParentSessionId(context.sessionId || '')
     const projectPath = (project_path != null && String(project_path).trim() !== '')
       ? String(project_path).trim()
       : (context.projectPath || '__main_chat__')
@@ -83,8 +89,44 @@ function createSessionsSpawnTool(runSubChat) {
         stream,
         provider: provider != null && String(provider).trim() !== '' ? String(provider).trim() : undefined,
         model: model && String(model).trim() ? String(model).trim() : undefined,
-        projectPath
+        projectPath,
+        profile: profile != null && String(profile).trim() !== '' ? String(profile).trim() : undefined,
+        agent: agent != null && String(agent).trim() !== '' ? String(agent).trim() : undefined,
+        waitForResult: wait_for_result !== false
       })
+
+      if (out && out.async && out.accepted) {
+        const envelope = buildExecutionEnvelope(
+          {
+            success: true,
+            result: out.message || '后台任务已接受',
+            subSessionId: out.sub_session_id || out.subSessionId,
+            parentRunId,
+            exitKind: 'completed'
+          },
+          'internal'
+        )
+        try {
+          ingestEnvelopeArtifacts(envelope, {
+            sessionId: parentSessionId,
+            runSessionId: out.sub_session_id != null ? String(out.sub_session_id) : '',
+            parentRunId,
+            chatId: String(context.feishuChatId || context.remoteId || ''),
+            channel: String(context.channel || ''),
+            source: 'sessions_spawn'
+          })
+        } catch (_) {}
+        return {
+          success: true,
+          message: envelope.summary,
+          envelope,
+          async: true,
+          accepted: true,
+          sub_session_id: out.sub_session_id ?? out.subSessionId ?? null,
+          parent_run_id: parentRunId || undefined,
+          hint: '请用 sessions_subagent_poll(sub_session_id=...) 轮询直至完成。'
+        }
+      }
 
       const envelope = buildExecutionEnvelope(out || {}, out?.runtime || 'internal')
       try {
