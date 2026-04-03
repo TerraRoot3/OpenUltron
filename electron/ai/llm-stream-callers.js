@@ -28,7 +28,7 @@ function canSend(sender) {
  * @param {(config: any) => { maxRetries: number, baseDelayMs: number, maxDelayMs: number }} deps.getRetryConfig
  * @param {(ms: number, signal: AbortSignal) => Promise<void>} deps.sleep
  * @param {(err: any, attempt: number, maxRetries: number) => boolean} deps.shouldRetryError
- * @param {(attempt: number, baseDelayMs: number, maxDelayMs: number) => number} deps.getRetryDelayMs
+ * @param {(attempt: number, baseDelayMs: number, maxDelayMs: number, err?: any) => number} deps.getRetryDelayMs
  * @param {(url: URL, method: string, headers: Record<string, string>, signal: AbortSignal) => import('http').ClientRequest} deps.makeRequest
  * @param {(res: import('http').IncomingMessage, url: URL, cb: (err: Error) => void) => void} deps.readErrorBody
  * @param {(raw: string) => string} deps.normalizeToolArguments
@@ -97,10 +97,11 @@ function streamOpenAiChatCompletions(deps, body, config, sender, sessionId, sign
       }
 
       if (shouldRetryError(err, attempt, maxRetries)) {
-        const delay = getRetryDelayMs(attempt, baseDelayMs, maxDelayMs)
+        const delay = getRetryDelayMs(attempt, baseDelayMs, maxDelayMs, err)
         const target = `${url.hostname}${url.pathname}`
         const code = err?.code ? ` code=${String(err.code)}` : ''
-        console.warn(`[AI] API 调用失败，将在 ${delay}ms 后重试 (${attempt + 1}/${maxRetries}) [${target}]${code}：`, err.message)
+        const ra = Number(err?.httpStatus) === 429 ? ` (429 退避${err?.retryAfterMs != null ? `+Retry-After ${err.retryAfterMs}ms` : ''})` : ''
+        console.warn(`[AI] API 调用失败，将在 ${delay}ms 后重试 (${attempt + 1}/${maxRetries}) [${target}]${code}${ra}：`, err.message)
         sleep(delay, signal)
           .then(() => attemptOnce(attempt + 1).then(resolve, reject))
           .catch(() => reject(err))
@@ -210,10 +211,11 @@ function streamOpenAiResponses(deps, body, config, sender, sessionId, signal) {
 
     const onError = (err) => {
       if (shouldRetryError(err, attempt, maxRetries)) {
-        const delay = getRetryDelayMs(attempt, baseDelayMs, maxDelayMs)
+        const delay = getRetryDelayMs(attempt, baseDelayMs, maxDelayMs, err)
         const target = `${url.hostname}${url.pathname}`
         const code = err?.code ? ` code=${String(err.code)}` : ''
-        console.warn(`[AI] Responses API 调用失败，将在 ${delay}ms 后重试 (${attempt + 1}/${maxRetries}) [${target}]${code}：`, err.message)
+        const ra = Number(err?.httpStatus) === 429 ? ` (429 退避${err?.retryAfterMs != null ? `+Retry-After ${err.retryAfterMs}ms` : ''})` : ''
+        console.warn(`[AI] Responses API 调用失败，将在 ${delay}ms 后重试 (${attempt + 1}/${maxRetries}) [${target}]${code}${ra}：`, err.message)
         sleep(delay, signal)
           .then(() => attemptOnce(attempt + 1).then(resolve, reject))
           .catch(() => reject(err))

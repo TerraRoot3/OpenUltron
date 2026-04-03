@@ -1796,7 +1796,7 @@ class Orchestrator {
       getRetryConfig: (c) => this._getRetryConfig(c),
       sleep: (ms, signal) => this._sleep(ms, signal),
       shouldRetryError: (err, attempt, maxRetries) => this._shouldRetryError(err, attempt, maxRetries),
-      getRetryDelayMs: (attempt, baseDelayMs, maxDelayMs) => this._getRetryDelayMs(attempt, baseDelayMs, maxDelayMs),
+      getRetryDelayMs: (attempt, baseDelayMs, maxDelayMs, err) => this._getRetryDelayMs(attempt, baseDelayMs, maxDelayMs, err),
       makeRequest: (url, method, headers, signal) => this._makeRequest(url, method, headers, signal),
       readErrorBody: (res, url, cb) => this._readErrorBody(res, url, cb),
       normalizeToolArguments: (raw) => this._normalizeToolArguments(raw)
@@ -2043,10 +2043,24 @@ class Orchestrator {
     )
   }
 
-  _getRetryDelayMs(attempt, baseDelayMs, maxDelayMs) {
+  /**
+   * 429 限流：默认指数退避往往过短（~800ms），上游（尤其 OpenRouter 免费模型）需更久；若响应带 Retry-After 则优先。
+   * @param {any} [err] — 含 httpStatus / retryAfterMs（由 _readErrorBody 注入）
+   */
+  _getRetryDelayMs(attempt, baseDelayMs, maxDelayMs, err) {
     const exp = Math.min(maxDelayMs, baseDelayMs * (2 ** attempt))
     const jitter = Math.floor(Math.random() * 200)
-    return exp + jitter
+    let delay = exp + jitter
+
+    if (err && Number(err.httpStatus) === 429) {
+      if (Number.isFinite(err.retryAfterMs) && err.retryAfterMs > 0) {
+        delay = Math.min(maxDelayMs, Math.max(delay, err.retryAfterMs))
+      } else {
+        const min429 = Math.min(maxDelayMs, 2500 + 2500 * attempt)
+        delay = Math.min(maxDelayMs, Math.max(delay, min429) + Math.floor(Math.random() * 400))
+      }
+    }
+    return delay
   }
 
   _sleep(ms, signal) {
@@ -2265,12 +2279,27 @@ class Orchestrator {
     return req
   }
 
+  /** @param {import('http').IncomingMessage} res */
+  _parseRetryAfterMs(res) {
+    try {
+      const ra = res.headers['retry-after'] ?? res.headers['Retry-After']
+      if (ra == null || ra === '') return null
+      const s = String(ra).trim()
+      const sec = parseInt(s, 10)
+      if (Number.isFinite(sec) && sec >= 0) return Math.min(sec * 1000, 120000)
+      const t = Date.parse(s)
+      if (Number.isFinite(t)) return Math.min(Math.max(0, t - Date.now()), 120000)
+    } catch (_) { /* ignore */ }
+    return null
+  }
+
   _readErrorBody(res, url, reject) {
     let errorBody = ''
     res.on('data', chunk => { errorBody += chunk })
     res.on('end', () => {
       const detail = `[${res.statusCode}] ${url.hostname}${url.pathname}`
       console.error('[AI] API error', detail, errorBody.substring(0, 500))
+      const retryAfterMs = this._parseRetryAfterMs(res)
       try {
         const err = JSON.parse(errorBody)
         // OpenAI/OpenRouter: { error: { message, code?, metadata? } }
@@ -2295,6 +2324,7 @@ class Orchestrator {
         e.httpStatus = res.statusCode
         e.apiHost = url.hostname
         e.apiPath = url.pathname
+        if (retryAfterMs != null) e.retryAfterMs = retryAfterMs
         reject(e)
       } catch {
         let msg = errorBody.substring(0, 200)
@@ -2303,6 +2333,7 @@ class Orchestrator {
         e.httpStatus = res.statusCode
         e.apiHost = url.hostname
         e.apiPath = url.pathname
+        if (retryAfterMs != null) e.retryAfterMs = retryAfterMs
         reject(e)
       }
     })
