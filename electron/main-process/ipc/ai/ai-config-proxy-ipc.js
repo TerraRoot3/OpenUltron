@@ -9,9 +9,11 @@ function registerAiConfigProxyIpc (deps) {
     app,
     store,
     BrowserWindow,
+    session,
     aiConfigFile,
     getAIConfigLegacy,
     applyProxyEnvFromConfig,
+    applySessionProxyFromConfig,
     finalizeAiModelFields,
     path,
     fs,
@@ -107,6 +109,11 @@ function registerAiConfigProxyIpc (deps) {
       const openultronConfig = require('../../../openultron-config')
       openultronConfig.setProxy(payload || {})
       const applied = applyProxyEnvFromConfig()
+      if (applySessionProxyFromConfig && session) {
+        await applySessionProxyFromConfig(session.defaultSession)
+        await applySessionProxyFromConfig(session.fromPartition('persist:main'))
+        await applySessionProxyFromConfig(session.fromPartition('persist:ou-webapps'))
+      }
       BrowserWindow.getAllWindows().forEach(win => {
         if (win.webContents && !win.webContents.isDestroyed()) {
           win.webContents.send('ai-config-updated')

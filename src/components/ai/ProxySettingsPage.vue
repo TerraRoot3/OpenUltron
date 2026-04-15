@@ -37,7 +37,7 @@
     </div>
 
     <div class="proxy-help">
-      <p>保存后写入全局配置文件 <code>openultron.json</code> 的 <code>proxy</code> 字段，并在启动/保存时应用到本进程环境变量。以下为示例（请替换为你的代理）：</p>
+      <p>保存后写入全局配置文件 <code>openultron.json</code> 的 <code>proxy</code> 字段，并在启动/保存时应用到本进程环境变量与 Electron 会话。未启用手动代理时，会默认跟随系统代理（如果系统已配置）。以下为示例（请替换为你的代理）：</p>
       <pre>export http_proxy=http://127.0.0.1:7890 https_proxy=http://127.0.0.1:7890 all_proxy=socks5://127.0.0.1:7890</pre>
     </div>
   </div>
@@ -90,7 +90,7 @@ async function save() {
     if (!res?.success) throw new Error(res?.message || '保存失败')
     statusType.value = 'ok'
     if (!form.enabled) {
-      statusMsg.value = '已关闭代理并清理全局环境变量'
+      statusMsg.value = '已关闭手动代理；应用会改为跟随系统代理（如果系统已配置），否则直连'
     } else if (!payload.http_proxy && !payload.https_proxy && !payload.all_proxy) {
       statusMsg.value = '已保存：已勾选启用但未填写代理地址，当前不会走代理；填写至少一项后再次保存即可生效'
     } else {

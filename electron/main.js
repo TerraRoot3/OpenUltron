@@ -42,7 +42,8 @@ const { createMainWindowController } = require('./main-process/main-window')
 const {
   mergeContextCompressionFromLegacy,
   mergeToolDefinitionsFromLegacy,
-  applyProxyEnvFromConfig
+  applyProxyEnvFromConfig,
+  applySessionProxyFromConfig
 } = require('./main-process/proxy-and-ai-config-helpers')
 const { registerLocalResourceProtocol } = require('./main-process/local-resource-protocol')
 const {
@@ -303,6 +304,7 @@ const {
   http,
   URL,
   os,
+  session,
   dialog,
   shell,
   artifactRegistry,
@@ -314,6 +316,7 @@ const {
   mergeContextCompressionFromLegacy,
   mergeToolDefinitionsFromLegacy,
   applyProxyEnvFromConfig,
+  applySessionProxyFromConfig,
   ensureWorkspaceDirs,
   inboundText,
   runCliCommand,
@@ -448,6 +451,7 @@ registerAppWhenReady({
   aiGateway,
   startSavedMcpServers,
   appLogger,
+  applySessionProxyFromConfig,
   startHeartbeat,
   runHeartbeat,
   cronScheduler,

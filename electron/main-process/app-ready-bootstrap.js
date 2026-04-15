@@ -22,6 +22,7 @@ function registerAppWhenReady(deps) {
     aiGateway,
     startSavedMcpServers,
     appLogger,
+    applySessionProxyFromConfig,
     startHeartbeat,
     runHeartbeat,
     cronScheduler,
@@ -44,6 +45,13 @@ function registerAppWhenReady(deps) {
     })
 
     const webviewSession = session.fromPartition('persist:main')
+    const webAppsGuestSession = session.fromPartition('persist:ou-webapps')
+
+    if (applySessionProxyFromConfig) {
+      await applySessionProxyFromConfig(session.defaultSession)
+      await applySessionProxyFromConfig(webviewSession)
+      await applySessionProxyFromConfig(webAppsGuestSession)
+    }
 
     webviewSession.setPermissionRequestHandler((webContents, permission, callback) => {
       callback(true)
