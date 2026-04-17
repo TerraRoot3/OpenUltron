@@ -17,7 +17,7 @@ const definition = {
       task: { type: 'string', description: '交给子 Agent 执行的任务描述（作为一条 user 消息）' },
       system_prompt: { type: 'string', description: '可选。注入子 Agent 的 system 提示，用于限定角色或步骤' },
       role_name: { type: 'string', description: '可选。子 Agent 的角色名/显示名，便于在对话中区分（如「代码审查员」「翻译助手」）' },
-      runtime: { type: 'string', description: '可选。子 Agent 运行时：auto（默认，先尝试可用外部子 Agent，失败自动回退）/ internal（仅内置）/ external:<name>（如 external:codex、external:gateway；兼容别名 external:gateway_cli；网关 CLI 可设环境变量 OPENULTRON_GATEWAY_CLI 指定可执行文件名）' },
+      runtime: { type: 'string', description: '可选。子 Agent 运行时：auto（默认，先尝试可用外部子 Agent，失败自动回退）/ internal（仅内置）/ external:<name>。建议值：external:codex、external:claude、external:gateway（兼容别名 external:gateway_cli）、external:opencode。网关 CLI 可设环境变量 OPENULTRON_GATEWAY_CLI 指定可执行文件名。只会使用本机可用 CLI。' },
       provider: { type: 'string', description: '可选。子 Agent 使用的供应商：供应商名称（如「OpenAI」「DeepSeek」）或 base_url；不传则使用当前默认供应商' },
       model: { type: 'string', description: '可选。子 Agent 使用的模型 ID。根据任务复杂度选择：简单任务选 fast 模型；复杂代码/推理任务选 reasoning 模型。优先选已验证可用模型。' },
       project_path: { type: 'string', description: '可选。子 Agent 的项目路径上下文，默认与主会话一致' },

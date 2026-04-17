@@ -14,8 +14,24 @@ function registerChannelsSessionCompletedSend(deps) {
   } = deps
 
   const seenCompletions = new Map()
-  const COMPLETION_DEDUPE_TTL_MS = 60 * 1000
-  const COMPLETION_MAX_CACHE = 200
+  const COMPLETION_DEDUPE_TTL_MS = 24 * 1000
+  const COMPLETION_MAX_CACHE = 240
+
+  function canonicalId(raw) {
+    return String(raw || '').trim().replace(/\s+/g, '')
+  }
+
+  function canonicalArtifactFingerprint(list) {
+    if (!Array.isArray(list)) return ''
+    return Array.from(new Set(list
+      .map((i) => {
+        if (!i || typeof i !== 'object') return canonicalId(i)
+        return canonicalId(i.path || i.base64?.slice(0, 36) || '')
+      })
+      .filter(Boolean)))
+      .sort()
+      .join(',')
+  }
 
   function pruneCompletionDedupeCache(now = Date.now()) {
     if (seenCompletions.size <= COMPLETION_MAX_CACHE) return
@@ -28,27 +44,24 @@ function registerChannelsSessionCompletedSend(deps) {
   function completionFingerprint(binding, outPayload) {
     const channel = String(binding?.channel || '').trim()
     const canonicalSessionId = canonicalSessionIdForCompletion(binding)
+    const messageId = String(binding?.messageId || binding?.message_id || '').trim()
     const text = String(outPayload?.text || '').replace(/\\s+/g, ' ').trim().slice(0, 1200)
-    const images = Array.isArray(outPayload?.images)
-      ? outPayload.images.map(i => String(i?.path || i?.base64?.slice(0, 32) || '').trim()).join(',')
-      : ''
-    const files = Array.isArray(outPayload?.files)
-      ? outPayload.files.map(i => String(i?.path || '').trim()).join(',')
-      : ''
-    return `${channel}|${canonicalSessionId}|${text}|${images}|${files}`
+    const images = canonicalArtifactFingerprint(outPayload?.images)
+    const files = canonicalArtifactFingerprint(outPayload?.files)
+    return `${channel}|${canonicalSessionId}|${messageId}|${text}|${images}|${files}`
   }
 
   function canonicalSessionIdForCompletion(binding) {
-    const sid = String(binding?.sessionId || '').trim()
-    const runSessionId = String(binding?.runSessionId || '').trim()
-    const runId = String(binding?.runId || '').trim()
-    const raw = runSessionId || runId || sid
-    if (!raw) return ''
+    const sid = canonicalId(binding?.sessionId || '')
+    const runSessionId = canonicalId(binding?.runSessionId || '')
+    const runId = canonicalId(binding?.runId || '')
+    const pick = runSessionId || runId || sid
+    if (!pick) return ''
     const marker = '-run-'
-    const idx = raw.indexOf(marker)
-    if (idx < 0) return raw
-    const suffix = raw.slice(idx + marker.length)
-    return suffix || raw
+    const idx = pick.indexOf(marker)
+    if (idx < 0) return pick
+    const suffix = pick.slice(idx + marker.length)
+    return suffix || pick
   }
 
   async function handleChatSessionCompleted(payload) {
@@ -57,7 +70,7 @@ function registerChannelsSessionCompletedSend(deps) {
     const dedupeKey = completionFingerprint(binding, outPayload)
     const now = Date.now()
     const lastSeen = seenCompletions.get(dedupeKey) || 0
-    if (now - lastSeen < 2500) return
+    if (now - lastSeen < 3000) return
     seenCompletions.set(dedupeKey, now)
     pruneCompletionDedupeCache(now)
     if (binding.sessionId && outPayload && (Array.isArray(outPayload.images) || Array.isArray(outPayload.files))) {

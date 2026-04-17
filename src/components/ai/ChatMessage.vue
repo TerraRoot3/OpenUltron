@@ -35,7 +35,7 @@
                 <component :is="toolIcon(tc.name)" :size="12" class="tc-type-icon" />
                 <div class="tc-texts">
                   <div class="tc-topline">
-                    <span class="tc-name">{{ toolLabel(tc.name) }}</span>
+                    <span class="tc-name">{{ toolLabel(tc) }}</span>
                     <span v-if="tc.name === 'execute_command' && (commandOf(tc) || cwdOf(tc))" class="tc-summary-text tc-command-inline">
                       <code v-if="commandOf(tc)" class="tc-cmd-inline">{{ commandOf(tc) }}</code>
                       <span v-if="cwdOf(tc)" class="tc-cwd-inline"> ({{ cwdOf(tc) }})</span>
@@ -262,6 +262,50 @@ const splitContent = computed(() => {
 const thinkContent = computed(() => splitContent.value.thinkContent)
 const mainContent = computed(() => splitContent.value.mainContent)
 
+const parseToolArguments = (raw) => {
+  if (raw == null) return null
+  if (typeof raw === 'object') return raw
+  if (typeof raw !== 'string') return null
+  try {
+    return JSON.parse(raw)
+  } catch (_) {
+    return null
+  }
+}
+
+const normalizeForDedup = (value) => {
+  if (value == null || typeof value !== 'object') return value
+  if (Array.isArray(value)) return value.map((x) => normalizeForDedup(x))
+  const keys = Object.keys(value || {}).sort()
+  const out = {}
+  for (const k of keys) {
+    out[k] = normalizeForDedup(value[k])
+  }
+  return out
+}
+
+const stableStringify = (value) => {
+  try {
+    return JSON.stringify(normalizeForDedup(value))
+  } catch (_) {
+    return String(value == null ? '' : value)
+  }
+}
+
+const canonicalToolArguments = (tc) => {
+  const parsed = parseToolArguments(tc?.arguments)
+  if (parsed == null) return ''
+  return stableStringify(parsed)
+}
+
+const toolCallDedupKey = (tc) => {
+  const id = String(tc?.id || '').trim()
+  if (id) return `id:${id}`
+  const name = String(tc?.name || '').trim()
+  const args = canonicalToolArguments(tc)
+  return `name:${name}::args:${args}`
+}
+
 const toolCallsAll = computed(() => {
   const list = Array.isArray(props.message?.toolCalls) ? props.message.toolCalls : []
   const normalized = list
@@ -272,23 +316,13 @@ const toolCallsAll = computed(() => {
     })
     .filter(Boolean)
 
-  const seen = new Set()
+    const seen = new Set()
   const deduped = []
   for (let i = normalized.length - 1; i >= 0; i--) {
     const tc = normalized[i]
     const name = String(tc.name || '').trim()
     if (!name) continue
-    const argText = (() => {
-      try {
-        const args = tc.arguments
-        if (args == null) return ''
-        if (typeof args === 'string') return args
-        return JSON.stringify(args)
-      } catch (_) {
-        return ''
-      }
-    })()
-    const key = tc.id ? `id:${String(tc.id)}` : `name:${name}::args:${argText.slice(0, 120)}`
+    const key = `${toolCallDedupKey(tc)}`
     if (seen.has(key)) continue
     seen.add(key)
     deduped.push(tc)
@@ -335,7 +369,9 @@ const formatNamespacedTool = (name) => {
   return name
 }
 
-const toolLabel = (name) => {
+const toolLabel = (tcOrName) => {
+  const tc = (tcOrName && typeof tcOrName === 'object') ? tcOrName : null
+  const name = tc ? String(tc.name || '').trim() : String(tcOrName || '').trim()
   const map = {
     execute_command: t('chatMessage.executeCommand'),
     git_operation: t('chatMessage.gitOperation'),
@@ -346,12 +382,19 @@ const toolLabel = (name) => {
     feishu_send_message: t('chatMessage.feishuSend'),
     read_app_log: t('chatMessage.readAppLog')
   }
-  return map[name] || formatNamespacedTool(String(name || '').trim())
+  const base = map[name] || formatNamespacedTool(name)
+  if (name !== 'sessions_spawn' || !tc) return base
+  const args = parseToolArguments(tc.arguments) || {}
+  const role = String(args.role_name || args.role || '').trim()
+  const runtime = String(args.runtime || args.provider_runtime || '').trim()
+  if (!role && !runtime) return `${base}`
+  const joinText = [runtime ? `runtime=${runtime}` : '', role ? `role=${role}` : ''].filter(Boolean).join(' · ')
+  return `${base}（${joinText}）`
 }
 
 const toolSummary = (tc) => {
   try {
-    const args = JSON.parse(tc.arguments)
+    const args = parseToolArguments(tc.arguments) || {}
     const toolName = String(tc.name || '')
     if (tc.name === 'execute_command') {
       const cmd = args.command || ''
@@ -377,7 +420,16 @@ const toolSummary = (tc) => {
       return a || t('chatMessage.action')
     }
     if (tc.name === 'feishu_send_message') return args.text ? t('chatMessage.sendText') : args.image_base64 || args.image_key ? t('chatMessage.sendImage') : args.file_key || args.file_path ? t('chatMessage.sendFile') : t('chatMessage.send')
-    if (tc.name === 'sessions_spawn') return args.role_name ? `${t('chatMessage.childAgent')}（${args.role_name}）` : t('chatMessage.childAgent')
+    if (tc.name === 'sessions_spawn') {
+      const role = args.role_name || args.role || ''
+      const runtime = args.runtime || ''
+      const provider = args.provider || args.profile || ''
+      const segments = []
+      if (role) segments.push(`角色: ${role}`)
+      if (runtime) segments.push(`runtime: ${runtime}`)
+      if (provider) segments.push(`profile: ${provider}`)
+      return segments.length ? segments.join(' · ') : t('chatMessage.childAgent')
+    }
     if (tc.name === 'read_app_log') {
       const k = args.keyword ? ` · ${args.keyword}` : ''
       return `${args.lines || 800} lines${k}`

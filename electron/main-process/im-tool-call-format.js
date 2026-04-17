@@ -38,10 +38,14 @@ function formatCommandFromToolCall(tc) {
       return `- ${pretty}`
     }
     if (name === 'sessions_spawn') {
-      const runtime = readStr(args?.runtime)
-      const role = readStr(args?.role_name)
-      if (runtime || role) return `- sessions_spawn${runtime ? ` runtime=${runtime}` : ''}${role ? ` role=${role}` : ''}`
-      return '- sessions_spawn'
+      const runtimeRaw = readStr(args?.runtime || args?.provider_runtime || args?.agent_runtime)
+      const runtime = runtimeRaw === 'gateway_cli' ? 'gateway' : runtimeRaw
+      const role = readStr(args?.role_name || args?.role || args?.agent_role)
+      const profile = readStr(args?.agent_profile || args?.profile)
+      const provider = readStr(args?.provider)
+      const model = readStr(args?.model || args?.model_name)
+      const desc = [runtime && `runtime=${runtime}`, role && `role=${role}`, provider && `provider=${provider}`, model && `model=${model}`, profile && `profile=${profile}`].filter(Boolean)
+      return `- sessions_spawn${desc.length ? ` ${desc.join(' ')}` : ''}`
     }
     if (name === 'web_apps_list') {
       return '- web_apps_list'

@@ -38,6 +38,47 @@ function createSubagentDispatch(deps) {
     eventBus
   } = deps
 
+  let preferredExternalRuntime = null
+
+  function normalizeRuntimeToken(token = '') {
+    const t = String(token || '').trim().toLowerCase()
+    if (!t || t === 'internal' || t === 'auto') return t
+    if (t === 'gateway_cli') return 'gateway'
+    const spec = EXTERNAL_SUBAGENT_SPECS.find((s) =>
+      String(s.id).toLowerCase() === t ||
+      (Array.isArray(s.aliases) && s.aliases.map((a) => String(a).toLowerCase()).includes(t))
+    )
+    return spec ? String(spec.id).toLowerCase() : t
+  }
+
+  function dedupeList(base = []) {
+    const uniq = []
+    const seen = new Set()
+    for (const id of base) {
+      const token = String(id || '').trim().toLowerCase()
+      if (!token || seen.has(token)) continue
+      seen.add(token)
+      uniq.push(token)
+    }
+    return uniq
+  }
+
+  function resolveRequestedRuntime(input = '') {
+    const token = normalizeRuntimeToken(input)
+    if (!token) return ''
+    if (token === 'internal' || token === 'auto') return token
+    return `external:${token}`
+  }
+
+  function setPreferredExternalRuntime(rawRuntime = '') {
+    const raw = String(rawRuntime || '').trim()
+    if (!raw.startsWith('external:')) return
+    const token = normalizeRuntimeToken(raw.slice('external:'.length))
+    if (token && token !== 'internal' && token !== 'auto') {
+      preferredExternalRuntime = token
+    }
+  }
+
   function buildSubAgentDeliveryPrompt(projectPath = '') {
     return [
       '[产物回传规则]',
@@ -162,19 +203,21 @@ function createSubagentDispatch(deps) {
   }
 
   function resolveRuntimeChain(runtime, availableExternalIds) {
-    const extIds = availableExternalIds || []
+    const extIds = dedupeList(availableExternalIds || [])
     const normalized = String(runtime || '').trim().toLowerCase()
+    const pickAutoChain = (base = []) => dedupeList(base)
     if (!normalized) return ['internal']
-    if (normalized === 'internal') return ['internal']
-    if (normalized === 'external') return [...extIds, 'internal']
-    if (normalized === 'auto') return ['internal']
-    const normalizeRuntimeToken = (token = '') => {
-      const t = String(token || '').trim().toLowerCase()
-      if (!t || t === 'internal' || t === 'auto') return t
-      if (t === 'gateway_cli') return 'gateway'
-      const spec = EXTERNAL_SUBAGENT_SPECS.find((s) => String(s.id).toLowerCase() === t || (Array.isArray(s.aliases) && s.aliases.map((x) => String(x).toLowerCase()).includes(t)))
-      return spec ? String(spec.id).toLowerCase() : t
+    if (normalized === 'auto') {
+      const chain = pickAutoChain(extIds)
+      const preferred = normalizeRuntimeToken(preferredExternalRuntime)
+      if (preferred && chain.includes(preferred)) {
+        chain.splice(chain.indexOf(preferred), 1)
+        chain.unshift(preferred)
+      }
+      return chain.length ? [...chain, 'internal'] : ['internal']
     }
+    if (normalized === 'internal') return ['internal']
+    if (normalized === 'external') return [...pickAutoChain(extIds), 'internal']
     if (normalized.startsWith('external:')) {
       const pick = normalizeRuntimeToken(normalized.slice('external:'.length).trim())
       if (!pick) return ['internal']
@@ -505,22 +548,10 @@ function createSubagentDispatch(deps) {
     let effectiveRuntime = userRuntime
     if (!effectiveRuntime || effectiveRuntime.toLowerCase() === 'auto') {
       const inferred = routeFromRuntime.externalRuntime || inferPreferredExternalRuntimeFromText([task, sanitizedSystemPrompt, roleName].filter(Boolean).join('\n'))
-      effectiveRuntime = inferred || 'internal'
-    }
-    const resolveRequestedRuntime = (input = '') => {
-      const value = String(input || '').trim().toLowerCase()
-      if (!value) return ''
-      if (value.startsWith('external:')) {
-        const raw = value.slice('external:'.length).trim()
-        if (!raw) return ''
-        const spec = EXTERNAL_SUBAGENT_SPECS.find((x) => String(x.id).toLowerCase() === raw || (Array.isArray(x.aliases) && x.aliases.map((a) => String(a).toLowerCase()).includes(raw)))
-        return `external:${spec ? String(spec.id).toLowerCase() : raw}`
-      }
-      const spec = EXTERNAL_SUBAGENT_SPECS.find((x) => String(x.id).toLowerCase() === value || (Array.isArray(x.aliases) && x.aliases.map((a) => String(a).toLowerCase()).includes(value)))
-      return spec ? `external:${String(spec.id).toLowerCase()}` : value
+      effectiveRuntime = inferred || 'auto'
     }
     const normalizedForChain = resolveRequestedRuntime(effectiveRuntime)
-    effectiveRuntime = normalizedForChain || effectiveRuntime
+    effectiveRuntime = normalizedForChain || effectiveRuntime || 'auto'
     pushCommandLog(`[meta] effective_runtime=${effectiveRuntime || 'internal'}`)
     emitPartial()
     const scan = await scanExternalSubAgents(false)
@@ -748,6 +779,7 @@ function createSubagentDispatch(deps) {
             pushCommandLog(`[meta] attempt external:${rt} success`)
             emitPartial()
             try { sessionRegistry.markComplete(subSessionId) } catch (_) {}
+            try { setPreferredExternalRuntime(out.runtime || `external:${rt}`) } catch (_) {}
             try {
               appLogger?.info?.('[SubAgentDispatch] 子Agent执行成功', {
                 subSessionId,

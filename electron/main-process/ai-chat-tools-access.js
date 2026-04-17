@@ -127,7 +127,7 @@ function createAiChatToolsAccess(deps) {
       '规则：只有真实调用工具并获得结果后，才能说“已完成”；否则继续执行或返回明确错误。'
     ]
     if (spawnOn) {
-      lines.push('可在复杂/并行任务时调用 sessions_spawn；默认 runtime="auto"，仅用户明确指定时使用 external:<name>。')
+      lines.push('可在复杂/并行任务时调用 sessions_spawn；默认 runtime="auto"，优先尝试可用外部子 Agent，未命中时自动 fallback 到 internal；可选 external:codex / external:claude / external:gateway / external:opencode，或写 runtime: "external:xxx"；本机未安装则会自动跳过。')
     } else {
       lines.push('当前不允许 sessions_spawn，必须在本会话内完成，不得声称已派发子 Agent。')
     }
