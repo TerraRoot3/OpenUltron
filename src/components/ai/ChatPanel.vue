@@ -311,7 +311,101 @@ const useAIChatInstance = useAIChat({
 })
 const { messages, isStreaming, error, tokenUsage, pendingConfirm, sendMessage, stopChat, loadMessages, respondConfirm } = useAIChatInstance
 const seenFeishuMessageIds = new Set()
+const lastFeishuSessionUpdate = new Map()
 const feishuReloadPending = ref(false)
+const lastGatewaySessionUpdate = new Map()
+const lastGatewayRemoteUserMessage = new Map()
+const FEISHU_UPDATE_DEDUPE_TTL_MS = 2500
+const GATEWAY_UPDATE_DEDUPE_TTL_MS = 2500
+const GATEWAY_REMOTE_USER_DEDUPE_TTL_MS = 2500
+
+const canonicalRunTokenForFeishuUpdate = (runSessionId, runId) => {
+  const raw = String(runId || runSessionId || '').trim()
+  if (!raw) return ''
+  const marker = '-run-'
+  const idx = raw.indexOf(marker)
+  if (idx < 0) return raw
+  const suffix = raw.slice(idx + marker.length)
+  return suffix || raw
+}
+
+const pruneFeishuSessionUpdateDedupe = (now = Date.now()) => {
+  if (lastFeishuSessionUpdate.size <= 100) return
+  for (const [k, ts] of lastFeishuSessionUpdate.entries()) {
+    if (now - ts > FEISHU_UPDATE_DEDUPE_TTL_MS * 4) {
+      lastFeishuSessionUpdate.delete(k)
+    }
+  }
+}
+
+const shouldProcessFeishuSessionUpdate = (data) => {
+  const sessionId = String(data?.sessionId || '').trim()
+  if (!sessionId) return true
+  const runToken = canonicalRunTokenForFeishuUpdate(data?.runSessionId, data?.runId)
+  if (!runToken) return true
+  const token = `${sessionId}|${runToken}`
+  const now = Date.now()
+  const last = lastFeishuSessionUpdate.get(token) || 0
+  if (now - last < FEISHU_UPDATE_DEDUPE_TTL_MS) return false
+  lastFeishuSessionUpdate.set(token, now)
+  pruneFeishuSessionUpdateDedupe(now)
+  return true
+}
+
+const pruneGatewaySessionUpdateDedupe = (now = Date.now()) => {
+  if (lastGatewaySessionUpdate.size <= 100) return
+  for (const [k, ts] of lastGatewaySessionUpdate.entries()) {
+    if (now - ts > GATEWAY_UPDATE_DEDUPE_TTL_MS * 4) {
+      lastGatewaySessionUpdate.delete(k)
+    }
+  }
+}
+
+const shouldProcessGatewaySessionUpdate = (data) => {
+  const sessionId = String(data?.sessionId || '').trim()
+  if (!sessionId) return true
+
+  const runToken = canonicalRunTokenForFeishuUpdate(data?.runSessionId, data?.runId)
+  const token = runToken ? `${sessionId}|${runToken}` : `session-only|${sessionId}`
+  const now = Date.now()
+  const last = lastGatewaySessionUpdate.get(token) || 0
+  if (now - last < GATEWAY_UPDATE_DEDUPE_TTL_MS) return false
+  lastGatewaySessionUpdate.set(token, now)
+  pruneGatewaySessionUpdateDedupe(now)
+  return true
+}
+
+const pruneGatewayRemoteUserMessageDedupe = (now = Date.now()) => {
+  if (lastGatewayRemoteUserMessage.size <= 200) return
+  for (const [k, ts] of lastGatewayRemoteUserMessage.entries()) {
+    if (now - ts > GATEWAY_REMOTE_USER_DEDUPE_TTL_MS * 4) {
+      lastGatewayRemoteUserMessage.delete(k)
+    }
+  }
+}
+
+const normalizeRemoteContent = (s) => String(s || '')
+  .replace(/\r/g, '\n')
+  .replace(/[ \t]+/g, ' ')
+  .replace(/\n{3,}/g, '\n\n')
+  .trim()
+
+const shouldProcessGatewayRemoteUserMessage = (data) => {
+  const sessionId = String(data?.sessionId || '').trim()
+  if (!sessionId) return true
+  const remoteText = normalizeRemoteContent(data?.userContent || '')
+  const messageId = String(data?.messageId || '').trim()
+  const token = messageId
+    ? `gw-msgid:${sessionId}|${messageId}`
+    : `gw-content:${sessionId}|${remoteText}`
+  if (!remoteText) return true
+  const now = Date.now()
+  const last = lastGatewayRemoteUserMessage.get(token) || 0
+  if (now - last < GATEWAY_REMOTE_USER_DEDUPE_TTL_MS) return false
+  lastGatewayRemoteUserMessage.set(token, now)
+  pruneGatewayRemoteUserMessageDedupe(now)
+  return true
+}
 
 // 带输入框的确认弹框
 const confirmInputText = ref('')
@@ -1839,6 +1933,7 @@ onMounted(async () => {
   })
   window.electronAPI?.ai?.onFeishuSessionUpdated?.((data) => {
     if (!data?.sessionId || props.projectPath !== '__feishu__') return
+    if (!shouldProcessFeishuSessionUpdate(data)) return
     loadConversationList()
     if (currentSessionId.value === data.sessionId) {
       if (isStreaming.value) {
@@ -1854,6 +1949,7 @@ onMounted(async () => {
   window.electronAPI?.ai?.onGatewaySessionUpdated?.((data) => {
     if (!data?.sessionId) return
     if (data.projectPath !== historyProjectPath()) return
+    if (!shouldProcessGatewaySessionUpdate(data)) return
     loadConversationList()
     if (currentSessionId.value === data.sessionId) {
       const last = messages.value[messages.value.length - 1]
@@ -1866,12 +1962,9 @@ onMounted(async () => {
     if (!data?.sessionId || data?.projectPath == null) return
     const proj = historyProjectPath()
     if (data.projectPath !== proj || data.sessionId !== currentSessionId.value) return
-    const normalizeRemoteContent = (s) => String(s || '')
-      .replace(/\r/g, '\n')
-      .replace(/[ \t]+/g, ' ')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim()
     const remoteText = normalizeRemoteContent(data.userContent || '')
+    if (!remoteText) return
+    if (!shouldProcessGatewayRemoteUserMessage(data)) return
     const last = messages.value[messages.value.length - 1]
     // 去重：若最后一条本地已是同内容 user（常见于从App窗口触发但仍收到remote同步时），忽略远端重复入队
     if (last?.role === 'user' && normalizeRemoteContent(last.content) === remoteText) return
