@@ -8,6 +8,7 @@ function registerAppQuitActivate(deps) {
     BrowserWindow,
     getMainWindow,
     stopAllWebAppServices,
+    stopStorageMaintenance,
     mcpHttpBridge,
     apiServerHolder,
     aiGateway,
@@ -25,6 +26,9 @@ function registerAppQuitActivate(deps) {
     } catch (_) {}
     try {
       stopAllWebAppServices()
+    } catch (_) {}
+    try {
+      stopStorageMaintenance?.()
     } catch (_) {}
 
     try {

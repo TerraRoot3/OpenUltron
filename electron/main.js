@@ -56,6 +56,7 @@ const { registerAiToolsAttachmentsIpc } = require('./main-process/ipc/ai/ai-tool
 const { registerAiChatSessionIpc } = require('./main-process/ipc/ai/ai-chat-session-ipc')
 const { FEISHU_PROJECT, TELEGRAM_PROJECT, DINGTALK_PROJECT } = require('./main-process/ipc/ai/session-constants')
 const { stopAllWebAppServices } = require('./web-apps/process-manager')
+const { startStorageMaintenance, stopStorageMaintenance } = require('./ai/storage-maintenance')
 const cronScheduler = require('./ai/cron-scheduler')
 const feishuNotify = require('./ai/feishu-notify')
 const { setupImChannels } = require('./main-process/im-channels-bootstrap')
@@ -425,6 +426,7 @@ registerAppQuitActivate({
   BrowserWindow,
   getMainWindow: () => mainWindow,
   stopAllWebAppServices,
+  stopStorageMaintenance,
   mcpHttpBridge,
   apiServerHolder,
   aiGateway,
@@ -455,6 +457,7 @@ registerAppWhenReady({
   startHeartbeat,
   runHeartbeat,
   cronScheduler,
+  startStorageMaintenance,
   startFeishuReceive,
   skillsRt,
   apiServerHolder

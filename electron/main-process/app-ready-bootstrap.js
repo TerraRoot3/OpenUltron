@@ -26,6 +26,7 @@ function registerAppWhenReady(deps) {
     startHeartbeat,
     runHeartbeat,
     cronScheduler,
+    startStorageMaintenance,
     startFeishuReceive,
     skillsRt,
     apiServerHolder
@@ -97,6 +98,7 @@ function registerAppWhenReady(deps) {
 
     startHeartbeat()
     cronScheduler.start(runHeartbeat)
+    startStorageMaintenance?.(appLogger)
     setImmediate(() => {
       startFeishuReceive().catch((e) => console.warn('[Feishu] 启动接收失败:', e.message))
     })

@@ -138,6 +138,44 @@ const DEFAULT_SUBAGENT_ORCHESTRATION = {
   reportAutoFallback: true
 }
 
+const DEFAULT_STORAGE = {
+  enabled: true,
+  maxTotalBytes: 6 * 1024 * 1024 * 1024,
+  protectedPaths: [
+    'openultron.json',
+    'mcp.json',
+    'MEMORY.md',
+    'SOUL.md',
+    'IDENTITY.md',
+    'USER.md',
+    'BOOT.md',
+    'AGENTS.md',
+    'TOOLS.md',
+    'memory/knowledge'
+  ],
+  pinnedPaths: [],
+  maintenance: {
+    startupAudit: true,
+    startupDelayMs: 15000,
+    intervalMinutes: 360,
+    autoArchive: true,
+    archiveCategories: ['conversations', 'memoryDiary'],
+    maxArchiveItemsPerRun: 50,
+    warnCandidateBytes: 50 * 1024 * 1024,
+    logTopCandidates: 5
+  },
+  categories: {
+    runtimeCache: { ttlDays: 7, backup: false, autoDelete: true },
+    workspaceTemp: { ttlDays: 3, backup: false, autoDelete: true },
+    artifacts: { ttlDays: 30, backup: true, autoDelete: true, deleteUnreferenced: true, maxBytes: 2 * 1024 * 1024 * 1024 },
+    screenshots: { ttlDays: 14, backup: true, autoDelete: true, deleteUnreferenced: true },
+    logs: { retainDays: 30, backup: true, autoDelete: false, maxBytes: 200 * 1024 * 1024 },
+    webApps: { keepVersionsPerApp: 3, backup: true, autoDelete: false, deleteUnusedDays: 45 },
+    conversations: { archiveAfterDays: 60, backup: true, autoDelete: false },
+    memoryDiary: { archiveAfterDays: 30, backup: true, autoDelete: false }
+  }
+}
+
 /** 默认含 ClawHub；list_remote 对 type=clawhub 走搜索 API（见 get-skill.js） */
 const DEFAULT_SKILLS_SOURCES = [
   { name: 'ClawHub', url: 'https://clawhub.ai/', enabled: true, type: 'clawhub' }
@@ -164,6 +202,102 @@ function normalizeSkillsBlock(data) {
       watchDebounceMs: load.watchDebounceMs
     },
     entries
+  }
+}
+
+function clampPositiveInt(value, fallback, max = Number.MAX_SAFE_INTEGER) {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n <= 0) return fallback
+  return Math.min(Math.floor(n), max)
+}
+
+function normalizeStorage(raw) {
+  const data = raw && typeof raw === 'object' ? raw : {}
+  const cats = data.categories && typeof data.categories === 'object' ? data.categories : {}
+  return {
+    enabled: data.enabled !== false,
+    maxTotalBytes: clampPositiveInt(data.maxTotalBytes, DEFAULT_STORAGE.maxTotalBytes),
+    protectedPaths: Array.isArray(data.protectedPaths) && data.protectedPaths.length > 0
+      ? [...new Set(data.protectedPaths.map((x) => String(x || '').trim()).filter(Boolean))]
+      : [...DEFAULT_STORAGE.protectedPaths],
+    pinnedPaths: Array.isArray(data.pinnedPaths)
+      ? [...new Set(data.pinnedPaths.map((x) => String(x || '').trim()).filter(Boolean))]
+      : [...DEFAULT_STORAGE.pinnedPaths],
+    maintenance: {
+      startupAudit: data.maintenance?.startupAudit !== false,
+      startupDelayMs: clampPositiveInt(data.maintenance?.startupDelayMs, DEFAULT_STORAGE.maintenance.startupDelayMs, 24 * 60 * 60 * 1000),
+      intervalMinutes: clampPositiveInt(data.maintenance?.intervalMinutes, DEFAULT_STORAGE.maintenance.intervalMinutes, 30 * 24 * 60),
+      autoArchive: data.maintenance?.autoArchive !== false,
+      archiveCategories: Array.isArray(data.maintenance?.archiveCategories) && data.maintenance.archiveCategories.length > 0
+        ? [...new Set(data.maintenance.archiveCategories.map((x) => String(x || '').trim()).filter(Boolean))]
+        : [...DEFAULT_STORAGE.maintenance.archiveCategories],
+      maxArchiveItemsPerRun: clampPositiveInt(data.maintenance?.maxArchiveItemsPerRun, DEFAULT_STORAGE.maintenance.maxArchiveItemsPerRun, 1000),
+      warnCandidateBytes: clampPositiveInt(data.maintenance?.warnCandidateBytes, DEFAULT_STORAGE.maintenance.warnCandidateBytes),
+      logTopCandidates: clampPositiveInt(data.maintenance?.logTopCandidates, DEFAULT_STORAGE.maintenance.logTopCandidates, 50)
+    },
+    categories: {
+      runtimeCache: {
+        ...DEFAULT_STORAGE.categories.runtimeCache,
+        ...(cats.runtimeCache && typeof cats.runtimeCache === 'object' ? cats.runtimeCache : {}),
+        ttlDays: clampPositiveInt(cats.runtimeCache?.ttlDays, DEFAULT_STORAGE.categories.runtimeCache.ttlDays, 3650),
+        backup: cats.runtimeCache?.backup === true,
+        autoDelete: cats.runtimeCache?.autoDelete !== false
+      },
+      workspaceTemp: {
+        ...DEFAULT_STORAGE.categories.workspaceTemp,
+        ...(cats.workspaceTemp && typeof cats.workspaceTemp === 'object' ? cats.workspaceTemp : {}),
+        ttlDays: clampPositiveInt(cats.workspaceTemp?.ttlDays, DEFAULT_STORAGE.categories.workspaceTemp.ttlDays, 3650),
+        backup: cats.workspaceTemp?.backup === true,
+        autoDelete: cats.workspaceTemp?.autoDelete !== false
+      },
+      artifacts: {
+        ...DEFAULT_STORAGE.categories.artifacts,
+        ...(cats.artifacts && typeof cats.artifacts === 'object' ? cats.artifacts : {}),
+        ttlDays: clampPositiveInt(cats.artifacts?.ttlDays, DEFAULT_STORAGE.categories.artifacts.ttlDays, 3650),
+        backup: cats.artifacts?.backup !== false,
+        autoDelete: cats.artifacts?.autoDelete !== false,
+        deleteUnreferenced: cats.artifacts?.deleteUnreferenced !== false,
+        maxBytes: clampPositiveInt(cats.artifacts?.maxBytes, DEFAULT_STORAGE.categories.artifacts.maxBytes)
+      },
+      screenshots: {
+        ...DEFAULT_STORAGE.categories.screenshots,
+        ...(cats.screenshots && typeof cats.screenshots === 'object' ? cats.screenshots : {}),
+        ttlDays: clampPositiveInt(cats.screenshots?.ttlDays, DEFAULT_STORAGE.categories.screenshots.ttlDays, 3650),
+        backup: cats.screenshots?.backup !== false,
+        autoDelete: cats.screenshots?.autoDelete !== false,
+        deleteUnreferenced: cats.screenshots?.deleteUnreferenced !== false
+      },
+      logs: {
+        ...DEFAULT_STORAGE.categories.logs,
+        ...(cats.logs && typeof cats.logs === 'object' ? cats.logs : {}),
+        retainDays: clampPositiveInt(cats.logs?.retainDays, DEFAULT_STORAGE.categories.logs.retainDays, 3650),
+        backup: cats.logs?.backup !== false,
+        autoDelete: cats.logs?.autoDelete === true,
+        maxBytes: clampPositiveInt(cats.logs?.maxBytes, DEFAULT_STORAGE.categories.logs.maxBytes)
+      },
+      webApps: {
+        ...DEFAULT_STORAGE.categories.webApps,
+        ...(cats.webApps && typeof cats.webApps === 'object' ? cats.webApps : {}),
+        keepVersionsPerApp: clampPositiveInt(cats.webApps?.keepVersionsPerApp, DEFAULT_STORAGE.categories.webApps.keepVersionsPerApp, 100),
+        backup: cats.webApps?.backup !== false,
+        autoDelete: cats.webApps?.autoDelete === true,
+        deleteUnusedDays: clampPositiveInt(cats.webApps?.deleteUnusedDays, DEFAULT_STORAGE.categories.webApps.deleteUnusedDays, 3650)
+      },
+      conversations: {
+        ...DEFAULT_STORAGE.categories.conversations,
+        ...(cats.conversations && typeof cats.conversations === 'object' ? cats.conversations : {}),
+        archiveAfterDays: clampPositiveInt(cats.conversations?.archiveAfterDays, DEFAULT_STORAGE.categories.conversations.archiveAfterDays, 3650),
+        backup: cats.conversations?.backup !== false,
+        autoDelete: cats.conversations?.autoDelete === true
+      },
+      memoryDiary: {
+        ...DEFAULT_STORAGE.categories.memoryDiary,
+        ...(cats.memoryDiary && typeof cats.memoryDiary === 'object' ? cats.memoryDiary : {}),
+        archiveAfterDays: clampPositiveInt(cats.memoryDiary?.archiveAfterDays, DEFAULT_STORAGE.categories.memoryDiary.archiveAfterDays, 3650),
+        backup: cats.memoryDiary?.backup !== false,
+        autoDelete: cats.memoryDiary?.autoDelete === true
+      }
+    }
   }
 }
 
@@ -267,7 +401,8 @@ function readAll() {
         proxy: { ...DEFAULT_PROXY, ...(data.proxy && typeof data.proxy === 'object' ? data.proxy : {}) },
         skills: skillsBlock,
         imCoordinator,
-        subagentOrchestration: subOrc
+        subagentOrchestration: subOrc,
+        storage: normalizeStorage(data.storage)
       }
     } catch (e) {
       console.warn('[openultron-config] 读取失败，使用默认:', e.message)
@@ -303,7 +438,8 @@ function readAll() {
     proxy: { ...DEFAULT_PROXY },
     skills: normalizeSkillsBlock({}),
     imCoordinator: { ...DEFAULT_IM_COORDINATOR },
-    subagentOrchestration: { ...DEFAULT_SUBAGENT_ORCHESTRATION }
+    subagentOrchestration: { ...DEFAULT_SUBAGENT_ORCHESTRATION },
+    storage: normalizeStorage({})
   }
   writeAll(merged)
   if (didMerge) {
@@ -561,6 +697,25 @@ function getSubagentOrchestration() {
   }
 }
 
+function getStorage() {
+  const all = readAll()
+  return normalizeStorage(all.storage)
+}
+
+function setStorage(partial) {
+  const all = readAll()
+  const cur = normalizeStorage(all.storage)
+  all.storage = normalizeStorage({
+    ...cur,
+    ...(partial && typeof partial === 'object' ? partial : {}),
+    categories: {
+      ...cur.categories,
+      ...((partial && partial.categories && typeof partial.categories === 'object') ? partial.categories : {})
+    }
+  })
+  writeAll(all)
+}
+
 module.exports = {
   getPath,
   readAll,
@@ -586,6 +741,8 @@ module.exports = {
   getImCoordinator,
   setImCoordinator,
   getSubagentOrchestration,
+  getStorage,
+  setStorage,
   ensureMerged,
   DEFAULT_AI,
   DEFAULT_FEISHU,
@@ -595,4 +752,5 @@ module.exports = {
   DEFAULT_PROXY,
   DEFAULT_IM_COORDINATOR,
   DEFAULT_SUBAGENT_ORCHESTRATION,
+  DEFAULT_STORAGE,
 }

@@ -74,6 +74,7 @@ function registerBackupIpc (deps) {
     readAllSkills,
     setSkillsCache
   } = deps
+  const { getStorageConfig, shouldExcludeFromBackup } = require('../../ai/storage-policy')
 
   registerChannel('ai-export-backup', async () => {
     try {
@@ -116,9 +117,11 @@ function registerBackupIpc (deps) {
     try {
       const AdmZip = require('adm-zip')
       const appRootDir = getAppRoot()
+      const storageCfg = getStorageConfig()
+      const includeEphemeral = options && options.includeEphemeral === true
 
       const zip = new AdmZip()
-      const stats = { fileCount: 0, dirCount: 0, totalBytes: 0, root: appRootDir }
+      const stats = { fileCount: 0, dirCount: 0, totalBytes: 0, excludedCount: 0, excludedBytes: 0, root: appRootDir }
       const zipRoot = 'app_root'
 
       const addDirToZip = (dirPath) => {
@@ -126,6 +129,12 @@ function registerBackupIpc (deps) {
         for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
           const fullPath = path.join(dirPath, entry.name)
           const rel = path.relative(appRootDir, fullPath).split(path.sep).join('/')
+          if (!includeEphemeral && rel && shouldExcludeFromBackup(rel, storageCfg)) {
+            const st = fs.statSync(fullPath)
+            stats.excludedCount += 1
+            stats.excludedBytes += st.isFile() ? st.size : 0
+            continue
+          }
           const zPath = rel ? `${zipRoot}/${rel}` : zipRoot
           if (entry.isDirectory()) {
             stats.dirCount += 1
@@ -147,6 +156,7 @@ function registerBackupIpc (deps) {
         formatVersion: 2,
         mode: 'full_app_root',
         appRootDirname: path.basename(appRootDir),
+        includeEphemeral,
         exportedAt: new Date().toISOString(),
         appName: app.getName(),
         appVersion: app.getVersion(),

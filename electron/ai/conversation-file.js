@@ -2,6 +2,7 @@
 // 主会话默认读一个会话；上下文超限时按块拆成多个文件，加载时合并，主会话内可见完整历史
 const path = require('path')
 const fs = require('fs')
+const zlib = require('zlib')
 const { getAppRootPath } = require('../app-root')
 
 /** 单文件最多消息条数，超过则新建下一块会话文件（同一主会话下） */
@@ -36,6 +37,10 @@ function getSessionPath(projectKey, sessionId) {
   return path.join(getProjectDir(projectKey), `${sessionId}.json`)
 }
 
+function getArchivedSessionPath(projectKey, sessionId) {
+  return `${getSessionPath(projectKey, sessionId)}.gz`
+}
+
 function readIndex(projectKey) {
   try {
     const p = getIndexPath(projectKey)
@@ -66,9 +71,11 @@ function listConversations(projectKey) {
 /** 读单个文件（不合并链） */
 function loadConversationFile(projectKey, sessionId) {
   const p = getSessionPath(projectKey, sessionId)
-  if (!fs.existsSync(p)) return null
+  const gz = getArchivedSessionPath(projectKey, sessionId)
   try {
-    return JSON.parse(fs.readFileSync(p, 'utf-8'))
+    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf-8'))
+    if (fs.existsSync(gz)) return JSON.parse(zlib.gunzipSync(fs.readFileSync(gz)).toString('utf-8'))
+    return null
   } catch { return null }
 }
 
@@ -171,12 +178,18 @@ function saveConversation(projectKey, session) {
           nextChunkId: k < chunks.length - 1 ? `${rootId}@${k + 1}` : undefined
         }
     fs.writeFileSync(getSessionPath(projectKey, chunkId), JSON.stringify(payload, null, 2), 'utf-8')
+    try {
+      const gz = getArchivedSessionPath(projectKey, chunkId)
+      if (fs.existsSync(gz)) fs.unlinkSync(gz)
+    } catch (_) {}
   }
 
   for (const oldId of existingChunkIds) {
     if (!writtenChunkIds.includes(oldId)) {
       const oldPath = getSessionPath(projectKey, oldId)
       if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath)
+      const oldGzPath = getArchivedSessionPath(projectKey, oldId)
+      if (fs.existsSync(oldGzPath)) fs.unlinkSync(oldGzPath)
     }
   }
 
@@ -223,6 +236,8 @@ function deleteConversation(projectKey, sessionId) {
   while (cur) {
     const p = getSessionPath(projectKey, cur.id)
     if (fs.existsSync(p)) fs.unlinkSync(p)
+    const gz = getArchivedSessionPath(projectKey, cur.id)
+    if (fs.existsSync(gz)) fs.unlinkSync(gz)
     cur = cur.nextChunkId ? loadConversationFile(projectKey, cur.nextChunkId) : null
   }
   const index = readIndex(projectKey)
@@ -276,6 +291,15 @@ function updateConversationMeta(projectKey, sessionId, meta) {
     try {
       const sess = JSON.parse(fs.readFileSync(p, 'utf-8'))
       fs.writeFileSync(p, JSON.stringify({ ...sess, ...meta, updatedAt: now }, null, 2), 'utf-8')
+    } catch { /* ignore */ }
+    return
+  }
+  const gz = getArchivedSessionPath(projectKey, sessionId)
+  if (fs.existsSync(gz)) {
+    try {
+      const sess = JSON.parse(zlib.gunzipSync(fs.readFileSync(gz)).toString('utf-8'))
+      fs.writeFileSync(p, JSON.stringify({ ...sess, ...meta, updatedAt: now }, null, 2), 'utf-8')
+      fs.unlinkSync(gz)
     } catch { /* ignore */ }
   }
 }

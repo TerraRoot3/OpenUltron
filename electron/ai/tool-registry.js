@@ -222,6 +222,12 @@ function createDefaultRegistry(options = {}) {
     console.warn('加载 artifact_search 工具失败:', e.message)
   }
 
+  try {
+    registry.register('storage_cleanup', require('./tools/storage-cleanup'))
+  } catch (e) {
+    console.warn('加载 storage_cleanup 工具失败:', e.message)
+  }
+
   // 定时任务 Cron：list / add / update / delete / run_now
   try {
     registry.register('cron_task', require('./tools/cron-task'))
