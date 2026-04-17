@@ -38,7 +38,7 @@ function createSubagentDispatch(deps) {
     eventBus
   } = deps
 
-  let preferredExternalRuntime = null
+  let preferredExternalRuntime = []
 
   function normalizeRuntimeToken(token = '') {
     const t = String(token || '').trim().toLowerCase()
@@ -75,7 +75,8 @@ function createSubagentDispatch(deps) {
     if (!raw.startsWith('external:')) return
     const token = normalizeRuntimeToken(raw.slice('external:'.length))
     if (token && token !== 'internal' && token !== 'auto') {
-      preferredExternalRuntime = token
+      const next = [token, ...preferredExternalRuntime]
+      preferredExternalRuntime = dedupeList(next).slice(0, 8)
     }
   }
 
@@ -202,25 +203,17 @@ function createSubagentDispatch(deps) {
     return { success: false, error: msg, runtime: `external:${spec.id}`, systemPromptSource, attempts }
   }
 
-  function resolveRuntimeChain(runtime, availableExternalIds, preferenceOrder = []) {
+  function resolveRuntimeChain(runtime, availableExternalIds) {
     const extIds = dedupeList(availableExternalIds || [])
     const normalized = String(runtime || '').trim().toLowerCase()
-    const normalizedPreference = dedupeList(preferenceOrder).map((item) => normalizeRuntimeToken(item))
-      .filter((item) => item && item !== 'internal' && item !== 'auto')
-      .filter((item) => extIds.includes(item))
     const pickAutoChain = (base = []) => {
-      const ordered = normalizedPreference.slice()
+      const ordered = preferredExternalRuntime.filter((id) => extIds.includes(id))
       const rest = base.filter((id) => !ordered.includes(id))
       return dedupeList([...ordered, ...rest])
     }
     if (!normalized) return ['internal']
     if (normalized === 'auto') {
       const chain = pickAutoChain(extIds)
-      const preferred = normalizeRuntimeToken(preferredExternalRuntime)
-      if (preferred && chain.includes(preferred)) {
-        chain.splice(chain.indexOf(preferred), 1)
-        chain.unshift(preferred)
-      }
       return chain.length ? [...chain, 'internal'] : ['internal']
     }
     if (normalized === 'internal') return ['internal']
@@ -566,7 +559,7 @@ function createSubagentDispatch(deps) {
     const availableExternal = scan.filter(a => a.available)
     const availableExternalIds = availableExternal.map(a => a.id)
     const availableExternalById = new Map(availableExternal.map(a => [a.id, a]))
-    const runtimeChain = resolveRuntimeChain(normalizedForChain, availableExternalIds, subOrc.externalRuntimePreference)
+    const runtimeChain = resolveRuntimeChain(normalizedForChain, availableExternalIds)
     const attemptErrors = []
     const SUBAGENT_RUN_TIMEOUT_MS = 1800000
     const runCore = async () => {
