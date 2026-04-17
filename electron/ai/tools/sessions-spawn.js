@@ -7,6 +7,7 @@ const { buildExecutionEnvelope, truncateDelegationStdoutPreview } = require('../
 const { ingestEnvelopeArtifacts } = require('../artifact-hub')
 const { getSubagentOrchestration } = require('../../openultron-config')
 const { validateNestedSpawnEligibility } = require('../subagent-spawn-registry')
+const { sanitizeInjectedSystemPrompt } = require('../system-prompt-guard')
 
 const definition = {
   description: '派生子 Agent 执行一项任务。主 Agent 将任务与可选系统提示交给子 Agent，子 Agent 在独立会话中运行直至完成，最后把最终回复文本返回给主 Agent。子 Agent **必须在最后一轮用自然语言说明**：是否已按要求实现、改了哪些路径/文件、若涉及页面/功能如何验证；勿在仅改文件后沉默结束。工具返回值含 **message** 与 **envelope.summary** 会同步给主会话。可通过 provider 与 model 指定子 Agent 使用的供应商与模型（先调用 list_providers_and_models 获取可用列表）。',
@@ -16,7 +17,7 @@ const definition = {
       task: { type: 'string', description: '交给子 Agent 执行的任务描述（作为一条 user 消息）' },
       system_prompt: { type: 'string', description: '可选。注入子 Agent 的 system 提示，用于限定角色或步骤' },
       role_name: { type: 'string', description: '可选。子 Agent 的角色名/显示名，便于在对话中区分（如「代码审查员」「翻译助手」）' },
-      runtime: { type: 'string', description: '可选。子 Agent 运行时：auto（默认，先尝试可用外部子 Agent，失败自动回退）/ internal（仅内置）/ external:<name>（如 external:codex、external:gateway_cli；网关 CLI 可设环境变量 OPENULTRON_GATEWAY_CLI 指定可执行文件名）' },
+      runtime: { type: 'string', description: '可选。子 Agent 运行时：auto（默认，先尝试可用外部子 Agent，失败自动回退）/ internal（仅内置）/ external:<name>（如 external:codex、external:gateway；兼容别名 external:gateway_cli；网关 CLI 可设环境变量 OPENULTRON_GATEWAY_CLI 指定可执行文件名）' },
       provider: { type: 'string', description: '可选。子 Agent 使用的供应商：供应商名称（如「OpenAI」「DeepSeek」）或 base_url；不传则使用当前默认供应商' },
       model: { type: 'string', description: '可选。子 Agent 使用的模型 ID。根据任务复杂度选择：简单任务选 fast 模型；复杂代码/推理任务选 reasoning 模型。优先选已验证可用模型。' },
       project_path: { type: 'string', description: '可选。子 Agent 的项目路径上下文，默认与主会话一致' },
@@ -76,7 +77,15 @@ function createSessionsSpawnTool(runSubChat) {
       const parentRunId = String(context.runId || '').trim()
       const out = await runSubChat({
         task: String(task).trim(),
-        systemPrompt: system_prompt && String(system_prompt).trim() ? String(system_prompt).trim() : undefined,
+        systemPrompt: (() => {
+          const raw = system_prompt != null && String(system_prompt).trim() ? String(system_prompt).trim() : ''
+          const sanitized = sanitizeInjectedSystemPrompt(raw, { source: 'sessions_spawn' })
+          if (!sanitized.ok) {
+            throw new Error(sanitized.error || 'system_prompt 注入校验失败')
+          }
+          return sanitized.value
+        })(),
+        systemPromptSource: 'sessions_spawn',
         roleName: role_name != null && String(role_name).trim() !== '' ? String(role_name).trim() : undefined,
         runtime: runtime != null && String(runtime).trim() !== '' ? String(runtime).trim() : undefined,
         parentSessionId,

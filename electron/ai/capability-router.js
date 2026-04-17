@@ -1,10 +1,19 @@
+function normalizeExternalRuntimeToken(raw) {
+  const s = String(raw || '').trim().toLowerCase()
+  if (!s) return ''
+  const t = s.startsWith('external:') ? s.slice('external:'.length).trim() : s
+  if (!t) return ''
+  if (t === 'gateway_cli') return 'gateway'
+  return t
+}
+
 function detectRequestedExternalRuntime(text = '') {
   const t = String(text || '').toLowerCase()
   if (!t) return ''
   // 仅在“明确指定执行引擎”时触发外派，避免把任务正文里的产品名误判为 runtime 指令
   if (/(?:用|走|指定|切到|改用|让|调用)\s*codex|use\s+codex|with\s+codex|runtime\s*[:=]\s*external:codex/.test(t)) return 'external:codex'
   if (/(?:用|走|指定|切到|改用|让|调用)\s*claude|use\s+claude|with\s+claude|runtime\s*[:=]\s*external:claude/.test(t)) return 'external:claude'
-  if (/(?:用|走|指定|切到|改用|让|调用)\s*(?:gateway\s*cli|网关\s*助手)|use\s+gateway|runtime\s*[:=]\s*external:gateway_cli/.test(t)) return 'external:gateway_cli'
+  if (/(?:用|走|指定|切到|改用|让|调用)\s*(?:gateway\s*cli|gateway|网关\s*助手)|use\s+gateway(?:_cli)?|with\s+gateway|runtime\s*[:=]\s*external:gateway(?:_cli)?/.test(t)) return 'external:gateway'
   if (/(?:用|走|指定|切到|改用|让|调用)\s*opencode|use\s+opencode|with\s+opencode|runtime\s*[:=]\s*external:opencode/.test(t)) return 'external:opencode'
   return ''
 }
@@ -50,12 +59,13 @@ function detectCapability(text = '') {
 function resolveCapabilityRoute(input = {}, logger) {
   const text = input.text != null ? String(input.text) : ''
   const runtime = input.runtime != null ? String(input.runtime) : ''
-  const requestedRuntime = String(runtime || '').trim().toLowerCase()
+  const requestedRuntime = normalizeExternalRuntimeToken(runtime)
+  const requestedRuntimeWithPrefix = requestedRuntime ? (requestedRuntime.startsWith('external:') ? requestedRuntime : `external:${requestedRuntime}`) : ''
   const explicitExternal = detectRequestedExternalRuntime(text)
   const capability = detectCapability(text)
   const capabilitySignals = computeCapabilitySignals(text)
   let executionMode = 'internal'
-  if (requestedRuntime) executionMode = requestedRuntime
+  if (requestedRuntimeWithPrefix) executionMode = requestedRuntimeWithPrefix
   else if (explicitExternal) executionMode = explicitExternal
   else executionMode = 'internal'
 

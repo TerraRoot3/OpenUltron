@@ -7,6 +7,7 @@ const { buildWebAppStudioDelegateCallerBlock } = require('../ai/webapp-studio-co
 const { getSubagentOrchestration } = require('../openultron-config')
 const spawnReg = require('../ai/subagent-spawn-registry')
 const { resolveAgentProfile, isProfileAllowed } = require('../ai/agent-profile')
+const { sanitizeInjectedSystemPrompt } = require('../ai/system-prompt-guard')
 
 /** @param {object} deps — 见 main.js 原 createSubagentDispatch 调用处 */
 function createSubagentDispatch(deps) {
@@ -48,7 +49,21 @@ function createSubagentDispatch(deps) {
     ].join('\n')
   }
 
-  function buildExternalPrompt({ task, systemPrompt, roleName, projectPath, channelProjectPath }) {
+  function normalizeSystemPromptSource(source) {
+    const raw = String(source || '').trim()
+    if (!raw) return 'unknown'
+    return raw.replace(/[^a-z0-9._:-]/gi, '_').slice(0, 80)
+  }
+
+  function stripSystemPromptStamp(text = '') {
+    const v = String(text || '')
+    if (!v.startsWith('[子系统注入提示]')) return v
+    const markerEnd = v.indexOf('\n')
+    if (markerEnd < 0) return ''
+    return v.slice(markerEnd + 1)
+  }
+
+  function buildExternalPrompt({ task, systemPrompt, roleName, projectPath, channelProjectPath, systemPromptSource = 'unknown' }) {
     const blocks = []
     if (roleName) blocks.push(`角色：${roleName}`)
     if (systemPrompt) blocks.push(`系统约束：\n${systemPrompt}`)
@@ -60,11 +75,12 @@ function createSubagentDispatch(deps) {
   }
 
   async function runByExternalSubAgent(spec, ctx, resolvedCommand = '', heartbeat = null, onLog = null) {
+    const systemPromptSource = normalizeSystemPromptSource(ctx.systemPromptSource)
     const rawProjectPath = String(ctx.projectPath || '').trim()
     const cwd = (rawProjectPath && path.isAbsolute(rawProjectPath) && fs.existsSync(rawProjectPath))
       ? rawProjectPath
       : getWorkspaceRoot()
-    const prompt = buildExternalPrompt({ ...ctx, projectPath: cwd, channelProjectPath: rawProjectPath })
+    const prompt = buildExternalPrompt({ ...ctx, projectPath: cwd, channelProjectPath: rawProjectPath, systemPromptSource })
     const command = String(resolvedCommand || spec.command || '').trim() || spec.command
     const timeoutMs = 180000
     const attempts = []
@@ -86,6 +102,7 @@ function createSubagentDispatch(deps) {
             mode: envVariant.mode,
             command,
             cwd,
+            systemPromptSource,
             rawProjectPath,
             argsPreview: args.map((x) => String(x)).slice(0, 4)
           })
@@ -131,6 +148,7 @@ function createSubagentDispatch(deps) {
             success: true,
             result: output,
             runtime: `external:${spec.id}`,
+            systemPromptSource,
             messages: [{ role: 'assistant', content: output }],
             attempts
           }
@@ -140,7 +158,7 @@ function createSubagentDispatch(deps) {
     const last = attempts[attempts.length - 1] || {}
     const msg = last.error || last.stderr || `外部子 Agent ${spec.id} 执行失败`
     try { if (typeof onLog === 'function') onLog({ type: 'meta', text: `all attempts failed: ${msg}` }) } catch (_) {}
-    return { success: false, error: msg, runtime: `external:${spec.id}`, attempts }
+    return { success: false, error: msg, runtime: `external:${spec.id}`, systemPromptSource, attempts }
   }
 
   function resolveRuntimeChain(runtime, availableExternalIds) {
@@ -150,12 +168,21 @@ function createSubagentDispatch(deps) {
     if (normalized === 'internal') return ['internal']
     if (normalized === 'external') return [...extIds, 'internal']
     if (normalized === 'auto') return ['internal']
+    const normalizeRuntimeToken = (token = '') => {
+      const t = String(token || '').trim().toLowerCase()
+      if (!t || t === 'internal' || t === 'auto') return t
+      if (t === 'gateway_cli') return 'gateway'
+      const spec = EXTERNAL_SUBAGENT_SPECS.find((s) => String(s.id).toLowerCase() === t || (Array.isArray(s.aliases) && s.aliases.map((x) => String(x).toLowerCase()).includes(t)))
+      return spec ? String(spec.id).toLowerCase() : t
+    }
     if (normalized.startsWith('external:')) {
-      const pick = normalized.slice('external:'.length).trim()
+      const pick = normalizeRuntimeToken(normalized.slice('external:'.length).trim())
+      if (!pick) return ['internal']
       return [pick, 'internal']
     }
-    if (extIds.includes(normalized)) {
-      return [normalized, 'internal']
+    const pick = normalizeRuntimeToken(normalized)
+    if (extIds.includes(pick)) {
+      return [pick, 'internal']
     }
     return ['internal']
   }
@@ -199,7 +226,8 @@ function createSubagentDispatch(deps) {
     }
   }
 
-  async function runByInternalSubAgent({ task, systemPrompt, roleName, model, projectPath, provider, eventSink, feishuChatId, feishuTenantKey, feishuDocHost, feishuSenderOpenId, feishuSenderUserId, capability, webappStudioDelegate, parentSessionIdForDelegate, profileResolved, subagentMinimalMemory, inheritIdentityFromProfile }, subSessionId) {
+  async function runByInternalSubAgent({ task, systemPrompt, systemPromptSource, roleName, model, projectPath, provider, eventSink, feishuChatId, feishuTenantKey, feishuDocHost, feishuSenderOpenId, feishuSenderUserId, capability, webappStudioDelegate, parentSessionIdForDelegate, profileResolved, subagentMinimalMemory, inheritIdentityFromProfile }, subSessionId) {
+    const normalizedSystemPromptSource = normalizeSystemPromptSource(systemPromptSource)
     const messages = []
     const rolePrompt = roleName && String(roleName).trim()
       ? `你当前扮演的角色是「${String(roleName).trim()}」。请按该角色完成任务，并仅输出该角色应给出的结果。`
@@ -264,7 +292,8 @@ function createSubagentDispatch(deps) {
       feishuSenderOpenId: feishuSenderOpenId && String(feishuSenderOpenId).trim() ? String(feishuSenderOpenId).trim() : undefined,
       feishuSenderUserId: feishuSenderUserId && String(feishuSenderUserId).trim() ? String(feishuSenderUserId).trim() : undefined,
       subagentMinimalMemory: !!subagentMinimalMemory,
-      inheritIdentityFromProfile: !!inheritIdentityFromProfile
+      inheritIdentityFromProfile: !!inheritIdentityFromProfile,
+      allowChannelSend: false
     })
     if (!result.success) {
       return { success: false, error: result.error || '子 Agent 执行失败', subSessionId, runtime: 'internal' }
@@ -289,11 +318,32 @@ function createSubagentDispatch(deps) {
         })
       } catch (_) {}
     }
-    return { success: true, result: resultText, subSessionId, messages: msgs, runtime: 'internal' }
+    return { success: true, result: resultText, subSessionId, messages: msgs, runtime: 'internal', systemPromptSource: normalizedSystemPromptSource }
   }
 
   async function runSubChat(opts) {
-    const { task, systemPrompt, roleName, model, projectPath, provider, runtime, parentSessionId, parentRunId, feishuChatId, feishuTenantKey, feishuDocHost, feishuSenderOpenId, feishuSenderUserId, stream, webappStudioDelegate, profile, agent, waitForResult = true } = opts || {}
+    const {
+      task,
+      systemPrompt,
+      systemPromptSource: rawSystemPromptSource,
+      roleName,
+      model,
+      projectPath,
+      provider,
+      runtime,
+      parentSessionId,
+      parentRunId,
+      feishuChatId,
+      feishuTenantKey,
+      feishuDocHost,
+      feishuSenderOpenId,
+      feishuSenderUserId,
+      stream,
+      webappStudioDelegate,
+      profile,
+      agent,
+      waitForResult = true
+    } = opts || {}
     const subSessionId = `sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     const parentRun = String(parentRunId || '').trim()
     const pp0 = (projectPath != null && String(projectPath).trim() !== '')
@@ -303,44 +353,77 @@ function createSubagentDispatch(deps) {
     const profileId = String(profile || agent || 'executor').trim() || 'executor'
     const profileResolved = resolveAgentProfile(profileId, pp0) || resolveAgentProfile('executor', pp0)
     if (!isProfileAllowed(profileId, subOrc.allowedProfiles)) {
+      const systemPromptSource = normalizeSystemPromptSource(rawSystemPromptSource)
       const err = `子 Agent profile 不在允许列表: ${profileId}`
       return {
         success: false,
         error: err,
         subSessionId,
         parentRunId: parentRun || undefined,
-        envelope: buildExecutionEnvelope({ success: false, error: err, subSessionId, parentRunId: parentRun || undefined }, 'internal')
+        systemPromptSource,
+        envelope: buildExecutionEnvelope({
+          success: false,
+          error: err,
+          subSessionId,
+          parentRunId: parentRun || undefined,
+          systemPromptSource
+        }, 'internal')
       }
     }
     const nest = spawnReg.validateNestedSpawnEligibility(parentSessionId || '', subOrc)
     if (!nest.ok) {
+      const systemPromptSource = normalizeSystemPromptSource(rawSystemPromptSource)
       return {
         success: false,
         error: nest.error,
         subSessionId,
         parentRunId: parentRun || undefined,
-        envelope: buildExecutionEnvelope({ success: false, error: nest.error, subSessionId, parentRunId: parentRun || undefined }, 'internal')
+        systemPromptSource,
+        envelope: buildExecutionEnvelope({
+          success: false,
+          error: nest.error,
+          subSessionId,
+          parentRunId: parentRun || undefined,
+          systemPromptSource
+        }, 'internal')
       }
     }
     if (waitForResult === false && subOrc.allowAsyncSpawn === false) {
+      const systemPromptSource = normalizeSystemPromptSource(rawSystemPromptSource)
       const err = '异步 spawn 未启用（请在 openultron.json 将 subagentOrchestration.allowAsyncSpawn 设为 true）'
       return {
         success: false,
         error: err,
         subSessionId,
         parentRunId: parentRun || undefined,
-        envelope: buildExecutionEnvelope({ success: false, error: err, subSessionId, parentRunId: parentRun || undefined }, 'internal')
+        systemPromptSource,
+        envelope: buildExecutionEnvelope({
+          success: false,
+          error: err,
+          subSessionId,
+          parentRunId: parentRun || undefined,
+          systemPromptSource
+        }, 'internal')
       }
     }
     const slot = spawnReg.acquireSpawnSlot(parentSessionId || '', subOrc)
     if (!slot.ok) {
       const msg = slot.reason === 'subagent_global_concurrent_cap' ? '子 Agent 全局并发已达上限' : '当前会话子 Agent 数量已达上限'
+      const systemPromptSource = normalizeSystemPromptSource(rawSystemPromptSource)
       return {
         success: false,
         error: msg,
         subSessionId,
         parentRunId: parentRun || undefined,
-        envelope: buildExecutionEnvelope({ success: false, error: msg, subSessionId, parentRunId: parentRun || undefined, commandLogs: [] }, 'internal')
+        systemPromptSource,
+        envelope: buildExecutionEnvelope({
+          success: false,
+          error: msg,
+          subSessionId,
+          parentRunId: parentRun || undefined,
+          commandLogs: [],
+          systemPromptSource
+        }, 'internal')
       }
     }
     spawnReg.registerSubagentSpawn(parentSessionId || '', subSessionId, profileId)
@@ -348,6 +431,28 @@ function createSubagentDispatch(deps) {
     const inheritIdentityFromProfile = !!(profileResolved && profileResolved.inherit_identity)
     const subagentAsyncOutcomes = require('../ai/subagent-async-outcomes')
     const runSubChatBody = async () => {
+      const systemPromptSource = normalizeSystemPromptSource(rawSystemPromptSource)
+      const sanitized = sanitizeInjectedSystemPrompt(systemPrompt, { source: systemPromptSource })
+      if (!sanitized.ok) {
+        const err = sanitized.error || 'system_prompt 无效或被拦截'
+        return {
+          success: false,
+          error: err,
+          subSessionId,
+          parentRunId: parentRun || undefined,
+          systemPromptSource,
+          envelope: buildExecutionEnvelope({
+            success: false,
+            error: err,
+            subSessionId,
+            parentRunId: parentRun || undefined,
+            commandLogs: [`[meta] sub-agent system_prompt blocked source=${systemPromptSource}`],
+            systemPromptSource
+          }, 'internal')
+        }
+      }
+      const finalSystemPrompt = sanitized.value
+      const sanitizedSystemPrompt = stripSystemPromptStamp(finalSystemPrompt || '')
     const route = resolveCapabilityRoute({ text: String(task || ''), runtime: String(runtime || '') }, appLogger)
     let delegatedTask = buildDelegatedTaskWithParentContext(task, {
       projectPath: pp0,
@@ -399,16 +504,30 @@ function createSubagentDispatch(deps) {
     const routeFromRuntime = resolveCapabilityRoute({ text: String(task || ''), runtime: userRuntime || '' }, appLogger)
     let effectiveRuntime = userRuntime
     if (!effectiveRuntime || effectiveRuntime.toLowerCase() === 'auto') {
-      const inferred = routeFromRuntime.externalRuntime || inferPreferredExternalRuntimeFromText([task, systemPrompt, roleName].filter(Boolean).join('\n'))
+      const inferred = routeFromRuntime.externalRuntime || inferPreferredExternalRuntimeFromText([task, sanitizedSystemPrompt, roleName].filter(Boolean).join('\n'))
       effectiveRuntime = inferred || 'internal'
     }
+    const resolveRequestedRuntime = (input = '') => {
+      const value = String(input || '').trim().toLowerCase()
+      if (!value) return ''
+      if (value.startsWith('external:')) {
+        const raw = value.slice('external:'.length).trim()
+        if (!raw) return ''
+        const spec = EXTERNAL_SUBAGENT_SPECS.find((x) => String(x.id).toLowerCase() === raw || (Array.isArray(x.aliases) && x.aliases.map((a) => String(a).toLowerCase()).includes(raw)))
+        return `external:${spec ? String(spec.id).toLowerCase() : raw}`
+      }
+      const spec = EXTERNAL_SUBAGENT_SPECS.find((x) => String(x.id).toLowerCase() === value || (Array.isArray(x.aliases) && x.aliases.map((a) => String(a).toLowerCase()).includes(value)))
+      return spec ? `external:${String(spec.id).toLowerCase()}` : value
+    }
+    const normalizedForChain = resolveRequestedRuntime(effectiveRuntime)
+    effectiveRuntime = normalizedForChain || effectiveRuntime
     pushCommandLog(`[meta] effective_runtime=${effectiveRuntime || 'internal'}`)
     emitPartial()
     const scan = await scanExternalSubAgents(false)
     const availableExternal = scan.filter(a => a.available)
     const availableExternalIds = availableExternal.map(a => a.id)
     const availableExternalById = new Map(availableExternal.map(a => [a.id, a]))
-    const runtimeChain = resolveRuntimeChain(effectiveRuntime, availableExternalIds)
+    const runtimeChain = resolveRuntimeChain(normalizedForChain, availableExternalIds)
     const attemptErrors = []
     const SUBAGENT_RUN_TIMEOUT_MS = 1800000
     const runCore = async () => {
@@ -494,9 +613,10 @@ function createSubagentDispatch(deps) {
             }
             const out = await runByInternalSubAgent({
               task: delegatedTask,
-              systemPrompt,
+              systemPrompt: finalSystemPrompt,
               roleName,
               model,
+              systemPromptSource,
               capability: routeFromRuntime.capability || 'general',
               projectPath,
               provider,
@@ -532,17 +652,18 @@ function createSubagentDispatch(deps) {
                 attemptedRuntimes: runtimeChain.slice(0, attemptErrors.length + 1),
                 envelope: buildExecutionEnvelope(
                   {
-                    success: true,
-                    result: out.result,
-                    commandLogs: [...commandLogLines],
-                    subSessionId,
-                    parentRunId: parentRun || undefined,
-                    attemptedRuntimes: runtimeChain.slice(0, attemptErrors.length + 1),
-                    runtime: out.runtime || 'internal'
-                  },
-                  out.runtime || 'internal'
-                )
-              }
+                  success: true,
+                  result: out.result,
+                  commandLogs: [...commandLogLines],
+                  subSessionId,
+                  parentRunId: parentRun || undefined,
+                  attemptedRuntimes: runtimeChain.slice(0, attemptErrors.length + 1),
+                  runtime: out.runtime || 'internal',
+                  systemPromptSource
+                },
+                out.runtime || 'internal'
+              )
+            }
             }
             pushCommandLog(`[meta] attempt internal failed: ${out.error || '执行失败'}`)
             emitPartial()
@@ -609,7 +730,7 @@ function createSubagentDispatch(deps) {
           try {
             out = await runByExternalSubAgent(
               spec,
-              { task: delegatedTask, systemPrompt, roleName, projectPath },
+              { task: delegatedTask, systemPrompt: finalSystemPrompt, roleName, projectPath, systemPromptSource },
               resolvedCommand,
               heartbeat,
               (evt = {}) => {
@@ -652,7 +773,8 @@ function createSubagentDispatch(deps) {
                   subSessionId,
                   parentRunId: parentRun || undefined,
                   attemptedRuntimes: runtimeChain.slice(0, attemptErrors.length + 1),
-                  runtime: out.runtime
+                  runtime: out.runtime,
+                  systemPromptSource: out.systemPromptSource || systemPromptSource
                 },
                 out.runtime || `external:${rt}`
               )
@@ -728,13 +850,15 @@ function createSubagentDispatch(deps) {
         subSessionId,
         parentRunId: parentRun || undefined,
         commandLogs: [...commandLogLines],
+        systemPromptSource,
         envelope: buildExecutionEnvelope(
           {
             success: false,
             error: attemptErrors.join(' | ') || '子 Agent 执行失败',
             commandLogs: [...commandLogLines],
             subSessionId,
-            parentRunId: parentRun || undefined
+            parentRunId: parentRun || undefined,
+            systemPromptSource
           },
           'internal'
         )
@@ -756,12 +880,14 @@ function createSubagentDispatch(deps) {
           subSessionId,
           parentRunId: parentRun || undefined,
           commandLogs: [...commandLogLines],
+          systemPromptSource,
           envelope: buildExecutionEnvelope({
             success: false,
             error: '子 Agent 执行超时',
             commandLogs: [...commandLogLines],
             subSessionId,
-            parentRunId: parentRun || undefined
+            parentRunId: parentRun || undefined,
+            systemPromptSource
           }, 'internal')
         }
       }
@@ -793,9 +919,16 @@ function createSubagentDispatch(deps) {
             success: false,
             error: e.message || String(e),
             subSessionId,
+            systemPromptSource: normalizeSystemPromptSource(rawSystemPromptSource),
             parentRunId: parentRun || undefined,
             envelope: buildExecutionEnvelope(
-              { success: false, error: e.message || String(e), subSessionId, parentRunId: parentRun || undefined },
+              {
+                success: false,
+                error: e.message || String(e),
+                subSessionId,
+                parentRunId: parentRun || undefined,
+                systemPromptSource: normalizeSystemPromptSource(rawSystemPromptSource)
+              },
               'internal'
             )
           })
@@ -813,6 +946,7 @@ function createSubagentDispatch(deps) {
         sub_session_id: subSessionId,
         parentRunId: parentRun || undefined,
         parent_run_id: parentRun || undefined,
+        systemPromptSource: normalizeSystemPromptSource(rawSystemPromptSource),
         message: '子 Agent 已在后台运行。请用 sessions_subagent_poll(sub_session_id=...) 获取结果。'
       }
     }

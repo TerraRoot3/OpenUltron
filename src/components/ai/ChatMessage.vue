@@ -264,13 +264,36 @@ const mainContent = computed(() => splitContent.value.mainContent)
 
 const toolCallsAll = computed(() => {
   const list = Array.isArray(props.message?.toolCalls) ? props.message.toolCalls : []
-  return list
+  const normalized = list
     .map((tc) => {
       if (!tc || typeof tc !== 'object') return null
       if (tc._expanded === undefined) tc._expanded = false
       return tc
     })
     .filter(Boolean)
+
+  const seen = new Set()
+  const deduped = []
+  for (let i = normalized.length - 1; i >= 0; i--) {
+    const tc = normalized[i]
+    const name = String(tc.name || '').trim()
+    if (!name) continue
+    const argText = (() => {
+      try {
+        const args = tc.arguments
+        if (args == null) return ''
+        if (typeof args === 'string') return args
+        return JSON.stringify(args)
+      } catch (_) {
+        return ''
+      }
+    })()
+    const key = tc.id ? `id:${String(tc.id)}` : `name:${name}::args:${argText.slice(0, 120)}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    deduped.push(tc)
+  }
+  return deduped.reverse()
 })
 
 const showAllToolCalls = ref(false)
@@ -298,6 +321,20 @@ const toolIcon = (name) => {
   return map[name] || Wrench
 }
 
+const formatNamespacedTool = (name) => {
+  if (name.startsWith('mcp__')) {
+    const body = name.slice('mcp__'.length)
+    const idx = body.indexOf('__')
+    return idx >= 0 ? `${body.slice(0, idx)}/${body.slice(idx + 2)}` : body
+  }
+  if (name.startsWith('webapp__')) {
+    const body = name.slice('webapp__'.length)
+    const idx = body.indexOf('__')
+    return idx >= 0 ? `${body.slice(0, idx)}/${body.slice(idx + 2)}` : body
+  }
+  return name
+}
+
 const toolLabel = (name) => {
   const map = {
     execute_command: t('chatMessage.executeCommand'),
@@ -309,12 +346,13 @@ const toolLabel = (name) => {
     feishu_send_message: t('chatMessage.feishuSend'),
     read_app_log: t('chatMessage.readAppLog')
   }
-  return map[name] || name
+  return map[name] || formatNamespacedTool(String(name || '').trim())
 }
 
 const toolSummary = (tc) => {
   try {
     const args = JSON.parse(tc.arguments)
+    const toolName = String(tc.name || '')
     if (tc.name === 'execute_command') {
       const cmd = args.command || ''
       return cmd.length > 100 ? cmd.substring(0, 100) + '…' : cmd
@@ -343,6 +381,10 @@ const toolSummary = (tc) => {
     if (tc.name === 'read_app_log') {
       const k = args.keyword ? ` · ${args.keyword}` : ''
       return `${args.lines || 800} lines${k}`
+    }
+    if (toolName.startsWith('mcp__') || toolName.startsWith('webapp__')) {
+      const summaryText = args.prompt || args.text || args.query || args.message || args.path || args.url
+      return summaryText ? String(summaryText).slice(0, 110) : ''
     }
     return ''
   } catch {

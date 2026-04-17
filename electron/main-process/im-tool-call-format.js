@@ -26,7 +26,16 @@ function formatCommandFromToolCall(tc) {
       return target ? `- file_operation ${action} ${target}` : `- file_operation ${action}`
     }
     if (name.startsWith('mcp__')) {
-      return `- ${name}`
+      const body = name.slice('mcp__'.length)
+      const idx = body.indexOf('__')
+      const pretty = idx >= 0 ? `mcp/${body.slice(0, idx)}/${body.slice(idx + 2)}` : `mcp/${body}`
+      return `- ${pretty}`
+    }
+    if (name.startsWith('webapp__')) {
+      const body = name.slice('webapp__'.length)
+      const idx = body.indexOf('__')
+      const pretty = idx >= 0 ? `webapp/${body.slice(0, idx)}/${body.slice(idx + 2)}` : `webapp/${body}`
+      return `- ${pretty}`
     }
     if (name === 'sessions_spawn') {
       const runtime = readStr(args?.runtime)

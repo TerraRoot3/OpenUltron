@@ -54,6 +54,9 @@ describe('capability-router', () => {
     expect(r.explicitExternal).toBe(true)
     expect(r.capability).toBe('general')
 
+    const alias = resolveCapabilityRoute({ text: '先用网关 继续', runtime: 'external:gateway_cli' })
+    expect(alias.executionMode).toBe('external:gateway')
+
     const r2 = resolveCapabilityRoute({ text: '飞书写文档', runtime: 'internal' })
     expect(r2.executionMode).toBe('internal')
     expect(r2.capability).toBe('docs')
