@@ -7,7 +7,7 @@ const net = require('net')
 const tls = require('tls')
 const path = require('path')
 const { URL } = require('url')
-const { estimateTokens, shouldCompress, compressMessages, flushMemoryBeforeCompaction, DEFAULT_CONFIG: COMPRESSION_DEFAULTS } = require('./context-compressor')
+const { estimateTokens, analyzeMessageTokenUsage, shouldCompress, compressMessages, flushMemoryBeforeCompaction, DEFAULT_CONFIG: COMPRESSION_DEFAULTS } = require('./context-compressor')
 const { slimToolsForChat, shouldSlimToolDefinitions } = require('./slim-tool-definitions')
 const { getTopMemoriesForProject, saveMemory, readGlobalMemoryMd, readSoulMd, readIdentityMd, readAgentDisplayName, readUserMd, readBootMd, readAgentsMd, readToolsMd, readLessonsLearned, appendToDiary } = require('./memory-store')
 const { loadPrompt } = require('./system-prompts')
@@ -241,28 +241,31 @@ function clipInjectedTailSection(text, maxChars) {
 }
 
 function estimateTokenBreakdown(messages) {
-  const list = Array.isArray(messages) ? messages : []
-  const buckets = { system: 0, dialog: 0, tool: 0, other: 0 }
-  for (const m of list) {
-    if (!m) continue
-    const one = estimateTokens([m])
-    if (m.role === 'system') buckets.system += one
-    else if (m.role === 'tool') buckets.tool += one
-    else if (m.role === 'user' || m.role === 'assistant') buckets.dialog += one
-    else buckets.other += one
-  }
-  const total = buckets.system + buckets.dialog + buckets.tool + buckets.other
-  const ratio = (n) => total > 0 ? Number(((n / total) * 100).toFixed(1)) : 0
+  const usage = analyzeMessageTokenUsage(messages)
   return {
-    total,
-    system: buckets.system,
-    dialog: buckets.dialog,
-    tool: buckets.tool,
-    other: buckets.other,
-    systemPct: ratio(buckets.system),
-    dialogPct: ratio(buckets.dialog),
-    toolPct: ratio(buckets.tool),
-    otherPct: ratio(buckets.other)
+    total: usage.total,
+    system: usage.system,
+    dialog: usage.user + usage.assistant,
+    tool: usage.tool,
+    other: usage.other,
+    systemPct: usage.systemPct,
+    dialogPct: Number((usage.userPct + usage.assistantPct).toFixed(1)),
+    toolPct: usage.toolPct,
+    otherPct: usage.otherPct,
+    systemPrompt: usage.systemPrompt,
+    systemSummary: usage.systemSummary,
+    systemPromptPct: usage.systemPromptPct,
+    systemSummaryPct: usage.systemSummaryPct,
+    user: usage.user,
+    userPct: usage.userPct,
+    assistant: usage.assistant,
+    assistantPct: usage.assistantPct,
+    compressible: usage.compressible,
+    threshold: usage.threshold,
+    thresholdPct: usage.thresholdPct,
+    overThreshold: usage.overThreshold,
+    compressionSummaryCount: usage.compressionSummaryCount,
+    compressiblePctOfTotal: usage.compressiblePctOfTotal
   }
 }
 
@@ -957,6 +960,16 @@ class Orchestrator {
     }
     let compressNoticeSent = false
     let compressCooldownUntilIteration = 0
+    let compressionTelemetry = {
+      count: 0,
+      totalSaved: 0,
+      lastSaved: 0,
+      lastDialogSaved: 0,
+      lastBefore: 0,
+      lastAfter: 0,
+      lastThresholdPctBefore: 0,
+      lastThresholdPctAfter: 0
+    }
     const ensurePromptCompressed = async (opts = {}) => {
       const maxPasses = opts.maxPasses != null ? Number(opts.maxPasses) : 2
       const notify = !!opts.notify
@@ -987,13 +1000,26 @@ class Orchestrator {
         if (compressionConfig.flushMemoryBeforeCompress) {
           flushMemoryBeforeCompaction(currentMessages, callForSummary).catch(() => {})
         }
+        const beforeUsage = analyzeMessageTokenUsage(currentMessages, cfg)
         const tokBeforeTotal = estimateTokens(currentMessages)
         currentMessages = await compressMessages(currentMessages, cfg, callForSummary)
         const tokAfterTotal = estimateTokens(currentMessages)
+        const afterUsage = analyzeMessageTokenUsage(currentMessages, cfg)
         const minSave = Number(compressionConfig.minCompressSavingsTokens) || COMPRESSION_DEFAULTS.minCompressSavingsTokens || 1200
         if (tokAfterTotal < tokBeforeTotal - minSave * 0.5) {
           changed = true
           compressCooldownUntilIteration = iteration + cool
+          const saved = Math.max(0, tokBeforeTotal - tokAfterTotal)
+          compressionTelemetry = {
+            count: Number(compressionTelemetry.count || 0) + 1,
+            totalSaved: Number(compressionTelemetry.totalSaved || 0) + saved,
+            lastSaved: saved,
+            lastDialogSaved: Math.max(0, beforeUsage.compressible - afterUsage.compressible),
+            lastBefore: tokBeforeTotal,
+            lastAfter: tokAfterTotal,
+            lastThresholdPctBefore: beforeUsage.thresholdPct,
+            lastThresholdPctAfter: afterUsage.thresholdPct
+          }
         }
         // 若压缩后几乎没有下降（估算误差/摘要过长等），避免在同一轮内继续白做
         if (tokAfterTotal >= tokBeforeTotal - minSave * 0.2) {
@@ -1036,7 +1062,10 @@ class Orchestrator {
             sessionId,
             runId: chatRunId,
             iteration,
-            usage: estimateTokenBreakdown(currentMessages)
+            usage: {
+              ...estimateTokenBreakdown(currentMessages),
+              compression: { ...compressionTelemetry }
+            }
           })
         }
 

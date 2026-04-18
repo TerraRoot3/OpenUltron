@@ -7,18 +7,36 @@
         <span class="chat-usage-strip-total">≈ {{ usageCard.total.toLocaleString() }}</span>
         <span class="chat-usage-strip-sep" aria-hidden="true">·</span>
         <span class="chat-usage-strip-parts" :title="usageStripTitle">
-          S {{ usageCard.system.toLocaleString() }} ({{ usageCard.systemPct }}%)
+          Active {{ usageCard.compressible.toLocaleString() }} / {{ usageCard.threshold.toLocaleString() }}
           <span class="chat-usage-strip-sep" aria-hidden="true">·</span>
-          D {{ usageCard.dialog.toLocaleString() }} ({{ usageCard.dialogPct }}%)
-          <span class="chat-usage-strip-sep" aria-hidden="true">·</span>
-          T {{ usageCard.tool.toLocaleString() }} ({{ usageCard.toolPct }}%)
+          {{ usageCard.thresholdPct }}%
+          <template v-if="usageCard.compression.lastSaved > 0">
+            <span class="chat-usage-strip-sep" aria-hidden="true">·</span>
+            Saved {{ usageCard.compression.lastSaved.toLocaleString() }}
+          </template>
         </span>
         <span class="chat-usage-strip-sep" aria-hidden="true">·</span>
         <span class="chat-usage-strip-iter">#{{ usageCard.iteration }}</span>
       </div>
+      <div class="chat-usage-strip-meta">
+        <span class="chat-usage-meta-item" :title="`Prompt ${usageCard.systemPrompt.toLocaleString()} + Summary ${usageCard.systemSummary.toLocaleString()}`">
+          System {{ usageCard.system.toLocaleString() }}
+        </span>
+        <span class="chat-usage-meta-item">User {{ usageCard.user.toLocaleString() }}</span>
+        <span class="chat-usage-meta-item">Assistant {{ usageCard.assistant.toLocaleString() }}</span>
+        <span class="chat-usage-meta-item">Tool {{ usageCard.tool.toLocaleString() }}</span>
+        <span v-if="usageCard.compressionSummaryCount > 0" class="chat-usage-meta-item">
+          Summary {{ usageCard.compressionSummaryCount }}
+        </span>
+        <span v-if="usageCard.compression.totalSaved > 0" class="chat-usage-meta-item">
+          Total Saved {{ usageCard.compression.totalSaved.toLocaleString() }}
+        </span>
+      </div>
       <div class="chat-usage-strip-bar" aria-hidden="true">
-        <span class="chat-usage-seg chat-usage-seg-sys" :style="{ width: `${usageCard.systemPct}%` }" />
-        <span class="chat-usage-seg chat-usage-seg-dlg" :style="{ width: `${usageCard.dialogPct}%` }" />
+        <span class="chat-usage-seg chat-usage-seg-sys" :style="{ width: `${usageCard.systemPromptPct}%` }" />
+        <span class="chat-usage-seg chat-usage-seg-summary" :style="{ width: `${usageCard.systemSummaryPct}%` }" />
+        <span class="chat-usage-seg chat-usage-seg-user" :style="{ width: `${usageCard.userPct}%` }" />
+        <span class="chat-usage-seg chat-usage-seg-assistant" :style="{ width: `${usageCard.assistantPct}%` }" />
         <span class="chat-usage-seg chat-usage-seg-tool" :style="{ width: `${usageCard.toolPct}%` }" />
       </div>
     </div>
@@ -467,10 +485,92 @@ const compressionSummaryText = computed(() => {
   return parts.length ? parts.join('\n\n') : ''
 })
 
+const LOCAL_TOKEN_THRESHOLD = 24000
+
+const estimateMessageTokens = (message) => {
+  if (!message) return 0
+  const content = typeof message.content === 'string'
+    ? message.content
+    : (Array.isArray(message.content)
+      ? message.content.map((c) => (typeof c === 'string' ? c : c?.text || JSON.stringify(c || ''))).join('')
+      : JSON.stringify(message.content || ''))
+  const toolCalls = Array.isArray(message.toolCalls)
+    ? message.toolCalls
+    : (Array.isArray(message.tool_calls) ? message.tool_calls : [])
+  const toolStr = toolCalls.length > 0 ? JSON.stringify(toolCalls) : ''
+  return Math.ceil((String(content || '').length + toolStr.length) / 3)
+}
+
+const analyzeLocalTokenUsage = (list) => {
+  const buckets = {
+    total: 0,
+    system: 0,
+    systemPrompt: 0,
+    systemSummary: 0,
+    user: 0,
+    assistant: 0,
+    tool: 0,
+    other: 0,
+    compressionSummaryCount: 0
+  }
+  for (const message of Array.isArray(list) ? list : []) {
+    const one = estimateMessageTokens(message)
+    buckets.total += one
+    if (message?.role === 'system') {
+      buckets.system += one
+      if (String(message.content || '').startsWith('[对话摘要（早期消息已压缩）]')) {
+        buckets.systemSummary += one
+        buckets.compressionSummaryCount += 1
+      } else {
+        buckets.systemPrompt += one
+      }
+    } else if (message?.role === 'user') {
+      buckets.user += one
+    } else if (message?.role === 'assistant') {
+      buckets.assistant += one
+    } else if (message?.role === 'tool') {
+      buckets.tool += one
+    } else {
+      buckets.other += one
+    }
+  }
+  const compressible = buckets.user + buckets.assistant + buckets.tool + buckets.other
+  const ratio = (n, d = buckets.total) => d > 0 ? Number(((n / d) * 100).toFixed(1)) : 0
+  return {
+    total: buckets.total,
+    system: buckets.system,
+    dialog: buckets.user + buckets.assistant,
+    tool: buckets.tool,
+    other: buckets.other,
+    systemPct: ratio(buckets.system),
+    dialogPct: ratio(buckets.user + buckets.assistant),
+    toolPct: ratio(buckets.tool),
+    otherPct: ratio(buckets.other),
+    systemPrompt: buckets.systemPrompt,
+    systemSummary: buckets.systemSummary,
+    systemPromptPct: ratio(buckets.systemPrompt),
+    systemSummaryPct: ratio(buckets.systemSummary),
+    user: buckets.user,
+    userPct: ratio(buckets.user),
+    assistant: buckets.assistant,
+    assistantPct: ratio(buckets.assistant),
+    compressible,
+    threshold: LOCAL_TOKEN_THRESHOLD,
+    thresholdPct: buckets.total > 0 ? Number(((compressible / LOCAL_TOKEN_THRESHOLD) * 100).toFixed(1)) : 0,
+    overThreshold: compressible > LOCAL_TOKEN_THRESHOLD,
+    compressionSummaryCount: buckets.compressionSummaryCount,
+    compressiblePctOfTotal: ratio(compressible),
+    compression: {
+      count: 0,
+      totalSaved: 0,
+      lastSaved: 0
+    }
+  }
+}
+
 const usageCard = computed(() => {
   const item = tokenUsage.value
-  const usage = item?.usage
-  if (!usage || !usage.total) return null
+  const usage = item?.usage && Number(item?.usage?.total) > 0 ? item.usage : analyzeLocalTokenUsage(messages.value)
   return {
     iteration: Number(item?.iteration) || 0,
     total: Number(usage.total) || 0,
@@ -480,13 +580,39 @@ const usageCard = computed(() => {
     systemPct: Number(usage.systemPct) || 0,
     dialogPct: Number(usage.dialogPct) || 0,
     toolPct: Number(usage.toolPct) || 0,
+    systemPrompt: Number(usage.systemPrompt) || 0,
+    systemSummary: Number(usage.systemSummary) || 0,
+    user: Number(usage.user) || 0,
+    assistant: Number(usage.assistant) || 0,
+    compressible: Number(usage.compressible) || 0,
+    threshold: Number(usage.threshold) || 0,
+    thresholdPct: Number(usage.thresholdPct) || 0,
+    overThreshold: !!usage.overThreshold,
+    compressionSummaryCount: Number(usage.compressionSummaryCount) || 0,
+    systemPromptPct: Number(usage.systemPromptPct) || 0,
+    systemSummaryPct: Number(usage.systemSummaryPct) || 0,
+    userPct: Number(usage.userPct) || 0,
+    assistantPct: Number(usage.assistantPct) || 0,
+    compression: {
+      count: Number(usage?.compression?.count) || 0,
+      totalSaved: Number(usage?.compression?.totalSaved) || 0,
+      lastSaved: Number(usage?.compression?.lastSaved) || 0
+    }
   }
 })
 
 const usageStripTitle = computed(() => {
   const u = usageCard.value
   if (!u) return ''
-  return `System ${u.system} · Dialog ${u.dialog} · Tool ${u.tool}`
+  const parts = [
+    `System ${u.system} = Prompt ${u.systemPrompt} + Summary ${u.systemSummary}`,
+    `User ${u.user}`,
+    `Assistant ${u.assistant}`,
+    `Tool ${u.tool}`,
+    `Active ${u.compressible}/${u.threshold} (${u.thresholdPct}%)`
+  ]
+  if (u.compression.count > 0) parts.push(`Compression ${u.compression.count}x, saved ${u.compression.totalSaved}`)
+  return parts.join(' · ')
 })
 
 // ---- 模型：/model 与设置页共用全局 defaultModel（openultron.json），非按会话存储 ----
@@ -1409,6 +1535,36 @@ const persistSave = async () => {
   }
 }
 
+const archiveSessionInBackground = async ({ sessionId, projectPath, messages }) => {
+  if (!sessionId || !Array.isArray(messages) || !messages.length) return
+  try {
+    const archivedMessages = stripToolExecutionForSave(JSON.parse(JSON.stringify([
+      ...messages,
+      { role: 'user', content: '/new' },
+      { role: 'assistant', content: '已归档当前会话并开启新会话。历史记忆将自动继承。' }
+    ])))
+    if (!archivedMessages.length) return
+
+    window.electronAPI.ai.saveSessionSummary({
+      projectPath,
+      sessionId,
+      messages: archivedMessages
+    }).catch(() => null)
+
+    const configRes = await window.electronAPI.ai.getConfig().catch(() => null)
+    const apiBaseUrl = configRes?.config?.apiBaseUrl || ''
+    await window.electronAPI.ai.saveChatHistory({
+      projectPath,
+      messages: archivedMessages,
+      sessionId,
+      apiBaseUrl: apiBaseUrl || undefined
+    })
+    loadConversationList()
+  } catch (e) {
+    console.warn('[ChatPanel] archiveSessionInBackground failed:', e)
+  }
+}
+
 const persistLoad = async () => {
   isLoadingHistory = true
   try {
@@ -1508,7 +1664,7 @@ const handleSend = async (opts = {}) => {
   const { stopPrevious } = opts
   const text = inputText.value.trim()
   if (!text && !hasActiveSlash.value && pendingAttachments.value.length === 0) return
-  if (!stopPrevious && isStreaming.value && !STOP_CMD_RE.test(text) && !CLEAR_CMD_RE.test(text)) return
+  if (!stopPrevious && isStreaming.value && !STOP_CMD_RE.test(text) && !CLEAR_CMD_RE.test(text) && !/^\/new\s*$/i.test(text)) return
 
   // 应用工作室：无有效 projectPath 时主进程会落到默认 workspace，文件不会写进沙箱
   if (props.studioSandboxMode) {
@@ -1575,28 +1731,16 @@ const handleSend = async (opts = {}) => {
   if (isNewCmd) {
     inputText.value = ''
     adjustTextareaHeight()
-    const localSummary = buildSessionSummary(messages.value)
-    if (localSummary) carrySummaryForNextSession.value = localSummary
-    if (currentSessionId.value != null && currentSessionId.value !== '') {
-      const userMsg = { role: 'user', content: '/new' }
-      const assistantMsg = { role: 'assistant', content: '已归档当前会话并开启新会话。历史记忆将自动继承。' }
-      messages.value = [...messages.value, userMsg, assistantMsg]
-      if (localSummary) {
-        const summaryMessages = stripToolExecutionForSave(JSON.parse(JSON.stringify(messages.value)))
-        const summaryRes = await window.electronAPI.ai.saveSessionSummary({
-          projectPath: historyProjectPath(),
-          sessionId: currentSessionId.value,
-          messages: summaryMessages
-        }).catch(() => null)
-        const aiSummary = String(summaryRes?.summary || '').trim()
-        if (aiSummary) carrySummaryForNextSession.value = aiSummary
-      }
-      await persistSave()
-    }
+    const oldSessionId = currentSessionId.value != null ? String(currentSessionId.value) : ''
+    const oldProjectPath = historyProjectPath()
+    const oldMessages = JSON.parse(JSON.stringify(messages.value || []))
+    carrySummaryForNextSession.value = ''
     startNewConversation()
-    if (carrySummaryForNextSession.value) {
-      messages.value = [{ role: 'assistant', content: '新会话已创建，并继承上一会话摘要。可发送 /history 查看历史摘要。' }]
-    }
+    archiveSessionInBackground({
+      sessionId: oldSessionId,
+      projectPath: oldProjectPath,
+      messages: oldMessages
+    })
     return
   }
 
@@ -2246,6 +2390,13 @@ defineExpose({ clearMessages, loadMessages, messages, handleExternalSend, isStre
   padding: 4px 12px 3px;
   min-width: 0;
 }
+.chat-usage-strip-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  padding: 0 12px 4px;
+  min-width: 0;
+}
 .chat-usage-strip-label {
   font-weight: 600;
   color: var(--ou-text-secondary);
@@ -2270,6 +2421,10 @@ defineExpose({ clearMessages, loadMessages, messages, handleExternalSend, isStre
   color: var(--ou-text-secondary);
   margin-left: auto;
 }
+.chat-usage-meta-item {
+  font-variant-numeric: tabular-nums;
+  color: var(--ou-text-secondary);
+}
 .chat-usage-strip-bar {
   display: flex;
   height: 2px;
@@ -2286,8 +2441,14 @@ defineExpose({ clearMessages, loadMessages, messages, handleExternalSend, isStre
 .chat-usage-seg-sys {
   background: color-mix(in srgb, var(--ou-primary) 55%, var(--ou-bg-main));
 }
-.chat-usage-seg-dlg {
-  background: color-mix(in srgb, var(--ou-info, #3b82f6) 50%, var(--ou-bg-main));
+.chat-usage-seg-summary {
+  background: color-mix(in srgb, var(--ou-success, #10b981) 45%, var(--ou-bg-main));
+}
+.chat-usage-seg-user {
+  background: color-mix(in srgb, var(--ou-info, #3b82f6) 55%, var(--ou-bg-main));
+}
+.chat-usage-seg-assistant {
+  background: color-mix(in srgb, var(--ou-link) 50%, var(--ou-bg-main));
 }
 .chat-usage-seg-tool {
   background: color-mix(in srgb, var(--ou-warning) 45%, var(--ou-bg-main));

@@ -137,6 +137,69 @@ function estimateTokens(messages) {
   }, 0)
 }
 
+function analyzeMessageTokenUsage(messages, config = {}) {
+  const cfg = { ...DEFAULT_CONFIG, ...config }
+  const list = Array.isArray(messages) ? messages : []
+  const buckets = {
+    system: 0,
+    systemPrompt: 0,
+    systemSummary: 0,
+    user: 0,
+    assistant: 0,
+    tool: 0,
+    other: 0
+  }
+  let compressionSummaryCount = 0
+  for (const m of list) {
+    if (!m) continue
+    const one = estimateTokens([m])
+    if (m.role === 'system') {
+      buckets.system += one
+      if (String(m.content || '').startsWith(COMPRESSION_SUMMARY_MARKER)) {
+        buckets.systemSummary += one
+        compressionSummaryCount++
+      } else {
+        buckets.systemPrompt += one
+      }
+      continue
+    }
+    if (m.role === 'user') {
+      buckets.user += one
+      continue
+    }
+    if (m.role === 'assistant') {
+      buckets.assistant += one
+      continue
+    }
+    if (m.role === 'tool') {
+      buckets.tool += one
+      continue
+    }
+    buckets.other += one
+  }
+  const total = buckets.system + buckets.user + buckets.assistant + buckets.tool + buckets.other
+  const compressible = buckets.user + buckets.assistant + buckets.tool + buckets.other
+  const ratio = (n, d = total) => d > 0 ? Number(((n / d) * 100).toFixed(1)) : 0
+  const threshold = Number(cfg.threshold) || DEFAULT_CONFIG.threshold
+  return {
+    total,
+    compressible,
+    threshold,
+    overThreshold: compressible > threshold,
+    thresholdPct: ratio(compressible, threshold),
+    compressionSummaryCount,
+    ...buckets,
+    systemPct: ratio(buckets.system),
+    systemPromptPct: ratio(buckets.systemPrompt),
+    systemSummaryPct: ratio(buckets.systemSummary),
+    userPct: ratio(buckets.user),
+    assistantPct: ratio(buckets.assistant),
+    toolPct: ratio(buckets.tool),
+    otherPct: ratio(buckets.other),
+    compressiblePctOfTotal: ratio(compressible),
+  }
+}
+
 /**
  * 判断是否需要压缩（只看对话体量：system 注入再大也不单独触发，与 compressMessages 可裁剪范围一致）
  */
@@ -269,6 +332,7 @@ async function compressMessages(messages, config = {}, callLLM) {
 
 module.exports = {
   estimateTokens,
+  analyzeMessageTokenUsage,
   shouldCompress,
   compressMessages,
   flushMemoryBeforeCompaction,

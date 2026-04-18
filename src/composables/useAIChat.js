@@ -471,6 +471,9 @@ export function useAIChat(hooks = {}) {
   // 加载历史消息（用于恢复会话上下文）
   // 后端保存格式：assistant 用 tool_calls（蛇形），tool 结果在单独的 role:'tool' 消息里；需合并为前端格式 toolCalls + result
   const loadMessages = (savedMessages) => {
+    tokenUsage.value = null
+    currentStreamContent.value = ''
+    isStreaming.value = false
     if (!savedMessages || savedMessages.length === 0) return
     const raw = savedMessages.map((m) => {
       const list = m.toolCalls || m.tool_calls || []
@@ -503,6 +506,11 @@ export function useAIChat(hooks = {}) {
 
   // 供飞书会话等外部驱动：绑定当前会话 ID 并添加 assistant 占位，以接收主进程转发的 token/tool 事件
   const setCurrentSessionId = (sessionId) => {
+    if (currentSessionId !== sessionId) {
+      tokenUsage.value = null
+      currentStreamContent.value = ''
+      isStreaming.value = false
+    }
     currentSessionId = sessionId
   }
   const ensureSessionId = (preferredSessionId) => {
