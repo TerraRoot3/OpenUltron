@@ -44,6 +44,36 @@ function createMainWindowController(deps) {
 
   let appUiServer = null
 
+  const ensureLocalResourceMediaAllowed = (headers = {}) => {
+    const keys = Object.keys(headers)
+    const cspKey = keys.find((k) => k.toLowerCase() === 'content-security-policy')
+    if (!cspKey) return headers
+
+    const cspList = Array.isArray(headers[cspKey]) ? headers[cspKey] : [headers[cspKey]]
+    const normalize = (value) => String(value || '').trim()
+    const fixed = cspList.map((entry) => {
+      const str = normalize(entry)
+      if (!str) return ''
+      const parts = str.split(';').map((x) => x.trim()).filter(Boolean)
+      const hasMedia = parts.some((p) => p.toLowerCase().startsWith('media-src'))
+      if (hasMedia) {
+        return parts.map((p) => {
+          if (!p.toLowerCase().startsWith('media-src')) return p
+          const srcs = p.replace(/^media-src\s+/i, '').trim()
+          if (/(^|\\s)local-resource:\\b/.test(srcs)) return p
+          return `${p} local-resource:`
+        }).join('; ')
+      }
+      parts.push('media-src \'self\' local-resource: data:')
+      return parts.join('; ')
+    }).filter(Boolean)
+
+    return {
+      ...headers,
+      [cspKey]: fixed
+    }
+  }
+
   function startAppUiServer() {
     return new Promise((resolve, reject) => {
       if (appUiServer) return resolve(`http://127.0.0.1:${APP_UI_PORT}`)
@@ -171,6 +201,19 @@ function createMainWindowController(deps) {
     })
     assignMainWindow(mainWindow)
 
+    const appSession = mainWindow.webContents.session
+    const isChatLikePage = (url) => {
+      if (!url || typeof url !== 'string') return false
+      return /\/chat(?:\?|$|\/)/i.test(url)
+    }
+    appSession.webRequest.onHeadersReceived((details, callback) => {
+      if (details.resourceType === 'mainFrame' && isChatLikePage(details.url)) {
+        callback({ responseHeaders: ensureLocalResourceMediaAllowed(details.responseHeaders || {}) })
+      } else {
+        callback({ responseHeaders: details.responseHeaders })
+      }
+    })
+
     if (isDev) {
       safeLog('Loading development server...')
       mainWindow.loadURL('http://localhost:' + DEV_UI_PORT)
@@ -188,6 +231,25 @@ function createMainWindowController(deps) {
 
     mainWindow.webContents.on('did-finish-load', () => {
       safeLog('Page finished loading')
+      try {
+        mainWindow.webContents.executeJavaScript(`
+          (() => {
+            const meta = document.querySelector('meta[http-equiv="Content-Security-Policy"]')
+            const mediaSrc = "media-src 'self' local-resource: data: blob:"
+            if (!meta) {
+              const created = document.createElement('meta')
+              created.setAttribute('http-equiv', 'Content-Security-Policy')
+              created.setAttribute('content', mediaSrc)
+              document.head.appendChild(created)
+              return
+            }
+            const content = String(meta.getAttribute('content') || '')
+            if (!/media-src/i.test(content)) {
+              meta.setAttribute('content', `${content}${content ? '; ' : ''}${mediaSrc}`)
+            }
+          })()
+        `)
+      } catch { /* ignore */ }
       Promise.resolve(onDidFinishLoad()).catch(e => console.warn('[Feishu] 窗口加载后启动接收失败:', e.message))
     })
 

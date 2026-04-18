@@ -154,6 +154,7 @@
               </div>
               <div class="message-artifact-actions">
                 <a
+                  v-if="art.kind !== 'audio'"
                   class="message-artifact-open"
                   :href="art.path"
                   target="_blank"
@@ -640,8 +641,6 @@ const formatDuration = (seconds) => {
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
-const artifactIdentity = (art) => String(art?.artifactId || art?.openPath || art?.path || '')
-
 const inferArtifactKind = (value, fallback = '') => {
   const explicit = String(fallback || '').trim().toLowerCase()
   if (explicit && explicit !== 'file') return explicit
@@ -709,12 +708,76 @@ const artifactDisplayPath = (art) => {
   return target
 }
 
-const artifactIdentity = (art) => String(art?.artifactId || art?.openPath || art?.path || '')
+const normalizeArtifactStoragePath = (value) => {
+  let text = String(value || '').trim()
+  if (!text) return ''
+  try {
+    text = decodeURIComponent(text)
+  } catch { /* ignore */ }
+  if (text.startsWith('file://')) text = text.slice('file://'.length)
+
+  if (text.startsWith('local-resource://')) {
+    text = text.slice('local-resource://'.length)
+    return text.replace(/^\/+/, '')
+  }
+
+  const unixHit = text.indexOf('/.openultron/')
+  if (unixHit >= 0) {
+    return `.openultron/${text.slice(unixHit + '/.openultron/'.length).replace(/^\/+/, '')}`
+  }
+
+  const windowsText = text.replace(/\\/g, '/')
+  const windowsHit = windowsText.indexOf('/.openultron/')
+  if (windowsHit >= 0) {
+    return `.openultron/${windowsText.slice(windowsHit + '/.openultron/'.length).replace(/^\/+/, '')}`
+  }
+
+  if (windowsText.startsWith('~/.openultron/')) {
+    return `.openultron/${windowsText.slice('~/.openultron/'.length).replace(/^\/+/, '')}`
+  }
+
+  return text.replace(/\\/g, '/')
+}
+
+const artifactMatchKey = (art) => {
+  const pathKey = normalizeArtifactStoragePath(art?.openPath || art?.path || '')
+  const kind = String(art?.kind || 'file').toLowerCase()
+  if (pathKey) return `${kind}:${pathKey}`
+  if (art?.artifactId) return `id:${String(art.artifactId)}`
+  return `${kind}:${String(art?.name || '').trim()}`
+}
+
+const artifactIdentity = (art) => artifactMatchKey(art)
+
+const toLocalResourceFromOpenUltronPath = (value) => {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  const normalized = raw.startsWith('file://') ? raw.slice('file://'.length) : raw
+  const unixHit = normalized.indexOf('/.openultron/')
+  if (unixHit >= 0) {
+    const rel = normalized.slice(unixHit + '/.openultron/'.length).replace(/^\/+/, '')
+    if (rel) return `local-resource://${rel}`
+  }
+  const winNorm = normalized.replace(/\\/g, '/')
+  const winHit = winNorm.toLowerCase().indexOf('/.openultron/')
+  if (winHit >= 0) {
+    const rel = winNorm.slice(winHit + '/.openultron/'.length).replace(/^\/+/, '')
+    if (rel) return `local-resource://${rel}`
+  }
+  if (winNorm.startsWith('~/.openultron/')) {
+    const rel = winNorm.slice('~/.openultron/'.length).replace(/^\/+/, '')
+    if (rel) return `local-resource://${rel}`
+  }
+  return ''
+}
 
 const toRenderableArtifactPath = (value) => {
   const text = String(value || '').trim()
   if (!text) return ''
-  if (text.startsWith('local-resource://') || text.startsWith('file://') || /^https?:\/\//i.test(text)) return text
+  if (text.startsWith('local-resource://') || /^https?:\/\//i.test(text)) return text
+  const converted = toLocalResourceFromOpenUltronPath(text)
+  if (converted) return converted
+  if (text.startsWith('file://')) return text
   if (text.startsWith('/')) return `file://${text}`
   return text
 }
@@ -834,7 +897,7 @@ const messageArtifactsNonImage = computed(() => {
   const pushArtifact = (raw) => {
     const rec = toArtifactRecord(raw)
     if (!rec || rec.kind === 'image' || !rec.path) return
-    const key = rec.artifactId ? `id:${rec.artifactId}` : `${rec.kind}:${rec.openPath}:${rec.name}`
+    const key = artifactMatchKey(rec)
     if (!merged.has(key)) merged.set(key, rec)
   }
 
@@ -1424,13 +1487,14 @@ const renderThink = (text) => renderMarkdown(text)
 .message-screenshots { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; }
 .message-screenshot-img { max-width: 100%; max-height: 320px; width: auto; height: auto; border-radius: 8px; object-fit: contain; cursor: pointer; }
 
-.message-artifacts { margin-top: 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
-.message-artifacts { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.message-artifacts { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin-top: 10px; }
 .message-artifact-card {
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   gap: 8px;
   padding: 10px 12px;
+  width: min(100%, 560px);
   border: 1px solid rgba(255,255,255,0.08);
   border-radius: 10px;
   background: rgba(255,255,255,0.03);

@@ -68,6 +68,7 @@ function registerLocalResourceProtocol(deps) {
           "default-src 'self' local-resource: data: blob:",
           "script-src 'self' local-resource: 'unsafe-inline'",
           "style-src 'self' local-resource: 'unsafe-inline'",
+          "media-src 'self' local-resource: data: blob:",
           "img-src 'self' local-resource: data: blob: https:",
           "font-src 'self' local-resource: data:",
           "connect-src 'self' local-resource:",
