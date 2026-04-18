@@ -339,6 +339,16 @@ function pickOpenAiWireMode(saved, defaultTemplate) {
   return undefined
 }
 
+function pickProviderExtraFields(saved) {
+  if (!saved || typeof saved !== 'object') return {}
+  const extra = { ...saved }
+  delete extra.name
+  delete extra.baseUrl
+  delete extra.apiKey
+  delete extra.openAiWireMode
+  return extra
+}
+
 function mergeProviders(defaultList, savedList) {
   if (!Array.isArray(savedList) || savedList.length === 0) return defaultList.map(p => ({ ...p }))
   const byUrl = new Map(savedList.filter(p => p && p.baseUrl).map(p => [p.baseUrl, p]))
@@ -346,7 +356,7 @@ function mergeProviders(defaultList, savedList) {
     const saved = byUrl.get(p.baseUrl)
     if (saved) {
       byUrl.delete(p.baseUrl)
-      const out = { name: p.name, baseUrl: p.baseUrl, apiKey: saved.apiKey ?? '' }
+      const out = { ...pickProviderExtraFields(saved), name: p.name, baseUrl: p.baseUrl, apiKey: saved.apiKey ?? '' }
       const wm = pickOpenAiWireMode(saved, p)
       if (wm) out.openAiWireMode = wm
       return out
@@ -354,7 +364,7 @@ function mergeProviders(defaultList, savedList) {
     return { ...p }
   })
   byUrl.forEach((saved) => {
-    const out = { name: saved.name || saved.baseUrl, baseUrl: saved.baseUrl, apiKey: saved.apiKey ?? '' }
+    const out = { ...pickProviderExtraFields(saved), name: saved.name || saved.baseUrl, baseUrl: saved.baseUrl, apiKey: saved.apiKey ?? '' }
     const v = saved.openAiWireMode
     if (v === 'responses' || v === 'chat' || v === 'codex' || v === 'auto') {
       out.openAiWireMode = v

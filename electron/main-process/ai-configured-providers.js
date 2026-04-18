@@ -1,6 +1,7 @@
 /**
  * 模型验证 IPC：已配置 API Key 的供应商列表、按模型 ID 排序
  */
+const { resolveProviderApiKey } = require('../ai/codex-auth-loader')
 
 /** @param {{ getAIConfigLegacy: () => object }} deps */
 function createConfiguredProviderHelpers(deps) {
@@ -15,7 +16,7 @@ function createConfiguredProviderHelpers(deps) {
       .map(p => ({
         name: p.name || p.baseUrl,
         baseUrl: p.baseUrl,
-        apiKey: String(providerKeys[p.baseUrl] || p.apiKey || '').trim()
+        apiKey: String(resolveProviderApiKey(p, providerKeys, p.baseUrl).apiKey || '').trim()
       }))
       .filter(p => !!p.apiKey)
   }

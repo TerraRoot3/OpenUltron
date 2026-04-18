@@ -134,13 +134,17 @@ async function transcribeAudioLocal(filePath, options = {}) {
 }
 
 function readProviderConfig() {
+  const { resolveProviderApiKey } = require('./codex-auth-loader')
   const ai = readAIConfig()
   const legacy = toLegacyConfig(ai)
   const baseUrl = String(legacy?.config?.apiBaseUrl || '').trim()
   const keyByProvider = legacy?.providerKeys && typeof legacy.providerKeys === 'object'
     ? legacy.providerKeys
     : {}
-  const apiKey = String(keyByProvider[baseUrl] || legacy?.config?.apiKey || '').trim()
+  const provider = Array.isArray(legacy?.raw?.providers)
+    ? legacy.raw.providers.find((p) => p && p.baseUrl === baseUrl)
+    : null
+  const apiKey = String(resolveProviderApiKey(provider, keyByProvider, baseUrl).apiKey || '').trim()
   return { baseUrl, apiKey }
 }
 

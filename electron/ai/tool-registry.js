@@ -154,7 +154,12 @@ function createDefaultRegistry(options = {}) {
   function getApiKey() {
     if (options.getAIConfig) {
       const legacy = options.getAIConfig()
-      return (legacy && legacy.config && legacy.config.apiKey) || ''
+      const { resolveProviderApiKey } = require('./codex-auth-loader')
+      const baseUrl = (legacy && legacy.config && legacy.config.apiBaseUrl) || 'https://api.qnaigc.com/v1'
+      const provider = Array.isArray(legacy?.raw?.providers)
+        ? legacy.raw.providers.find((p) => p && p.baseUrl === baseUrl)
+        : null
+      return resolveProviderApiKey(provider, (legacy && legacy.providerKeys) || {}, baseUrl).apiKey || ''
     }
     const config = options.store.get('aiConfig', {})
     const providerKeys = options.store.get('aiProviderKeys', {})

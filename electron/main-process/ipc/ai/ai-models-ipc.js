@@ -6,10 +6,14 @@ function registerAiModelsIpc (deps) {
   registerChannel('ai-fetch-models', async (event, options) => {
     const { forceRefresh, providerBaseUrl } = options || {}
     try {
+      const { resolveProviderApiKey } = require('../../../ai/codex-auth-loader')
       const legacy = getAIConfigLegacy()
       const pickedBaseUrl = String(providerBaseUrl || '').trim()
       const baseUrl = pickedBaseUrl || legacy.config.apiBaseUrl || 'https://api.qnaigc.com/v1'
-      const apiKey = legacy.providerKeys[baseUrl] || legacy.config.apiKey
+      const provider = Array.isArray(legacy?.raw?.providers)
+        ? legacy.raw.providers.find((p) => p && p.baseUrl === baseUrl)
+        : null
+      const apiKey = resolveProviderApiKey(provider, legacy.providerKeys || {}, baseUrl).apiKey || ''
       if (!apiKey) {
         return { success: false, message: '未配置 API Key' }
       }

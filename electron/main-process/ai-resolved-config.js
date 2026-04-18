@@ -2,6 +2,7 @@
  * 默认路由下的解析后 AI 配置（模型池、fallback、openAiWireMode 等）及按供应商解析
  */
 const { getResolvedAIConfigForProvider: getResolvedAIConfigForProviderFromModule } = require('../ai/resolve-provider-config')
+const { resolveProviderApiKey } = require('../ai/codex-auth-loader')
 
 /** @param {object} deps */
 function createAiResolvedConfig(deps) {
@@ -46,12 +47,14 @@ function createAiResolvedConfig(deps) {
     for (const m of routeModels) {
       const routeProvider = String(bindings[m] || baseUrl || configuredBaseUrl).trim()
       const p = providerMap.get(routeProvider)
-      const key = String((providerKeys[routeProvider] || p?.apiKey || '')).trim()
+      const resolvedProviderKey = resolveProviderApiKey(p, providerKeys, routeProvider)
+      const key = String(resolvedProviderKey.apiKey || '').trim()
       if (!key) continue
       const route = {
         model: m,
         config: {
           apiKey: key,
+          apiKeySource: resolvedProviderKey.source || 'saved',
           apiBaseUrl: routeProvider,
           defaultModel: m,
           openAiWireMode: getProviderOpenAiWireMode(legacy, routeProvider),
@@ -64,12 +67,15 @@ function createAiResolvedConfig(deps) {
       }
       if (m !== defaultModel) fallbackRoutes.push(route)
     }
-    const primaryApiKey = String(((legacy.providerKeys && legacy.providerKeys[baseUrl]) || providerMap.get(baseUrl)?.apiKey || '')).trim()
+    const primaryProvider = providerMap.get(baseUrl)
+    const primaryResolvedProviderKey = resolveProviderApiKey(primaryProvider, providerKeys, baseUrl)
+    const primaryApiKey = String(primaryResolvedProviderKey.apiKey || '').trim()
     const primary = routeModels.length > 0
       ? {
           model: defaultModel,
           config: fallbackRoutes.find(r => r.model === defaultModel)?.config || {
             apiKey: primaryApiKey || ((legacy.providerKeys && legacy.config && legacy.providerKeys[configuredBaseUrl]) || (legacy.config && legacy.config.apiKey) || ''),
+            apiKeySource: primaryResolvedProviderKey.source || 'saved',
             apiBaseUrl: baseUrl,
             defaultModel,
             openAiWireMode: getProviderOpenAiWireMode(legacy, baseUrl),
@@ -83,6 +89,7 @@ function createAiResolvedConfig(deps) {
       : null
     return {
       apiKey: primary?.config?.apiKey || ((legacy.providerKeys && legacy.config && legacy.providerKeys[legacy.config.apiBaseUrl]) || (legacy.config && legacy.config.apiKey) || ''),
+      apiKeySource: primaryResolvedProviderKey.source || 'saved',
       apiBaseUrl: baseUrl,
       defaultModel,
       openAiWireMode: getProviderOpenAiWireMode(legacy, baseUrl),

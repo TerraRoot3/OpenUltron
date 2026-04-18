@@ -715,7 +715,13 @@ const confirmManualDialog = async () => {
 const onKeyBlur = async () => {
   const key = config.apiKey.trim()
   const cur = rawData.providers.find(p => p.baseUrl === config.apiBaseUrl)
-  if (cur) cur.apiKey = key
+  if (cur) {
+    cur.apiKey = key
+    if (cur.apiKeySource === 'codex-local-auth') {
+      delete cur.apiKeySource
+      delete cur.apiKeySourceMeta
+    }
+  }
   if (!key) {
     connectionState.value = 'idle'
     connectionMsg.value = ''
@@ -749,7 +755,17 @@ const useCodexOpenAIAuth = async () => {
     config.apiKey = key
     providerKeys[config.apiBaseUrl] = key
     const cur = rawData.providers.find(p => p.baseUrl === config.apiBaseUrl)
-    if (cur) cur.apiKey = key
+    if (cur) {
+      cur.apiKey = key
+      cur.apiKeySource = 'codex-local-auth'
+      cur.apiKeySourceMeta = {
+        credentialType: String(res.credentialType || ''),
+        authMode: String(res.authMode || ''),
+        accountId: String(res.accountIdRaw || ''),
+        authFileMtimeMs: Number(res.authFileMtimeMs || 0) || 0,
+        importedAt: Date.now()
+      }
+    }
     await doSaveConfig()
     connectionState.value = 'success'
     const useAccessToken = String(res.credentialType || '') === 'chatgpt_access_token'
@@ -825,14 +841,22 @@ const refreshModels = async () => {
 
 function buildRawPayload() {
   // 基于副本更新当前供应商，避免误改其他供应商的 apiKey
-  const providers = rawData.providers.map(p => ({
-    name: p.name,
-    baseUrl: p.baseUrl,
-    apiKey: p.baseUrl === config.apiBaseUrl ? (config.apiKey ?? p.apiKey ?? '') : (p.apiKey ?? ''),
-    ...(p.openAiWireMode === 'responses' || p.openAiWireMode === 'chat' || p.openAiWireMode === 'codex' || p.openAiWireMode === 'auto'
-      ? { openAiWireMode: p.openAiWireMode }
-      : {})
-  }))
+  const providers = rawData.providers.map(p => {
+    const next = {
+      ...p,
+      name: p.name,
+      baseUrl: p.baseUrl,
+      apiKey: p.baseUrl === config.apiBaseUrl ? (config.apiKey ?? p.apiKey ?? '') : (p.apiKey ?? '')
+    }
+    if (!(p.openAiWireMode === 'responses' || p.openAiWireMode === 'chat' || p.openAiWireMode === 'codex' || p.openAiWireMode === 'auto')) {
+      delete next.openAiWireMode
+    }
+    if (next.apiKeySource !== 'codex-local-auth') {
+      delete next.apiKeySource
+      delete next.apiKeySourceMeta
+    }
+    return next
+  })
   const modelPool = normalizePool(config.modelPool)
   if (config.defaultModel && !modelPool.includes(config.defaultModel)) modelPool.unshift(config.defaultModel)
   const modelBindings = { ...(config.modelBindings || {}) }

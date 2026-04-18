@@ -2,6 +2,7 @@
  * 按供应商解析完整 AI 配置（与子 Agent / 模型绑定一致），供主会话按「所选模型」切换供应商。
  */
 const { DEFAULT_CONFIG } = require('./context-compressor')
+const { resolveProviderApiKey } = require('./codex-auth-loader')
 
 function mergeContextCompressionFromLegacy(legacy) {
   const raw = legacy && legacy.raw && legacy.raw.contextCompression
@@ -43,7 +44,8 @@ function getResolvedAIConfigForProvider(providerKey, ctx) {
   const byName = new Map(providers.filter(p => p && p.name).map(p => [String(p.name).trim().toLowerCase(), p]))
   const p = byUrl.get(key) || byName.get(key.toLowerCase()) || null
   if (!p || !p.baseUrl) return null
-  const apiKey = (legacy.providerKeys && legacy.providerKeys[p.baseUrl]) || p.apiKey || ''
+  const resolvedProviderKey = resolveProviderApiKey(p, legacy.providerKeys || {}, p.baseUrl)
+  const apiKey = resolvedProviderKey.apiKey || ''
   if (!apiKey || !String(apiKey).trim()) return null
   const bindings = legacy.raw?.modelBindings && typeof legacy.raw.modelBindings === 'object' ? legacy.raw.modelBindings : {}
   const globalPool = Array.isArray(legacy.raw?.modelPool)
@@ -78,6 +80,7 @@ function getResolvedAIConfigForProvider(providerKey, ctx) {
   if (!defaultModel) defaultModel = globalDefaultModel || 'deepseek-v3'
   return {
     apiKey: String(apiKey).trim(),
+    apiKeySource: resolvedProviderKey.source || 'saved',
     apiBaseUrl: p.baseUrl,
     defaultModel,
     openAiWireMode: getProviderOpenAiWireMode(legacy, p.baseUrl),

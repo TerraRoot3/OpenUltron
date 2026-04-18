@@ -329,7 +329,16 @@ class Orchestrator {
   getConfig() {
     if (this.getAIConfig) {
       const legacy = this.getAIConfig()
-      return legacy && legacy.config ? legacy.config : {}
+      if (!legacy || !legacy.config) return {}
+      const { resolveProviderApiKey } = require('./codex-auth-loader')
+      const config = { ...legacy.config }
+      const baseUrl = (config.apiBaseUrl || 'https://api.qnaigc.com/v1').trim()
+      const provider = Array.isArray(legacy?.raw?.providers)
+        ? legacy.raw.providers.find((p) => p && p.baseUrl === baseUrl)
+        : null
+      config.apiBaseUrl = baseUrl
+      config.apiKey = String(resolveProviderApiKey(provider, legacy.providerKeys || {}, baseUrl).apiKey || '').trim()
+      return config
     }
     const config = this.store.get('aiConfig', {
       apiBaseUrl: 'https://api.qnaigc.com/v1',

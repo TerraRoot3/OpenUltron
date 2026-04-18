@@ -378,8 +378,13 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
     })
   }
   const legacy = getAIConfigLegacy()
-  const resolvedKey = legacy && legacy.providerKeys && legacy.config && legacy.providerKeys[legacy.config.apiBaseUrl]
-  const apiKey = resolvedKey || (legacy && legacy.config && legacy.config.apiKey) || ''
+  const { resolveProviderApiKey } = require('../ai/codex-auth-loader')
+  const currentBaseUrl = legacy && legacy.config && legacy.config.apiBaseUrl
+  const currentProvider = Array.isArray(legacy?.raw?.providers)
+    ? legacy.raw.providers.find((p) => p && p.baseUrl === currentBaseUrl)
+    : null
+  const apiKey = resolveProviderApiKey(currentProvider, (legacy && legacy.providerKeys) || {}, currentBaseUrl).apiKey ||
+    ((legacy && legacy.config && legacy.config.apiKey) || '')
   if (!apiKey) {
     if (binding.channel === 'feishu' && userMessageId && typingReactionId) {
       await feishuNotify.deleteMessageReaction(userMessageId, typingReactionId).catch(() => {})

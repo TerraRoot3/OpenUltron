@@ -1,6 +1,7 @@
 /**
  * 列出已配置的供应商及其可用模型，供 AI 在 sessions_spawn 时选择子 Agent 使用的供应商与模型。
  */
+const { resolveProviderApiKey } = require('../codex-auth-loader')
 
 const definition = {
   description: '获取当前可用的 AI 供应商及其「测试过可用」的模型列表。用户问可用模型、供应商/模型配置时，可调用本工具并依据返回结果回答。仅包含：已配置 API Key 且至少有一个已验证模型的供应商。也可用于派生子 Agent（sessions_spawn）时选择 provider 与 model。',
@@ -50,7 +51,7 @@ function createListProvidersAndModelsTool(store, getAIConfigLegacy) {
       const bindings = raw?.modelBindings && typeof raw.modelBindings === 'object' ? raw.modelBindings : {}
       for (const p of providers) {
         if (!p || !p.baseUrl) continue
-        const apiKey = providerKeys[p.baseUrl] || p.apiKey || ''
+        const apiKey = resolveProviderApiKey(p, providerKeys, p.baseUrl).apiKey || ''
         if (!apiKey || String(apiKey).trim() === '') continue
         const validated = validatedByProvider[p.baseUrl]
         const validatedModels = Array.isArray(validated) ? validated.map(m => m.id || m.name || '').filter(Boolean) : []

@@ -52,42 +52,39 @@ function registerAiConfigProxyIpc (deps) {
   registerChannel('ai-load-codex-openai-key', async () => {
     try {
       const {
-        extractCredentialFromCodexAuthJson,
-        extractCodexAccountId
+        readCodexAuthCredential
       } = require('../../../ai/codex-auth-loader')
-      const authPath = path.join(os.homedir(), '.codex', 'auth.json')
-      if (!fs.existsSync(authPath)) {
+      const loaded = readCodexAuthCredential()
+      if (loaded.error === 'not_found') {
         return {
           success: false,
           message:
             '未找到 ~/.codex/auth.json。请先在终端运行 Codex CLI 完成登录（浏览器会打开 auth.openai.com，回调由本机 localhost:1455 上的 Codex 接收并写入该文件）；OpenUltron 不会打开该授权页。'
         }
       }
-      let parsed = null
-      try {
-        parsed = JSON.parse(fs.readFileSync(authPath, 'utf-8'))
-      } catch (e) {
-        return { success: false, message: `Codex 授权文件解析失败: ${e.message || String(e)}` }
+      if (loaded.error === 'parse_failed') {
+        return { success: false, message: `Codex 授权文件解析失败: ${loaded.message || '未知错误'}` }
       }
-      const { credential, credentialType: extractedType } = extractCredentialFromCodexAuthJson(parsed)
-      if (!credential) {
+      if (!loaded.success || !loaded.credential) {
         return {
           success: false,
           message:
             'auth.json 中未找到可用凭证（如 OPENAI_API_KEY 或 tokens.access_token）。若浏览器已授权但文件仍为空：请保持运行「codex login」的终端、确认 1455 端口未被占用，或重新执行一次 Codex 登录。'
         }
       }
-      const accountId = extractCodexAccountId(parsed)
+      const accountId = loaded.accountId || ''
       const maskedAccountId = accountId
         ? `${accountId.slice(0, 4)}***${accountId.slice(-2)}`
         : ''
-      const credentialType = extractedType || 'openai_api_key'
+      const credentialType = loaded.credentialType || 'openai_api_key'
       return {
         success: true,
-        apiKey: credential,
+        apiKey: loaded.credential,
         credentialType,
-        authMode: String(parsed?.auth_mode || '').trim(),
-        accountId: maskedAccountId
+        authMode: loaded.authMode || '',
+        accountId: maskedAccountId,
+        accountIdRaw: accountId,
+        authFileMtimeMs: loaded.mtimeMs || 0
       }
     } catch (error) {
       return { success: false, message: error.message || String(error) }
@@ -174,9 +171,13 @@ function registerAiConfigProxyIpc (deps) {
 
   registerChannel('ai-get-usage', async (event, { granularity, start, end, baseUrl: providerBaseUrl }) => {
     try {
+      const { resolveProviderApiKey } = require('../../../ai/codex-auth-loader')
       const legacy = getAIConfigLegacy()
       const baseUrl = providerBaseUrl || legacy.config.apiBaseUrl || 'https://api.qnaigc.com/v1'
-      const apiKey = legacy.providerKeys[baseUrl] || legacy.config.apiKey || ''
+      const provider = Array.isArray(legacy?.raw?.providers)
+        ? legacy.raw.providers.find((p) => p && p.baseUrl === baseUrl)
+        : null
+      const apiKey = resolveProviderApiKey(provider, legacy.providerKeys || {}, baseUrl).apiKey || ''
       if (!apiKey) return { success: false, message: '未配置该提供商的 API Key' }
       if (!baseUrl.includes('qnaigc.com')) {
         return { success: false, message: '该提供商暂不支持用量查询', unsupported: true }
@@ -209,9 +210,13 @@ function registerAiConfigProxyIpc (deps) {
 
   registerChannel('ai-get-billing', async (event, { type, baseUrl: providerBaseUrl }) => {
     try {
+      const { resolveProviderApiKey } = require('../../../ai/codex-auth-loader')
       const legacy = getAIConfigLegacy()
       const baseUrl = providerBaseUrl || legacy.config.apiBaseUrl || 'https://api.qnaigc.com/v1'
-      const apiKey = legacy.providerKeys[baseUrl] || legacy.config.apiKey || ''
+      const provider = Array.isArray(legacy?.raw?.providers)
+        ? legacy.raw.providers.find((p) => p && p.baseUrl === baseUrl)
+        : null
+      const apiKey = resolveProviderApiKey(provider, legacy.providerKeys || {}, baseUrl).apiKey || ''
       if (!apiKey) return { success: false, message: '未配置该提供商的 API Key' }
       if (!baseUrl.includes('qnaigc.com')) {
         return { success: false, message: '该提供商暂不支持预估账单', unsupported: true }
