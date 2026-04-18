@@ -345,6 +345,7 @@ function bootstrapAiCoreStack(deps) {
     conversationFile,
     persistToolArtifactsToRegistry,
     stripToolExecutionFromMessages,
+    artifactRegistry,
     memoryStore,
     commandExecutionLog,
     getResolvedAIConfig,

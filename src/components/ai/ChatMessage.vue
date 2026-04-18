@@ -128,6 +128,7 @@
                 :src="art.path"
                 :title="art.name || 'audio'"
                 @loadedmetadata="captureArtifactDuration(art, $event)"
+                @durationchange="captureArtifactDuration(art, $event)"
               />
               <video
                 v-else-if="art.kind === 'video'"
@@ -136,6 +137,7 @@
                 :src="art.path"
                 :title="art.name || 'video'"
                 @loadedmetadata="captureArtifactDuration(art, $event)"
+                @durationchange="captureArtifactDuration(art, $event)"
               />
               <a
                 v-else
@@ -718,7 +720,9 @@ const normalizeArtifactStoragePath = (value) => {
 
   if (text.startsWith('local-resource://')) {
     text = text.slice('local-resource://'.length)
-    return text.replace(/^\/+/, '')
+    const rel = text.replace(/^\/+/, '')
+    if (rel.startsWith('artifacts/') || rel.startsWith('workspace/')) return `.openultron/${rel}`
+    return rel
   }
 
   const unixHit = text.indexOf('/.openultron/')
@@ -753,6 +757,20 @@ const toLocalResourceFromOpenUltronPath = (value) => {
   const raw = String(value || '').trim()
   if (!raw) return ''
   const normalized = raw.startsWith('file://') ? raw.slice('file://'.length) : raw
+  const workspaceOrArtifact =
+    normalized.startsWith('workspace/')
+    || normalized.startsWith('artifacts/')
+    || normalized.startsWith('/workspace/')
+    || normalized.startsWith('/artifacts/')
+    || normalized.startsWith('local-resource:///workspace/')
+    || normalized.startsWith('local-resource:///artifacts/')
+  if (workspaceOrArtifact) {
+    const rel = normalized.replace(/^\/+/, '')
+      .replace(/^local-resource:\/\//i, '')
+      .replace(/^local-resource:\/+/i, '')
+      .replace(/^openultron\//i, '')
+    if (rel) return `local-resource://${rel}`
+  }
   const unixHit = normalized.indexOf('/.openultron/')
   if (unixHit >= 0) {
     const rel = normalized.slice(unixHit + '/.openultron/'.length).replace(/^\/+/, '')
@@ -777,7 +795,10 @@ const toRenderableArtifactPath = (value) => {
   if (text.startsWith('local-resource://') || /^https?:\/\//i.test(text)) return text
   const converted = toLocalResourceFromOpenUltronPath(text)
   if (converted) return converted
-  if (text.startsWith('file://')) return text
+  if (text.startsWith('file://')) {
+    const fromFile = toLocalResourceFromOpenUltronPath(text)
+    return fromFile || text
+  }
   if (text.startsWith('/')) return `file://${text}`
   return text
 }
@@ -894,11 +915,24 @@ const screenshotsInMessage = computed(() => {
 // 本条消息中已保存的产物（除图片外）：音频、视频、文件/PDF 等，用于还原展示
 const messageArtifactsNonImage = computed(() => {
   const merged = new Map()
+  const pickPreferredArtifact = (current, incoming) => {
+    const currentPath = String(current?.path || '').trim()
+    const incomingPath = String(incoming?.path || '').trim()
+    if (!currentPath) return incoming
+    if (!incomingPath) return current
+    if (incomingPath.startsWith('local-resource://') && !currentPath.startsWith('local-resource://')) return incoming
+    if (!incomingPath.startsWith('local-resource://') && currentPath.startsWith('local-resource://')) return current
+    return incomingPath.length < currentPath.length ? incoming : current
+  }
   const pushArtifact = (raw) => {
     const rec = toArtifactRecord(raw)
     if (!rec || rec.kind === 'image' || !rec.path) return
     const key = artifactMatchKey(rec)
-    if (!merged.has(key)) merged.set(key, rec)
+    if (!merged.has(key)) {
+      merged.set(key, rec)
+      return
+    }
+    merged.set(key, pickPreferredArtifact(merged.get(key), rec))
   }
 
   for (const a of (props.message.metadata?.artifacts || [])) pushArtifact(a)

@@ -34,6 +34,59 @@ export function useAIChat(hooks = {}) {
       .replace(/\n{3,}/g, '\n\n')
       .trim()
   const genUiKey = () => `m-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const inferArtifactKindFromPath = (value = '', fallback = '') => {
+    const explicit = String(fallback || '').trim().toLowerCase()
+    if (explicit) return explicit
+    const lower = String(value || '').toLowerCase()
+    if (/\.(png|jpg|jpeg|gif|webp|bmp|svg)(\?|$)/.test(lower)) return 'image'
+    if (/\.(mp3|wav|m4a|aac|ogg|opus|flac)(\?|$)/.test(lower)) return 'audio'
+    if (/\.(mp4|mov|webm|mkv)(\?|$)/.test(lower)) return 'video'
+    if (/\.(html|htm)(\?|$)/.test(lower)) return 'html'
+    return 'file'
+  }
+  const basenameFromPath = (value = '') => {
+    const text = String(value || '').trim()
+    if (!text) return ''
+    const normalized = text.startsWith('file://') ? text.slice('file://'.length) : text
+    return normalized.split(/[\\/]/).pop() || normalized
+  }
+  const mergeArtifactMetadata = (targetMessage, artifact) => {
+    if (!targetMessage || !artifact || !artifact.path) return
+    if (!targetMessage.metadata || typeof targetMessage.metadata !== 'object') targetMessage.metadata = {}
+    if (!Array.isArray(targetMessage.metadata.artifacts)) targetMessage.metadata.artifacts = []
+    const keyOf = (a) => a?.artifactId ? `id:${a.artifactId}` : `${a?.kind || ''}:${a?.path || ''}:${a?.name || ''}`
+    const incomingKey = keyOf(artifact)
+    if (targetMessage.metadata.artifacts.some((a) => keyOf(a) === incomingKey)) return
+    targetMessage.metadata.artifacts.push(artifact)
+  }
+  const materializeArtifactFromToolResult = (targetMessage, toolCallName, result) => {
+    let obj = null
+    try {
+      obj = typeof result === 'string' ? JSON.parse(result) : result
+    } catch (_) {
+      obj = null
+    }
+    if (!obj || typeof obj !== 'object') return
+    const sourceLabel = toolCallName === 'edge_tts_synthesize' ? 'Edge TTS' : ''
+    const filePath = obj.file_path || obj.filePath || obj.output_path || obj.outputPath || obj.path
+    if (typeof filePath === 'string' && String(filePath).trim()) {
+      mergeArtifactMetadata(targetMessage, {
+        path: String(filePath).trim(),
+        kind: inferArtifactKindFromPath(filePath, obj.kind),
+        name: obj.file_name || obj.filename || obj.name || basenameFromPath(filePath),
+        ...(sourceLabel ? { sourceLabel } : {})
+      })
+    }
+    const fileUrl = obj.file_url || obj.fileUrl
+    if (typeof fileUrl === 'string' && String(fileUrl).trim() && !String(fileUrl).includes('screenshots')) {
+      mergeArtifactMetadata(targetMessage, {
+        path: String(fileUrl).trim(),
+        kind: inferArtifactKindFromPath(fileUrl, obj.kind),
+        name: obj.file_name || obj.filename || obj.name || basenameFromPath(fileUrl),
+        ...(sourceLabel ? { sourceLabel } : {})
+      })
+    }
+  }
   const normalizeToolCall = (tc) => {
     if (!tc || typeof tc !== 'object') return null
     const id = tc.id || `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
@@ -108,7 +161,9 @@ export function useAIChat(hooks = {}) {
                 const obj = typeof payload.result === 'string' ? JSON.parse(payload.result) : payload.result
                 partial = !!(obj && typeof obj === 'object' && (obj.partial === true || obj.running === true))
               } catch { /* ignore */ }
-              if (!partial) tc._endedAt = Date.now()
+              if (!partial) {
+                tc._endedAt = Date.now()
+              }
               break
             }
           }
@@ -295,7 +350,11 @@ export function useAIChat(hooks = {}) {
             for (const msg of messages.value) {
               if (msg.toolCalls) {
                 const tc = msg.toolCalls.find(t => t.id === toolCallId)
-                if (tc) { tc.result = result; break }
+                if (tc) {
+                  tc.result = result
+                  materializeArtifactFromToolResult(msg, tc.name, result)
+                  break
+                }
               }
             }
           },
@@ -481,6 +540,7 @@ export function useAIChat(hooks = {}) {
       return {
         role: m.role,
         content: m.content ?? '',
+        metadata: m.metadata ? { ...m.metadata } : undefined,
         tool_call_id: m.tool_call_id,
         toolCalls: toolCalls.length ? toolCalls : [],
         _uiKey: m._uiKey || genUiKey()

@@ -11,6 +11,7 @@ function registerAiHistoryIpc (deps) {
     conversationFile,
     persistToolArtifactsToRegistry,
     stripToolExecutionFromMessages,
+    artifactRegistry,
     memoryStore,
     commandExecutionLog,
     getResolvedAIConfig,
@@ -22,6 +23,51 @@ function registerAiHistoryIpc (deps) {
 
   function compactSummaryText(s) {
     return String(s || '').replace(/\s+/g, ' ').trim()
+  }
+
+  function normalizeArtifactPathForCompare(value) {
+    let text = String(value || '').trim()
+    if (!text) return ''
+    try { text = decodeURIComponent(text) } catch (_) {}
+    if (text.startsWith('file://')) text = text.slice('file://'.length)
+    return text.replace(/\\/g, '/')
+  }
+
+  function normalizeLoadedArtifacts(messages = []) {
+    return (messages || []).map((msg) => {
+      const list = Array.isArray(msg?.metadata?.artifacts) ? msg.metadata.artifacts : null
+      if (!list || list.length === 0) return msg
+
+      const merged = new Map()
+      for (const raw of list) {
+        if (!raw || typeof raw !== 'object') continue
+        let artifact = raw
+        const artifactId = String(raw.artifactId || '').trim()
+        if (artifactId && !raw.openPath && artifactRegistry?.getArtifactById) {
+          const row = artifactRegistry.getArtifactById(artifactId)
+          if (row?.original_path) artifact = { ...raw, openPath: row.original_path }
+        }
+        const kind = String(artifact.kind || 'file').trim().toLowerCase()
+        const pathKey = normalizeArtifactPathForCompare(artifact.openPath || artifact.path || '')
+        const key = pathKey ? `${kind}:${pathKey}` : (artifactId ? `id:${artifactId}` : `${kind}:${String(artifact.name || '').trim()}`)
+        const prev = merged.get(key)
+        if (!prev) {
+          merged.set(key, artifact)
+          continue
+        }
+        const prevPath = String(prev.path || '').trim()
+        const nextPath = String(artifact.path || '').trim()
+        if (nextPath.startsWith('local-resource://') && !prevPath.startsWith('local-resource://')) merged.set(key, artifact)
+      }
+
+      return {
+        ...msg,
+        metadata: {
+          ...msg.metadata,
+          artifacts: [...merged.values()]
+        }
+      }
+    })
   }
   
   function extractMessageTextForSummary(msg) {
@@ -273,7 +319,7 @@ function registerAiHistoryIpc (deps) {
       if (!session) return { success: true, messages: [], sessionId: null }
       return {
         success: true,
-        messages: session.messages || [],
+        messages: normalizeLoadedArtifacts(session.messages || []),
         sessionId: session.id,
         apiBaseUrl: session.apiBaseUrl || null
       }

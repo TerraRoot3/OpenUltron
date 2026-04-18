@@ -44,6 +44,36 @@ function createMainWindowController(deps) {
 
   let appUiServer = null
 
+  const ensureMediaSrcDirective = (value) => {
+    if (!value || typeof value !== 'string') return value
+    const parts = String(value)
+      .split(';')
+      .map((p) => p.trim())
+      .filter(Boolean)
+
+    const normalizeTokens = (tokens) => {
+      const set = new Set(tokens.map((t) => t.trim()).filter(Boolean))
+      const want = new Set([`'self'`, 'local-resource:', 'data:', 'blob:', 'file:'])
+      for (const t of want) set.add(t)
+      return [...set].join(' ')
+    }
+
+    let touched = false
+    const patched = parts.map((part) => {
+      if (!/^media-src\b/i.test(part)) return part
+      touched = true
+      const valuePart = part.replace(/^media-src\b/i, '').trim()
+      const tokens = valuePart ? valuePart.split(/\s+/) : []
+      return `media-src ${normalizeTokens(tokens)}`
+    })
+
+    if (!touched) {
+      patched.push(`media-src 'self' local-resource: data: blob: file:`)
+    }
+
+    return patched.join('; ')
+  }
+
   const ensureLocalResourceMediaAllowed = (headers = {}) => {
     const keys = Object.keys(headers)
     const cspKey = keys.find((k) => k.toLowerCase() === 'content-security-policy')
@@ -54,18 +84,7 @@ function createMainWindowController(deps) {
     const fixed = cspList.map((entry) => {
       const str = normalize(entry)
       if (!str) return ''
-      const parts = str.split(';').map((x) => x.trim()).filter(Boolean)
-      const hasMedia = parts.some((p) => p.toLowerCase().startsWith('media-src'))
-      if (hasMedia) {
-        return parts.map((p) => {
-          if (!p.toLowerCase().startsWith('media-src')) return p
-          const srcs = p.replace(/^media-src\s+/i, '').trim()
-          if (/(^|\\s)local-resource:\\b/.test(srcs)) return p
-          return `${p} local-resource:`
-        }).join('; ')
-      }
-      parts.push('media-src \'self\' local-resource: data:')
-      return parts.join('; ')
+      return ensureMediaSrcDirective(str)
     }).filter(Boolean)
 
     return {
@@ -234,19 +253,38 @@ function createMainWindowController(deps) {
       try {
         mainWindow.webContents.executeJavaScript(`
           (() => {
+            const ensureMediaSrcDirective = (value) => {
+              if (!value || typeof value !== 'string') return value
+              const parts = String(value).split(';').map((p) => p.trim()).filter(Boolean)
+              const normalizeTokens = (tokens) => {
+                const set = new Set(tokens.map((t) => String(t || '').trim()).filter(Boolean))
+                const want = new Set(["'self'", 'local-resource:', 'data:', 'blob:', 'file:'])
+                for (const t of want) set.add(t)
+                return [...set].join(' ')
+              }
+
+              let touched = false
+              const patched = parts.map((part) => {
+                if (!/^media-src\\b/i.test(part)) return part
+                touched = true
+                const srcs = part.replace(/^media-src\\b/i, '').trim()
+                const tokens = srcs ? srcs.split(/\\s+/) : []
+                return 'media-src ' + normalizeTokens(tokens)
+              })
+              if (!touched) patched.push("media-src 'self' local-resource: data: blob: file:")
+              return patched.join('; ')
+            }
+
             const meta = document.querySelector('meta[http-equiv="Content-Security-Policy"]')
-            const mediaSrc = "media-src 'self' local-resource: data: blob:"
             if (!meta) {
               const created = document.createElement('meta')
               created.setAttribute('http-equiv', 'Content-Security-Policy')
-              created.setAttribute('content', mediaSrc)
+              created.setAttribute('content', "media-src 'self' local-resource: data: blob: file:")
               document.head.appendChild(created)
               return
             }
             const content = String(meta.getAttribute('content') || '')
-            if (!/media-src/i.test(content)) {
-              meta.setAttribute('content', content + (content ? '; ' : '') + mediaSrc)
-            }
+            meta.setAttribute('content', ensureMediaSrcDirective(content))
           })()
         `)
       } catch { /* ignore */ }

@@ -153,7 +153,17 @@ const eventBus = createEventBus()
 // 注册自定义协议（必须在 app ready 之前调用）
 // local-resource:// 用于安全地向渲染进程提供应用数据根目录下的本地文件
 protocol.registerSchemesAsPrivileged([
-  { scheme: 'local-resource', privileges: { secure: true, standard: true, supportFetchAPI: true, bypassCSP: false } }
+  {
+    scheme: 'local-resource',
+    privileges: {
+      secure: true,
+      standard: true,
+      supportFetchAPI: true,
+      // Electron 文档要求媒体协议显式开启 stream，<audio>/<video> 才会按流式响应处理。
+      stream: true,
+      bypassCSP: false
+    }
+  }
 ])
 
 const { safeLog, safeError } = createSafeConsoleLoggers()

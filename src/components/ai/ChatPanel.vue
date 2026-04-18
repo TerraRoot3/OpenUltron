@@ -334,6 +334,8 @@ const lastFeishuSessionUpdate = new Map()
 const feishuReloadPending = ref(false)
 const lastGatewaySessionUpdate = new Map()
 const lastGatewayRemoteUserMessage = new Map()
+const localSaveInFlight = ref(false)
+const localSaveGuardUntil = ref(0)
 const FEISHU_UPDATE_DEDUPE_TTL_MS = 2500
 const GATEWAY_UPDATE_DEDUPE_TTL_MS = 2500
 const GATEWAY_REMOTE_USER_DEDUPE_TTL_MS = 2500
@@ -1520,9 +1522,10 @@ function stripToolExecutionForSave(msgs) {
 const persistSave = async () => {
   if (isLoadingHistory) return
   if (!messages.value.length) return
+  localSaveInFlight.value = true
   try {
     const filtered = messages.value.filter(m => !(m.role === 'assistant' && !m.content?.trim() && !m.toolCalls?.length))
-    const toSave = stripToolExecutionForSave(JSON.parse(JSON.stringify(filtered)))
+    const toSave = JSON.parse(JSON.stringify(filtered))
     if (!toSave.length) return
     const configRes = await window.electronAPI.ai.getConfig().catch(() => null)
     const apiBaseUrl = configRes?.config?.apiBaseUrl || ''
@@ -1541,6 +1544,9 @@ const persistSave = async () => {
     loadConversationList()
   } catch (e) {
     console.warn('[ChatPanel] persistSave failed:', e)
+  } finally {
+    localSaveInFlight.value = false
+    localSaveGuardUntil.value = Date.now() + 1500
   }
 }
 
@@ -1562,9 +1568,14 @@ const archiveSessionInBackground = async ({ sessionId, projectPath, messages }) 
 
     const configRes = await window.electronAPI.ai.getConfig().catch(() => null)
     const apiBaseUrl = configRes?.config?.apiBaseUrl || ''
+    const historyMessages = JSON.parse(JSON.stringify([
+      ...messages,
+      { role: 'user', content: '/new' },
+      { role: 'assistant', content: '已归档当前会话并开启新会话。历史记忆将自动继承。' }
+    ]))
     await window.electronAPI.ai.saveChatHistory({
       projectPath,
-      messages: archivedMessages,
+      messages: historyMessages,
       sessionId,
       apiBaseUrl: apiBaseUrl || undefined
     })
@@ -2089,6 +2100,7 @@ onMounted(async () => {
     if (!shouldProcessFeishuSessionUpdate(data)) return
     loadConversationList()
     if (currentSessionId.value === data.sessionId) {
+      if (localSaveInFlight.value || Date.now() < Number(localSaveGuardUntil.value || 0)) return
       if (isStreaming.value) {
         feishuReloadPending.value = true
       } else {
@@ -2105,6 +2117,7 @@ onMounted(async () => {
     if (!shouldProcessGatewaySessionUpdate(data)) return
     loadConversationList()
     if (currentSessionId.value === data.sessionId) {
+      if (localSaveInFlight.value || Date.now() < Number(localSaveGuardUntil.value || 0)) return
       const last = messages.value[messages.value.length - 1]
       if (last?.role === 'user') return
       persistLoad()

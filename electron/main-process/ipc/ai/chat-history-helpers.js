@@ -28,6 +28,32 @@ function stripRawToolCallXml (text) {
 function createChatHistoryHelpers (deps) {
   const { path, fs, getAppRoot, getAppRootPath, artifactRegistry, conversationFile } = deps
 
+  function normalizeArtifactPathForCompare (value) {
+    let text = String(value || '').trim()
+    if (!text) return ''
+    try { text = decodeURIComponent(text) } catch (_) {}
+    if (text.startsWith('file://')) text = text.slice('file://'.length)
+    return text.replace(/\\/g, '/')
+  }
+
+  function mergeArtifactIntoMessage (message, artifact) {
+    if (!message || !artifact || !artifact.path) return
+    if (!message.metadata || typeof message.metadata !== 'object') message.metadata = {}
+    if (!Array.isArray(message.metadata.artifacts)) message.metadata.artifacts = []
+    const keyOf = (a) => {
+      const pathKey = normalizeArtifactPathForCompare(a?.openPath || a?.path || '')
+      const kind = String(a?.kind || 'file').trim().toLowerCase()
+      if (pathKey) return `${kind}:${pathKey}`
+      if (a?.artifactId) return `id:${String(a.artifactId)}`
+      return `${kind}:${String(a?.name || '').trim()}`
+    }
+    const incomingKey = keyOf(artifact)
+    const list = message.metadata.artifacts
+    const idx = list.findIndex((item) => keyOf(item) === incomingKey)
+    if (idx >= 0) list[idx] = artifact
+    else list.push(artifact)
+  }
+
   function persistToolArtifactsToRegistry (messages, sessionId) {
     if (!Array.isArray(messages) || !sessionId) return
     const appRoot = getAppRoot()
@@ -45,22 +71,8 @@ function createChatHistoryHelpers (deps) {
       if (['.pdf'].includes(ext)) return 'file'
       return 'file'
     }
-    let lastAssistantIdx = -1
-    for (let i = 0; i < messages.length; i++) {
-      const m = messages[i]
-      if (!m) continue
-      if (m.role === 'assistant') lastAssistantIdx = i
-      if (m.role !== 'tool' || lastAssistantIdx < 0) continue
-      let raw = m.content
-      if (raw == null) continue
-      if (typeof raw !== 'object') raw = typeof raw === 'string' ? raw : String(raw)
-      const str = typeof raw === 'string' ? raw : JSON.stringify(raw)
-      let obj = null
-      try {
-        obj = typeof raw === 'object' ? raw : JSON.parse(str)
-      } catch (_) {}
-      if (!obj || typeof obj !== 'object') continue
-      const artifactsToAdd = []
+    const appendArtifactsFromObject = (obj, artifactsToAdd) => {
+      if (!obj || typeof obj !== 'object') return
       const fileUrl = obj.file_url || obj.fileUrl
       if (fileUrl && typeof fileUrl === 'string') {
         if (fileUrl.startsWith('local-resource://screenshots/') || fileUrl.startsWith('local-resource://artifacts/')) {
@@ -82,8 +94,9 @@ function createChatHistoryHelpers (deps) {
         }
       }
       const filePath = obj.file_path || obj.filePath || obj.output_path || obj.outputPath || obj.path
-      if (filePath && typeof filePath === 'string') {
+        if (filePath && typeof filePath === 'string') {
         const full = path.isAbsolute(filePath) ? filePath : getAppRootPath('screenshots', path.basename(filePath))
+        let added = false
         if (fs.existsSync(full) && fs.statSync(full).isFile()) {
           const rec = artifactRegistry.registerFileArtifact({
             path: full,
@@ -93,9 +106,18 @@ function createChatHistoryHelpers (deps) {
           })
           if (rec && rec.path) {
             const url = toLocalResourceUrl(rec.path)
-            if (url) artifactsToAdd.push({ path: url, kind: rec.kind || 'file', artifactId: rec.artifactId, name: rec.filename })
+            if (url) {
+              added = true
+              artifactsToAdd.push({
+                path: url,
+                openPath: rec.originalPath || full,
+                kind: rec.kind || 'file',
+                artifactId: rec.artifactId,
+                name: rec.filename
+              })
+            }
           }
-        } else if (filePath.startsWith('local-resource://')) {
+        } else if (!added && filePath.startsWith('local-resource://')) {
           artifactsToAdd.push({ path: filePath, kind: inferKindFromPath(filePath), name: path.basename(filePath) })
         }
       }
@@ -113,11 +135,40 @@ function createChatHistoryHelpers (deps) {
           if (url) artifactsToAdd.push({ path: url, kind: 'audio', artifactId: rec.artifactId, name: rec.filename })
         }
       }
+    }
+    let lastAssistantIdx = -1
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i]
+      if (!m) continue
+      if (m.role === 'assistant') lastAssistantIdx = i
+      if (m.role === 'assistant' && lastAssistantIdx >= 0) {
+        const artifactsToAdd = []
+        const embeddedToolCalls = Array.isArray(m.toolCalls) ? m.toolCalls : (Array.isArray(m.tool_calls) ? m.tool_calls : [])
+        for (const tc of embeddedToolCalls) {
+          let obj = null
+          try {
+            obj = typeof tc?.result === 'string' ? JSON.parse(String(tc.result)) : tc?.result
+          } catch (_) {}
+          appendArtifactsFromObject(obj, artifactsToAdd)
+        }
+        if (artifactsToAdd.length > 0) {
+          for (const artifact of artifactsToAdd) mergeArtifactIntoMessage(m, artifact)
+        }
+      }
+      if (m.role !== 'tool' || lastAssistantIdx < 0) continue
+      let raw = m.content
+      if (raw == null) continue
+      if (typeof raw !== 'object') raw = typeof raw === 'string' ? raw : String(raw)
+      const str = typeof raw === 'string' ? raw : JSON.stringify(raw)
+      let obj = null
+      try {
+        obj = typeof raw === 'object' ? raw : JSON.parse(str)
+      } catch (_) {}
+      const artifactsToAdd = []
+      appendArtifactsFromObject(obj, artifactsToAdd)
       if (artifactsToAdd.length === 0) continue
       const assistant = messages[lastAssistantIdx]
-      if (!assistant.metadata) assistant.metadata = {}
-      if (!Array.isArray(assistant.metadata.artifacts)) assistant.metadata.artifacts = []
-      assistant.metadata.artifacts.push(...artifactsToAdd)
+      for (const artifact of artifactsToAdd) mergeArtifactIntoMessage(assistant, artifact)
     }
   }
 

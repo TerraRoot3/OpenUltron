@@ -345,6 +345,14 @@ function listArtifactsByMessage(sessionId, messageId) {
   return rows
 }
 
+function getArtifactById(artifactId) {
+  const id = String(artifactId || '').trim()
+  if (!id) return null
+  const database = ensureDb()
+  const row = database.prepare('SELECT * FROM artifacts WHERE id = ? LIMIT 1').get(id)
+  return row || null
+}
+
 function searchArtifacts({ sessionId = '', chatId = '', kinds = [], query = '', limit = 20 } = {}) {
   const sid = String(sessionId || '').trim()
   const cid = String(chatId || '').trim()
@@ -398,6 +406,7 @@ module.exports = {
   registerBase64Artifact,
   registerReferenceArtifact,
   bindArtifactsToMessage,
+  getArtifactById,
   listRecentArtifactsBySession,
   listArtifactsByMessage,
   searchArtifacts
