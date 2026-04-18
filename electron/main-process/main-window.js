@@ -245,7 +245,7 @@ function createMainWindowController(deps) {
             }
             const content = String(meta.getAttribute('content') || '')
             if (!/media-src/i.test(content)) {
-              meta.setAttribute('content', `${content}${content ? '; ' : ''}${mediaSrc}`)
+              meta.setAttribute('content', content + (content ? '; ' : '') + mediaSrc)
             }
           })()
         `)
