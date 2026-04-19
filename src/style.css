@@ -16,9 +16,9 @@ html.theme-dark {
   --ou-shadow: rgba(0, 0, 0, 0.4);
   --ou-code-bg: #0d1117;
   --ou-code-border: rgba(255, 255, 255, 0.08);
-  --ou-link: #58a6ff;
-  --ou-primary: #007acc;
-  --ou-primary-hover: #0098ff;
+  --ou-link: #9fdcff;
+  --ou-primary: #40c9ff;
+  --ou-primary-hover: #7adbff;
   --ou-success: #0dbc79;
   --ou-warning: #e5c07b;
   --ou-error: #f14c4c;
@@ -41,9 +41,9 @@ html.theme-light {
   --ou-shadow: rgba(0, 0, 0, 0.15);
   --ou-code-bg: #f6f8fa;
   --ou-code-border: rgba(0, 0, 0, 0.1);
-  --ou-link: #0969da;
-  --ou-primary: #0969da;
-  --ou-primary-hover: #0550ae;
+  --ou-link: #0095ff;
+  --ou-primary: #0099ff;
+  --ou-primary-hover: #33b8ff;
   --ou-success: #1a7f37;
   --ou-warning: #9a6700;
   --ou-error: #cf222e;

@@ -26,6 +26,7 @@
     "generate-icon": "node scripts/generate-icon.js",
     "convert-icon": "bash scripts/convert-icon.sh",
     "convert-logo": "node scripts/convert-logo-node.js",
+    "process-new-icon": "python3 scripts/process-new-icon.py",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -82,7 +83,7 @@
     "nodeGypRebuild": false,
     "buildDependenciesFromSource": false,
     "mac": {
-      "icon": "icons/icon-1024x1024.png",
+      "icon": "icons/icon.icns",
     "category": "public.app-category.developer-tools",
     "hardenedRuntime": true,
     "gatekeeperAssess": false,
@@ -108,12 +109,14 @@
       ]
     },
     "win": {
+      "icon": "icons/icon.ico",
       "target": [
         "zip",
         "nsis"
       ]
     },
     "linux": {
+      "icon": "icons/icon-512x512.png",
       "target": [
         "AppImage",
         "deb"
