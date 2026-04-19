@@ -1201,6 +1201,13 @@ async function sendMessage(options = {}) {
         }, receiveIdType)
         return { success: true, message_id: res.data && res.data.message_id, message: '图片发送成功' }
       }
+      // mp4：upload 的 file_type 为 mp4 时只能用于 msg_type=media；走 file 会报「上传类型与消息类型不匹配」
+      if (!file_key && file_path && ext === '.mp4' && fs.existsSync(file_path)) {
+        const name = file_name || path.basename(file_path)
+        const key = await uploadFile(file_path, name, 'mp4')
+        const res = await sendMedia(receiveId, key, undefined, name, receiveIdType)
+        return { success: true, message_id: res.data && res.data.message_id, message: '视频发送成功' }
+      }
       let key = file_key
       let name = file_name
       if (file_path && fs.existsSync(file_path)) {

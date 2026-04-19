@@ -64,8 +64,10 @@
         v-for="(msg, idx) in displayMessages"
         :key="messageRenderKey(msg, idx)"
         :message="msg"
+        :session-id="currentSessionId || ''"
         :agent-display-name="agentDisplayName"
         @regenerate-audio="handleRegenerateAudio"
+        @ui-action="handleMessageUiAction"
       />
       <!-- 没有工具卡片时才显示纯思考指示器 -->
       <div v-if="isStreaming && !lastAssistantHasActivity" class="streaming-indicator">
@@ -2283,6 +2285,98 @@ const handleExternalSend = (text) => {
     studioWriteToolTouched.value = false
   }
   nextTick(() => forceScrollToBottom())
+}
+
+const handleReplyOptionSelect = async (payload = {}) => {
+  const text = String(payload?.text || '').trim()
+  if (!text || isStreaming.value) return
+  clearSlash()
+  mentionedFiles.value = []
+  pendingAttachments.value = []
+  inputText.value = text
+  await handleSend()
+}
+
+const handleMessageUiAction = async (payload = {}) => {
+  const actionType = String(payload?.type || '').trim().toLowerCase()
+  if (!actionType) return
+  if (actionType === 'noop') return
+  if (actionType === 'send_text') {
+    await handleReplyOptionSelect({ text: payload?.text })
+    return
+  }
+  if (actionType === 'run_script') {
+    if (isStreaming.value) return
+    const command = String(payload?.command || '').trim()
+    if (!command) return
+    if (payload?.confirm === true) {
+      const ok = window.confirm(`确认执行脚本命令？\n\n${command}`)
+      if (!ok) return
+    }
+    const cwd = String(payload?.cwd || props.projectPath || '').trim()
+    const timeoutMs = Math.max(1000, Math.min(600000, Number(payload?.timeoutMs || 120000) || 120000))
+    messages.value.push({
+      role: 'user',
+      content: `执行脚本：\`${command}\`${cwd ? `\n\ncwd: ${cwd}` : ''}`,
+      _uiKey: genUiKey()
+    })
+    nextTick(() => forceScrollToBottom())
+    try {
+      const res = await window.electronAPI.executeCommand({
+        command,
+        ...(cwd ? { cwd } : {}),
+        timeout: timeoutMs
+      })
+      const out = String(res?.output || res?.stdout || '').trim()
+      const err = String(res?.stderr || '').trim()
+      const code = Number.isFinite(Number(res?.exitCode)) ? Number(res.exitCode) : 0
+      const summary = [
+        `脚本执行完成（exitCode=${code}）`,
+        out ? `\n标准输出：\n${out.slice(0, 4000)}` : '',
+        err ? `\n错误输出：\n${err.slice(0, 2000)}` : ''
+      ].join('')
+      messages.value.push({
+        role: 'assistant',
+        content: summary,
+        _uiKey: genUiKey()
+      })
+      await persistSave()
+      nextTick(() => forceScrollToBottom())
+    } catch (e) {
+      messages.value.push({
+        role: 'assistant',
+        content: `脚本执行失败：${e?.message || String(e)}`,
+        _uiKey: genUiKey()
+      })
+      await persistSave()
+      nextTick(() => forceScrollToBottom())
+    }
+    return
+  }
+  if (actionType === 'open_external') {
+    const target = String(payload?.path || payload?.openPath || '').trim()
+    if (!target) return
+    try { await window.electronAPI.openExternal(target) } catch { /* ignore */ }
+    return
+  }
+  if (actionType === 'reveal_path') {
+    const target = String(payload?.openPath || payload?.path || '').trim()
+    if (!target) return
+    try { await window.electronAPI.openInFinder({ path: target }) } catch { /* ignore */ }
+    return
+  }
+  if (actionType === 'download_url') {
+    const target = String(payload?.path || '').trim()
+    if (!target) return
+    try {
+      const a = document.createElement('a')
+      a.href = target
+      a.download = String(payload?.name || '').trim() || ''
+      a.rel = 'noopener noreferrer'
+      a.click()
+    } catch { /* ignore */ }
+    return
+  }
 }
 
 // 清空消息并开始新会话（旧会话文件保留，重置 sessionId 触发新建）

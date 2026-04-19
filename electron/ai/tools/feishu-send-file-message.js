@@ -6,11 +6,14 @@ const { logger: appLogger } = require('../../app-logger')
 const artifactRegistry = require('../artifact-registry')
 
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'])
+/** 飞书 IM：mp4 上传类型对应 msg_type=media（视频），不能用 file 消息，否则会报 upload type 与 message type 不匹配 */
+const VIDEO_EXTS = new Set(['.mp4'])
 
 const definition = {
-  description: `向飞书会话发送「文件」消息，自动区分图片与其它文件：
-- 当 file_path 为图片扩展名（png/jpg/jpeg/gif/webp/bmp）时，按「图片消息」发送；
-- 其它扩展名按普通文件发送。
+  description: `向飞书会话发送「文件 / 图片 / 视频」消息，按扩展名自动选消息类型：
+- 图片（png/jpg/jpeg/gif/webp/bmp）→ 图片消息；
+- 视频 mp4 → **视频消息**（与飞书 media 接口一致，勿与「普通文件」混用）；
+- 其它扩展名 → 普通文件消息。
 
 在飞书内与机器人对话时，不传 chat_id 会自动发往当前会话。`,
   parameters: {
@@ -65,6 +68,12 @@ async function execute(args = {}, context = {}) {
       image_base64: buf.toString('base64'),
       image_filename: fileName
     })
+  } else if (VIDEO_EXTS.has(ext)) {
+    res = await feishuNotify.sendMessage({
+      chat_id: chatId || undefined,
+      media_file_path: rawPath,
+      media_file_name: fileName
+    })
   } else {
     res = await feishuNotify.sendMessage({
       chat_id: chatId || undefined,
@@ -87,7 +96,9 @@ async function execute(args = {}, context = {}) {
 
   return {
     success: !!res?.success,
-    message: res?.success ? '文件/图片发送成功' : (res?.message || '文件/图片发送失败'),
+    message: res?.success
+      ? (VIDEO_EXTS.has(ext) ? '视频发送成功' : (IMAGE_EXTS.has(ext) ? '图片发送成功' : '文件发送成功'))
+      : (res?.message || '发送失败'),
     message_id: res?.message_id || ''
   }
 }

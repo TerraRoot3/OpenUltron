@@ -228,15 +228,271 @@
           </template>
         </div>
 
-        <!-- 思维链（<think> 块） -->
-        <div v-if="thinkContent" class="think-block">
-          <div class="think-header" @click="thinkExpanded = !thinkExpanded">
-            <ChevronRight :size="12" class="think-chevron" :class="{ rotated: thinkExpanded }" />
-            <span>{{ t('chatMessage.thinkingProcess') }}</span>
-          </div>
-          <div v-if="thinkExpanded" class="think-body" v-html="renderThink(thinkContent)"></div>
-        </div>
         <div v-if="mainContent" class="bubble-text ai-text" @click="onBubbleLinkClick" v-html="renderedContent"></div>
+        <div v-if="uiBlocks.length" class="message-ui-blocks">
+          <div
+            v-for="(block, blockIdx) in uiBlocks"
+            :key="`${block.type}-${blockIdx}`"
+            class="message-ui-block"
+          >
+            <div v-if="block.type === 'thinking'" class="think-block">
+              <div class="think-header" @click="toggleUiBlockExpanded(blockIdx)">
+                <ChevronRight :size="12" class="think-chevron" :class="{ rotated: isUiBlockExpanded(blockIdx) }" />
+                <span>{{ block.title || t('chatMessage.thinkingProcess') }}</span>
+              </div>
+              <div v-if="isUiBlockExpanded(blockIdx)" class="think-body" v-html="renderMarkdown(block.content || '')"></div>
+            </div>
+            <div v-else-if="block.type === 'status'" class="ui-status-card" :class="`ui-status-${block.level}`">
+              <div v-if="block.title" class="ui-status-title">{{ block.title }}</div>
+              <div v-if="block.content" class="ui-status-body" v-html="renderMarkdown(block.content)"></div>
+            </div>
+            <div v-else-if="block.type === 'reply_options'" class="reply-options">
+              <button
+                v-for="(option, idx) in block.options"
+                :key="`${idx}-${option}`"
+                type="button"
+                class="reply-option-btn"
+                @click="selectReplyOption(option, block)"
+              >{{ option }}</button>
+            </div>
+            <div v-else-if="block.type === 'decision_card'" class="ui-decision-card">
+              <div v-if="block.title" class="ui-decision-title">{{ block.title }}</div>
+              <div v-if="block.content" class="ui-decision-desc" v-html="renderMarkdown(block.content)"></div>
+              <div class="reply-options">
+                <button
+                  v-for="(option, idx) in block.options"
+                  :key="`${idx}-${option}`"
+                  type="button"
+                  class="reply-option-btn"
+                  @click="selectReplyOption(option, block)"
+                >{{ option }}</button>
+              </div>
+            </div>
+            <div v-else-if="block.type === 'progress'" class="ui-progress-card">
+              <div class="ui-progress-head">
+                <span class="ui-progress-title">{{ block.title || '进度' }}</span>
+                <span class="ui-progress-value">{{ block.percent }}%</span>
+              </div>
+              <div class="ui-progress-track">
+                <span class="ui-progress-fill" :style="{ width: `${block.percent}%` }" />
+              </div>
+              <div v-if="block.content" class="ui-progress-desc" v-html="renderMarkdown(block.content)"></div>
+            </div>
+            <div v-else-if="block.type === 'table'" class="ui-table-card">
+              <div v-if="block.title" class="ui-table-title">{{ block.title }}</div>
+              <table class="ui-table">
+                <thead v-if="block.headers.length">
+                  <tr>
+                    <th v-for="(h, idx) in block.headers" :key="`h-${idx}`">{{ h }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(row, rIdx) in block.rows" :key="`r-${rIdx}`">
+                    <td v-for="(cell, cIdx) in row" :key="`c-${rIdx}-${cIdx}`">{{ cell }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div v-else-if="block.type === 'form'" class="ui-form-card">
+              <div v-if="block.title" class="ui-form-title">{{ block.title }}</div>
+              <div class="ui-form-grid">
+                <div
+                  v-for="(field, fIdx) in block.fields"
+                  :key="`f-${fIdx}-${field.name}`"
+                  class="ui-form-item"
+                >
+                  <label class="ui-form-label">{{ field.label || field.name }}</label>
+                  <input
+                    v-if="field.type !== 'textarea'"
+                    :value="field.value"
+                    disabled
+                    class="ui-form-input"
+                  />
+                  <textarea
+                    v-else
+                    :value="field.value"
+                    disabled
+                    class="ui-form-textarea"
+                    rows="2"
+                  />
+                </div>
+              </div>
+              <div class="ui-form-actions">
+                <button
+                  type="button"
+                  class="reply-option-btn"
+                  @click="emitUiAction({
+                    type: block.action || 'send_text',
+                    sourceType: block.type,
+                    text: block.submitText || ''
+                  })"
+                >{{ block.submitLabel || '使用此参数继续' }}</button>
+              </div>
+            </div>
+            <div v-else-if="block.type === 'script_execute'" class="ui-script-card">
+              <div v-if="block.title" class="ui-script-title">{{ block.title }}</div>
+              <code class="ui-script-command">{{ block.command }}</code>
+              <div class="ui-script-meta">
+                <span v-if="block.cwd">cwd: {{ block.cwd }}</span>
+                <span>timeout: {{ Math.floor(block.timeoutMs / 1000) }}s</span>
+              </div>
+              <div class="ui-script-actions">
+                <button
+                  type="button"
+                  class="reply-option-btn"
+                  @click="emitUiAction({
+                    type: 'run_script',
+                    sourceType: block.type,
+                    command: block.command,
+                    cwd: block.cwd,
+                    timeoutMs: block.timeoutMs,
+                    confirm: block.confirm
+                  })"
+                >{{ block.runLabel || '执行脚本' }}</button>
+              </div>
+            </div>
+            <div v-else-if="block.type === 'artifact_card'" class="ui-artifact-card">
+              <div class="ui-artifact-head">
+                <span class="ui-artifact-title">{{ block.title || block.name || '产物文件' }}</span>
+                <span v-if="block.kind" class="ui-artifact-kind">{{ block.kind }}</span>
+              </div>
+              <div class="ui-artifact-path" :title="block.path">{{ block.path }}</div>
+              <div v-if="block.content" class="ui-artifact-desc" v-html="renderMarkdown(block.content)"></div>
+              <div class="ui-artifact-actions">
+                <button
+                  v-for="(action, idx) in block.actions"
+                  :key="`artifact-action-${idx}`"
+                  type="button"
+                  class="reply-option-btn"
+                  @click="emitUiAction({ ...action, sourceType: block.type, path: block.path, openPath: block.openPath || block.path, name: block.name || '' })"
+                >{{ action.label || '执行' }}</button>
+              </div>
+            </div>
+            <div v-else-if="block.type === 'tool_result_card'" class="ui-tool-result-card" :class="`ui-tool-result-${block.status}`">
+              <div class="ui-tool-result-head">
+                <span class="ui-tool-result-title">{{ block.title || block.toolName || '工具结果' }}</span>
+                <span class="ui-tool-result-status">{{ block.status }}</span>
+              </div>
+              <div v-if="block.summary" class="ui-tool-result-summary">{{ block.summary }}</div>
+              <div v-if="block.content" class="ui-tool-result-desc" v-html="renderMarkdown(block.content)"></div>
+              <div v-if="block.actions.length" class="ui-tool-result-actions">
+                <button
+                  v-for="(action, idx) in block.actions"
+                  :key="`tool-action-${idx}`"
+                  type="button"
+                  class="reply-option-btn"
+                  @click="emitUiAction({ ...action, sourceType: block.type, toolName: block.toolName || '' })"
+                >{{ action.label || '执行' }}</button>
+              </div>
+            </div>
+            <div v-else-if="block.type === 'confirm_card'" class="ui-confirm-card" :class="`ui-confirm-${block.level}`">
+              <div class="ui-confirm-head">
+                <span class="ui-confirm-title">{{ block.title || '请确认操作' }}</span>
+              </div>
+              <div v-if="block.content" class="ui-confirm-desc" v-html="renderMarkdown(block.content)"></div>
+              <div class="ui-confirm-actions">
+                <button
+                  type="button"
+                  class="reply-option-btn"
+                  @click="emitUiAction({
+                    type: block.confirmAction || 'send_text',
+                    sourceType: block.type,
+                    text: block.confirmText || '',
+                    confirm: true
+                  })"
+                >{{ block.confirmLabel || '确认' }}</button>
+                <button
+                  type="button"
+                  class="reply-option-btn ui-btn-secondary"
+                  @click="emitUiAction({
+                    type: block.cancelAction || 'send_text',
+                    sourceType: block.type,
+                    text: block.cancelText || '',
+                    confirm: false
+                  })"
+                >{{ block.cancelLabel || '取消' }}</button>
+              </div>
+            </div>
+            <div v-else-if="block.type === 'input_prompt'" class="ui-input-card">
+              <div v-if="block.title" class="ui-input-title">{{ block.title }}</div>
+              <div v-if="block.content" class="ui-input-desc" v-html="renderMarkdown(block.content)"></div>
+              <label class="ui-input-label">{{ block.label || '输入内容' }}</label>
+              <input
+                class="ui-input-field"
+                type="text"
+                :placeholder="block.placeholder || ''"
+                :value="getUiInputValue(blockIdx, block)"
+                @input="setUiInputValue(blockIdx, block, $event?.target?.value)"
+                @keydown.enter.prevent="submitInputPrompt(blockIdx, block)"
+              />
+              <div class="ui-input-actions">
+                <button
+                  type="button"
+                  class="reply-option-btn"
+                  @click="submitInputPrompt(blockIdx, block)"
+                >{{ block.submitLabel || '提交' }}</button>
+              </div>
+            </div>
+            <div v-else-if="block.type === 'json_view'" class="ui-json-card">
+              <div v-if="block.title" class="ui-json-title">{{ block.title }}</div>
+              <pre class="ui-json-pre">{{ block.pretty }}</pre>
+            </div>
+            <div v-else-if="block.type === 'timeline'" class="ui-timeline-card">
+              <div v-if="block.title" class="ui-timeline-title">{{ block.title }}</div>
+              <div class="ui-timeline-list">
+                <div
+                  v-for="(item, idx) in block.items"
+                  :key="`timeline-${idx}`"
+                  class="ui-timeline-item"
+                  :class="`ui-timeline-${item.status}`"
+                >
+                  <span class="ui-timeline-dot" />
+                  <div class="ui-timeline-body">
+                    <div class="ui-timeline-item-title">{{ item.title || `步骤 ${idx + 1}` }}</div>
+                    <div v-if="item.detail" class="ui-timeline-item-detail">{{ item.detail }}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div v-else-if="block.type === 'image_single'" class="ui-single-card">
+              <div v-if="block.title" class="ui-single-title">{{ block.title }}</div>
+              <div v-if="block.content" class="ui-single-desc" v-html="renderMarkdown(block.content)"></div>
+              <figure class="ui-single-figure">
+                <img
+                  class="chat-image ui-single-image"
+                  :src="block.image.src"
+                  :alt="block.image.alt || 'image'"
+                  :title="block.image.alt || ''"
+                />
+                <figcaption v-if="block.image.alt" class="ui-single-caption">{{ block.image.alt }}</figcaption>
+              </figure>
+            </div>
+            <div v-else-if="block.type === 'image_gallery'" class="ui-gallery-card">
+              <div v-if="block.title" class="ui-gallery-title">{{ block.title }}</div>
+              <div v-if="block.content" class="ui-gallery-desc" v-html="renderMarkdown(block.content)"></div>
+              <div class="ui-gallery-grid" :class="`ui-gallery-${block.layout}`">
+                <img
+                  v-for="(img, idx) in block.images"
+                  :key="`gallery-${idx}`"
+                  class="chat-image ui-gallery-image"
+                  :src="img.src"
+                  :alt="img.alt || `image-${idx + 1}`"
+                  :title="img.alt || ''"
+                />
+              </div>
+            </div>
+            <div v-else-if="block.type === 'image_compare'" class="ui-compare-card">
+              <div v-if="block.title" class="ui-compare-title">{{ block.title }}</div>
+              <div v-if="block.content" class="ui-compare-desc" v-html="renderMarkdown(block.content)"></div>
+              <div class="ui-compare-grid">
+                <figure v-for="(img, idx) in block.images.slice(0, 2)" :key="`compare-${idx}`" class="ui-compare-item">
+                  <img class="chat-image ui-compare-image" :src="img.src" :alt="img.alt || `compare-${idx + 1}`" :title="img.alt || ''" />
+                  <figcaption v-if="img.alt" class="ui-compare-caption">{{ img.alt }}</figcaption>
+                </figure>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </template>
@@ -287,7 +543,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { User, Wrench, ChevronRight, Terminal, GitBranch, FileText, Shield, Search, CheckCircle, XCircle, Copy, Check, Music4, Clapperboard, Globe, File as FileIcon } from 'lucide-vue-next'
 import { useLogoUrl } from '../../composables/useLogoUrl.js'
 import { useI18n } from '../../composables/useI18n'
@@ -297,9 +553,10 @@ const { t } = useI18n()
 const MAX_VISIBLE_TOOL_CALLS = 8
 const props = defineProps({
   message: { type: Object, required: true },
+  sessionId: { type: String, default: '' },
   agentDisplayName: { type: String, default: '' }
 })
-const emit = defineEmits(['regenerate-audio'])
+const emit = defineEmits(['regenerate-audio', 'ui-action'])
 
 const copied = ref(false)
 const copiedArtifactPath = ref('')
@@ -313,9 +570,21 @@ const artifactPreviewModal = ref(null)
 const artifactPreviewModalText = ref('')
 const artifactPreviewModalLoading = ref(false)
 const artifactPreviewModalError = ref('')
-const thinkExpanded = ref(false)
+const uiBlockExpanded = ref({})
+const uiInputValues = ref({})
 const nowMs = ref(Date.now())
 let nowTimer = null
+const UI_PROTOCOL_VERSION = '1'
+const UI_MAX_TEXT_LEN = 2000
+const UI_MAX_LABEL_LEN = 80
+const UI_ALLOWED_ACTION_TYPES = new Set([
+  'send_text',
+  'run_script',
+  'open_external',
+  'reveal_path',
+  'download_url',
+  'noop'
+])
 
 onMounted(() => {
   nowTimer = setInterval(() => { nowMs.value = Date.now() }, 1000)
@@ -404,17 +673,506 @@ function normalizeToolCallXmlForDisplay(rawText = '') {
 
 const splitContent = computed(() => {
   const raw = normalizeToolCallXmlForDisplay((props.message.content || '').trim())
-  // 支持多个 <think> 块，全部收集到 thinkContent，剩余为 mainContent
-  let thinkParts = []
-  let main = raw.replace(/<think>([\s\S]*?)<\/think>/gi, (_, inner) => {
-    thinkParts.push(inner.trim())
-    return ''
-  }).trim()
-  return { thinkContent: thinkParts.join('\n\n'), mainContent: main }
+  const parsed = stripMessageUiBlocks(raw)
+  const main = parsed.cleaned.trim()
+  return {
+    mainContent: main,
+    uiBlocks: parsed.uiBlocks
+  }
 })
 
-const thinkContent = computed(() => splitContent.value.thinkContent)
 const mainContent = computed(() => splitContent.value.mainContent)
+const uiBlocks = computed(() => splitContent.value.uiBlocks || [])
+
+const normalizeReplyOptionText = (value) => {
+  let text = String(value || '').trim()
+  if (!text) return ''
+  text = text.replace(/^[“"'`]+/, '').replace(/[”"'`]+$/, '').trim()
+  text = text.replace(/^[-*+]\s+/, '').replace(/^\d+[.)、]\s+/, '').trim()
+  if (!text) return ''
+  if (text.length > 80) return ''
+  if (/^请回复(?:一句)?[：:]?$/u.test(text)) return ''
+  return text
+}
+
+const clampText = (value, max = UI_MAX_TEXT_LEN) => {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  return text.length > max ? text.slice(0, max) : text
+}
+
+const clampLabel = (value, max = UI_MAX_LABEL_LEN) => {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  return text.length > max ? text.slice(0, max) : text
+}
+
+const sanitizeActionType = (value, fallback = 'noop') => {
+  const t = String(value || '').trim().toLowerCase()
+  return UI_ALLOWED_ACTION_TYPES.has(t) ? t : fallback
+}
+
+const extractReplyOptionsFromBlock = (block) => {
+  const options = []
+  const source = String(block || '')
+  const fromTag = source.matchAll(/<option>([\s\S]*?)<\/option>/gi)
+  for (const match of fromTag) {
+    const text = normalizeReplyOptionText(match?.[1] || '')
+    if (text) options.push(text)
+  }
+  if (options.length > 0) return options
+  const lines = source.split('\n')
+  for (const line of lines) {
+    const text = normalizeReplyOptionText(line)
+    if (text) options.push(text)
+  }
+  return options
+}
+
+const parseOuUiAttrs = (attrsRaw) => {
+  const attrs = {}
+  const src = String(attrsRaw || '')
+  const reg = /([a-zA-Z_][\w-]*)\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))/g
+  let match = null
+  while ((match = reg.exec(src)) !== null) {
+    const key = String(match[1] || '').trim()
+    const value = String(match[3] || match[4] || match[5] || '').trim()
+    if (key) attrs[key] = value
+  }
+  return attrs
+}
+
+const normalizeUiType = (value) => String(value || '').trim().toLowerCase()
+
+const parseUiBlock = (type, body, attrs = {}) => {
+  if (attrs.version && String(attrs.version).trim() !== UI_PROTOCOL_VERSION) return null
+  const t = normalizeUiType(type)
+  const source = String(body || '').trim()
+  if (t === 'reply_options') {
+    const options = [...new Set(extractReplyOptionsFromBlock(source))].slice(0, 6)
+    if (options.length === 0) return null
+    return {
+      type: 'reply_options',
+      options,
+      action: sanitizeActionType(attrs.action || 'send_text', 'send_text')
+    }
+  }
+  if (t === 'thinking' || t === 'think') {
+    if (!source) return null
+    return {
+      type: 'thinking',
+      title: clampLabel(attrs.title || ''),
+      content: clampText(source)
+    }
+  }
+  if (t === 'status') {
+    const level = String(attrs.level || attrs.variant || 'info').trim().toLowerCase()
+    const normalizedLevel = ['info', 'success', 'warning', 'error'].includes(level) ? level : 'info'
+    return {
+      type: 'status',
+      level: normalizedLevel,
+      title: clampLabel(attrs.title || ''),
+      content: clampText(source)
+    }
+  }
+  if (t === 'decision_card') {
+    const options = [...new Set(extractReplyOptionsFromBlock(source))].slice(0, 4)
+    if (options.length === 0) return null
+    return {
+      type: 'decision_card',
+      title: clampLabel(attrs.title || ''),
+      content: clampText(attrs.desc || ''),
+      options,
+      action: sanitizeActionType(attrs.action || 'send_text', 'send_text')
+    }
+  }
+  if (t === 'progress') {
+    let percent = Number(attrs.percent)
+    if (!Number.isFinite(percent)) percent = 0
+    percent = Math.max(0, Math.min(100, Math.round(percent)))
+    return {
+      type: 'progress',
+      title: clampLabel(attrs.title || ''),
+      content: clampText(source),
+      percent
+    }
+  }
+  if (t === 'table') {
+    const rows = []
+    const rowReg = /<row>([\s\S]*?)<\/row>/gi
+    let rowMatch = null
+    while ((rowMatch = rowReg.exec(source)) !== null) {
+      const rowText = String(rowMatch?.[1] || '').trim()
+      if (!rowText) continue
+      const cells = rowText.split('|').map((x) => String(x || '').trim()).filter(Boolean)
+      if (cells.length > 0) rows.push(cells)
+      if (rows.length >= 20) break
+    }
+    if (rows.length === 0) return null
+    const headerRaw = String(attrs.headers || '').trim()
+    const headers = headerRaw ? headerRaw.split('|').map((x) => String(x || '').trim()).filter(Boolean) : []
+    return {
+      type: 'table',
+      title: clampLabel(attrs.title || ''),
+      headers,
+      rows
+    }
+  }
+  if (t === 'form') {
+    const fields = []
+    const fieldReg = /<field\b([^>]*)\/?>/gi
+    let fieldMatch = null
+    while ((fieldMatch = fieldReg.exec(source)) !== null) {
+      const fAttrs = parseOuUiAttrs(fieldMatch?.[1] || '')
+      const name = String(fAttrs.name || '').trim()
+      if (!name) continue
+      fields.push({
+        name,
+        label: String(fAttrs.label || name).trim(),
+        value: String(fAttrs.value || '').trim(),
+        type: String(fAttrs.type || 'text').trim().toLowerCase()
+      })
+      if (fields.length >= 12) break
+    }
+    if (fields.length === 0) return null
+    return {
+      type: 'form',
+      title: clampLabel(attrs.title || ''),
+      fields,
+      submitLabel: clampLabel(attrs.submit_label || attrs.submitLabel || ''),
+      submitText: clampText(attrs.submit_text || attrs.submitText || '', 400),
+      action: sanitizeActionType(attrs.action || 'send_text', 'send_text')
+    }
+  }
+  if (t === 'script_execute') {
+    const command = String(attrs.command || source || '').trim()
+    if (!command) return null
+    const timeoutMs = Math.max(1000, Math.min(600000, Number(attrs.timeout_ms || attrs.timeoutMs || 120000) || 120000))
+    return {
+      type: 'script_execute',
+      title: clampLabel(attrs.title || ''),
+      command: clampText(command, 1200),
+      cwd: clampText(attrs.cwd || '', 600),
+      runLabel: clampLabel(attrs.run_label || attrs.runLabel || ''),
+      confirm: String(attrs.confirm || '').trim().toLowerCase() === 'true',
+      timeoutMs
+    }
+  }
+  if (t === 'artifact_card') {
+    const path = String(attrs.path || attrs.url || '').trim()
+    if (!path) return null
+    const actionRaw = String(attrs.actions || 'open|reveal|download').trim()
+    const actionMap = {
+      open: { type: 'open_external', label: '打开' },
+      reveal: { type: 'reveal_path', label: '文件夹' },
+      download: { type: 'download_url', label: '下载' },
+      regenerate: { type: 'send_text', label: '重生成', text: String(attrs.regenerate_text || '请基于当前文件重生成一个新版本。').trim() }
+    }
+    const actions = actionRaw.split('|')
+      .map((x) => String(x || '').trim().toLowerCase())
+      .filter(Boolean)
+      .map((k) => actionMap[k])
+      .filter(Boolean)
+      .slice(0, 6)
+    return {
+      type: 'artifact_card',
+      title: clampLabel(attrs.title || ''),
+      name: clampLabel(attrs.name || ''),
+      kind: clampLabel(attrs.kind || '', 24),
+      path: clampText(path, 1200),
+      openPath: clampText(attrs.open_path || attrs.openPath || path, 1200),
+      content: clampText(source),
+      actions
+    }
+  }
+  if (t === 'tool_result_card') {
+    const status = String(attrs.status || 'info').trim().toLowerCase()
+    const normalizedStatus = ['success', 'warning', 'error', 'info'].includes(status) ? status : 'info'
+    const actions = parseUiActionsFromBody(source).slice(0, 6)
+    return {
+      type: 'tool_result_card',
+      title: clampLabel(attrs.title || ''),
+      toolName: clampLabel(attrs.tool_name || attrs.toolName || '', 40),
+      summary: clampText(attrs.summary || '', 300),
+      status: normalizedStatus,
+      content: stripUiActionsFromBody(source),
+      actions
+    }
+  }
+  if (t === 'confirm_card') {
+    const level = String(attrs.level || attrs.variant || 'warning').trim().toLowerCase()
+    const normalizedLevel = ['info', 'success', 'warning', 'error'].includes(level) ? level : 'warning'
+    return {
+      type: 'confirm_card',
+      level: normalizedLevel,
+      title: clampLabel(attrs.title || ''),
+      content: clampText(source),
+      confirmLabel: clampLabel(attrs.confirm_label || attrs.confirmLabel || ''),
+      confirmText: clampText(attrs.confirm_text || attrs.confirmText || '', 400),
+      confirmAction: sanitizeActionType(attrs.confirm_action || attrs.confirmAction || 'send_text', 'send_text'),
+      cancelLabel: clampLabel(attrs.cancel_label || attrs.cancelLabel || ''),
+      cancelText: clampText(attrs.cancel_text || attrs.cancelText || '', 400),
+      cancelAction: sanitizeActionType(attrs.cancel_action || attrs.cancelAction || 'send_text', 'send_text')
+    }
+  }
+  if (t === 'input_prompt') {
+    return {
+      type: 'input_prompt',
+      title: clampLabel(attrs.title || ''),
+      content: clampText(source),
+      label: clampLabel(attrs.label || ''),
+      placeholder: clampText(attrs.placeholder || '', 120),
+      defaultValue: clampText(attrs.default_value || attrs.defaultValue || '', 300),
+      submitLabel: clampLabel(attrs.submit_label || attrs.submitLabel || ''),
+      action: sanitizeActionType(attrs.action || 'send_text', 'send_text'),
+      template: clampText(attrs.template || '{{input}}', 300),
+      fieldName: clampLabel(attrs.field_name || attrs.fieldName || 'input', 40)
+    }
+  }
+  if (t === 'json_view') {
+    if (!source) return null
+    let pretty = source
+    try {
+      pretty = JSON.stringify(JSON.parse(source), null, 2)
+    } catch { /* keep raw */ }
+    return {
+      type: 'json_view',
+      title: clampLabel(attrs.title || ''),
+      pretty: clampText(pretty, 12000)
+    }
+  }
+  if (t === 'timeline') {
+    const items = []
+    const itemReg = /<item\b([^>]*)\/?>/gi
+    let itemMatch = null
+    while ((itemMatch = itemReg.exec(source)) !== null) {
+      const itemAttrs = parseOuUiAttrs(itemMatch?.[1] || '')
+      const status = String(itemAttrs.status || 'todo').trim().toLowerCase()
+      const normalizedStatus = ['done', 'doing', 'todo', 'error'].includes(status) ? status : 'todo'
+      items.push({
+        status: normalizedStatus,
+        title: clampLabel(itemAttrs.title || ''),
+        detail: clampText(itemAttrs.detail || '', 300)
+      })
+      if (items.length >= 20) break
+    }
+    if (items.length === 0) return null
+    return {
+      type: 'timeline',
+      title: clampLabel(attrs.title || ''),
+      items
+    }
+  }
+  if (t === 'image_single') {
+    const image = parseUiImagesFromBody(source)[0]
+    if (!image) return null
+    return {
+      type: 'image_single',
+      title: clampLabel(attrs.title || ''),
+      content: clampText(stripUiImagesFromBody(source), 500),
+      image
+    }
+  }
+  if (t === 'image_gallery') {
+    const images = parseUiImagesFromBody(source).slice(0, 12)
+    if (images.length === 0) return null
+    const layout = String(attrs.layout || 'grid').trim().toLowerCase()
+    return {
+      type: 'image_gallery',
+      title: clampLabel(attrs.title || ''),
+      content: clampText(stripUiImagesFromBody(source), 500),
+      layout: ['grid', 'masonry'].includes(layout) ? layout : 'grid',
+      images
+    }
+  }
+  if (t === 'image_compare') {
+    const images = parseUiImagesFromBody(source).slice(0, 2)
+    if (images.length < 2) return null
+    return {
+      type: 'image_compare',
+      title: clampLabel(attrs.title || ''),
+      content: clampText(stripUiImagesFromBody(source), 500),
+      images
+    }
+  }
+  return null
+}
+
+const parseUiActionsFromBody = (source) => {
+  const actions = []
+  const actionReg = /<action\b([^>]*)\/?>/gi
+  let actionMatch = null
+  while ((actionMatch = actionReg.exec(String(source || ''))) !== null) {
+    const attrs = parseOuUiAttrs(actionMatch?.[1] || '')
+    const type = String(attrs.type || '').trim().toLowerCase()
+    if (!type) continue
+    actions.push({
+      type: sanitizeActionType(type, 'noop'),
+      label: clampLabel(attrs.label || ''),
+      text: clampText(attrs.text || '', 800),
+      command: clampText(attrs.command || '', 1200),
+      cwd: clampText(attrs.cwd || '', 600),
+      timeoutMs: Number(attrs.timeout_ms || attrs.timeoutMs || 120000) || 120000,
+      confirm: String(attrs.confirm || '').trim().toLowerCase() === 'true',
+      path: clampText(attrs.path || attrs.url || '', 1200)
+    })
+  }
+  return actions
+}
+
+const stripUiActionsFromBody = (source) => String(source || '').replace(/<action\b[^>]*\/?>/gi, '').trim()
+
+const normalizeImageSrc = (value) => {
+  const src = clampText(value || '', 1200)
+  if (!src) return ''
+  if (/^(https?:\/\/|data:image\/|file:\/\/|local-resource:\/\/)/i.test(src)) return src
+  if (src.startsWith('/')) return `file://${src}`
+  return src
+}
+
+const parseUiImagesFromBody = (source) => {
+  const images = []
+  const reg = /<(?:image|img)\b([^>]*)\/?>/gi
+  let match = null
+  while ((match = reg.exec(String(source || ''))) !== null) {
+    const attrs = parseOuUiAttrs(match?.[1] || '')
+    const src = normalizeImageSrc(attrs.src || attrs.url || '')
+    if (!src) continue
+    images.push({
+      src,
+      alt: clampLabel(attrs.alt || attrs.caption || '', 120)
+    })
+  }
+  return images
+}
+
+const stripUiImagesFromBody = (source) => String(source || '').replace(/<(?:image|img)\b[^>]*\/?>/gi, '').trim()
+
+const stripUnclosedOuUiTail = (raw) => {
+  const text = String(raw || '')
+  if (!text) return ''
+  const openIdx = text.lastIndexOf('<ou_ui')
+  if (openIdx < 0) return text
+  const closeIdx = text.lastIndexOf('</ou_ui>')
+  if (closeIdx >= openIdx) return text
+  return text.slice(0, openIdx)
+}
+
+const stripMessageUiBlocks = (raw) => {
+  const uiBlocks = []
+  let cleaned = String(raw || '')
+
+  cleaned = cleaned.replace(/<think>([\s\S]*?)<\/think>/gi, (_, inner) => {
+    const block = parseUiBlock('thinking', inner, {})
+    if (block) uiBlocks.push(block)
+    return ''
+  })
+
+  cleaned = cleaned.replace(/<ou_ui\b([^>]*)>([\s\S]*?)<\/ou_ui>/gi, (_, attrsRaw, body) => {
+    const attrs = parseOuUiAttrs(attrsRaw)
+    const block = parseUiBlock(attrs.type, body, attrs)
+    if (block) uiBlocks.push(block)
+    return ''
+  })
+
+  cleaned = stripUnclosedOuUiTail(cleaned)
+  return { cleaned, uiBlocks: uiBlocks.slice(0, 8) }
+}
+
+const selectReplyOption = (option, block = {}) => {
+  const text = normalizeReplyOptionText(option)
+  if (!text) return
+  emitUiAction({
+    type: sanitizeActionType(String(block?.action || 'send_text'), 'send_text'),
+    sourceType: String(block?.type || 'reply_options'),
+    text
+  })
+}
+
+const emitUiAction = (payload = {}) => {
+  emit('ui-action', payload)
+}
+
+const getUiInputKey = (index, block = {}) => `${block.type || 'input'}:${index}:${block.fieldName || ''}`
+
+const getUiInputValue = (index, block = {}) => {
+  const key = getUiInputKey(index, block)
+  const current = uiInputValues.value[key]
+  if (typeof current === 'string') return current
+  return String(block.defaultValue || '')
+}
+
+const setUiInputValue = (index, block = {}, value = '') => {
+  const key = getUiInputKey(index, block)
+  uiInputValues.value = {
+    ...uiInputValues.value,
+    [key]: String(value || '')
+  }
+}
+
+const submitInputPrompt = (index, block = {}) => {
+  const raw = String(getUiInputValue(index, block) || '').trim()
+  if (!raw) return
+  const template = String(block.template || '{{input}}').trim() || '{{input}}'
+  const text = clampText(template.replace(/\{\{\s*input\s*\}\}/gi, raw), 4000)
+  emitUiAction({
+    type: sanitizeActionType(String(block.action || 'send_text').trim().toLowerCase(), 'send_text'),
+    sourceType: block.type || 'input_prompt',
+    text,
+    value: raw,
+    fieldName: String(block.fieldName || 'input').trim()
+  })
+}
+
+const messageStableKey = computed(() => {
+  const raw = String(
+    props?.message?.id
+    || props?.message?._uiKey
+    || props?.message?.createdAt
+    || `${props?.message?.role || ''}:${String(props?.message?.content || '').slice(0, 80)}`
+  )
+  return raw.replace(/\s+/g, '_')
+})
+
+const uiDraftStorageKey = computed(() => {
+  const sid = String(props.sessionId || 'default')
+  const mid = String(messageStableKey.value || 'msg')
+  return `ou:ui:draft:${sid}:${mid}`
+})
+
+const restoreUiDrafts = () => {
+  try {
+    const raw = sessionStorage.getItem(uiDraftStorageKey.value)
+    if (!raw) return
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === 'object') uiInputValues.value = parsed
+  } catch { /* ignore */ }
+}
+
+const persistUiDrafts = () => {
+  try {
+    sessionStorage.setItem(uiDraftStorageKey.value, JSON.stringify(uiInputValues.value || {}))
+  } catch { /* ignore */ }
+}
+
+watch(uiDraftStorageKey, () => {
+  uiInputValues.value = {}
+  restoreUiDrafts()
+}, { immediate: true })
+
+watch(uiInputValues, () => {
+  persistUiDrafts()
+}, { deep: true })
+
+const isUiBlockExpanded = (index) => !!uiBlockExpanded.value[index]
+
+const toggleUiBlockExpanded = (index) => {
+  const key = String(index)
+  uiBlockExpanded.value = {
+    ...uiBlockExpanded.value,
+    [key]: !uiBlockExpanded.value[key]
+  }
+}
 
 const parseToolArguments = (raw) => {
   if (raw == null) return null
@@ -1384,7 +2142,6 @@ const renderMarkdown = (raw) => {
 }
 
 const renderedContent = computed(() => renderMarkdown(mainContent.value))
-const renderThink = (text) => renderMarkdown(text)
 </script>
 
 <style scoped>
@@ -1490,6 +2247,388 @@ const renderThink = (text) => renderMarkdown(text)
   line-height: 1.7;
   word-break: break-word;
   color: var(--ou-text);
+}
+.reply-options {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.message-ui-blocks {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.message-ui-block {
+  width: 100%;
+}
+.ui-status-card {
+  border: 1px solid var(--ou-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.ui-status-info {
+  border-color: color-mix(in srgb, var(--ou-primary) 35%, var(--ou-border));
+}
+.ui-status-success {
+  border-color: color-mix(in srgb, var(--ou-success) 35%, var(--ou-border));
+}
+.ui-status-warning {
+  border-color: color-mix(in srgb, var(--ou-warning) 35%, var(--ou-border));
+}
+.ui-status-error {
+  border-color: color-mix(in srgb, var(--ou-error) 35%, var(--ou-border));
+}
+.ui-status-title {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.ui-status-body {
+  font-size: 12px;
+  line-height: 1.5;
+}
+.ui-decision-card,
+.ui-progress-card,
+.ui-table-card,
+.ui-form-card,
+.ui-script-card {
+  border: 1px solid var(--ou-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.ui-decision-title,
+.ui-table-title,
+.ui-form-title,
+.ui-script-title {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.ui-decision-desc,
+.ui-progress-desc {
+  margin-bottom: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.ui-progress-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.ui-progress-title,
+.ui-progress-value {
+  font-size: 12px;
+}
+.ui-progress-track {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.08);
+  overflow: hidden;
+}
+.ui-progress-fill {
+  display: block;
+  height: 100%;
+  background: color-mix(in srgb, var(--ou-primary) 75%, white 10%);
+}
+.ui-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.ui-table th,
+.ui-table td {
+  border: 1px solid rgba(255,255,255,0.08);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+.ui-table th {
+  background: rgba(255,255,255,0.04);
+}
+.ui-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+.ui-form-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ui-form-label {
+  font-size: 11px;
+  color: var(--ou-text-muted);
+}
+.ui-form-input,
+.ui-form-textarea {
+  width: 100%;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 6px;
+  background: rgba(255,255,255,0.03);
+  color: var(--ou-text);
+  font-size: 12px;
+  padding: 6px 8px;
+  resize: vertical;
+}
+.ui-form-actions,
+.ui-script-actions {
+  margin-top: 10px;
+}
+.ui-script-command {
+  display: block;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(0,0,0,0.25);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 6px;
+  padding: 8px;
+}
+.ui-script-meta {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--ou-text-muted);
+}
+.ui-artifact-card,
+.ui-tool-result-card {
+  border: 1px solid var(--ou-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgba(255,255,255,0.02);
+}
+.ui-artifact-head,
+.ui-tool-result-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ui-artifact-title,
+.ui-tool-result-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+.ui-artifact-kind,
+.ui-tool-result-status {
+  font-size: 11px;
+  color: var(--ou-text-muted);
+}
+.ui-artifact-path {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--ou-text-muted);
+  word-break: break-all;
+}
+.ui-artifact-desc,
+.ui-tool-result-desc {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.ui-artifact-actions,
+.ui-tool-result-actions {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ui-tool-result-summary {
+  margin-top: 6px;
+  font-size: 12px;
+}
+.ui-tool-result-success { border-color: color-mix(in srgb, var(--ou-success) 35%, var(--ou-border)); }
+.ui-tool-result-warning { border-color: color-mix(in srgb, var(--ou-warning) 35%, var(--ou-border)); }
+.ui-tool-result-error { border-color: color-mix(in srgb, var(--ou-error) 35%, var(--ou-border)); }
+.ui-confirm-card {
+  border: 1px solid var(--ou-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgba(255,255,255,0.02);
+}
+.ui-confirm-warning { border-color: color-mix(in srgb, var(--ou-warning) 35%, var(--ou-border)); }
+.ui-confirm-error { border-color: color-mix(in srgb, var(--ou-error) 35%, var(--ou-border)); }
+.ui-confirm-success { border-color: color-mix(in srgb, var(--ou-success) 35%, var(--ou-border)); }
+.ui-confirm-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+.ui-confirm-desc {
+  margin-top: 8px;
+  font-size: 12px;
+}
+.ui-confirm-actions {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ui-btn-secondary {
+  border-color: rgba(255,255,255,0.2);
+  background: rgba(255,255,255,0.04);
+}
+.ui-input-card,
+.ui-json-card,
+.ui-timeline-card,
+.ui-single-card,
+.ui-gallery-card,
+.ui-compare-card {
+  border: 1px solid var(--ou-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgba(255,255,255,0.02);
+}
+.ui-input-title,
+.ui-json-title,
+.ui-timeline-title,
+.ui-single-title,
+.ui-gallery-title,
+.ui-compare-title {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.ui-input-desc {
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.ui-input-label {
+  display: block;
+  font-size: 11px;
+  color: var(--ou-text-muted);
+  margin-bottom: 4px;
+}
+.ui-input-field {
+  width: 100%;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 6px;
+  background: rgba(255,255,255,0.03);
+  color: var(--ou-text);
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.ui-input-actions {
+  margin-top: 10px;
+}
+.ui-json-pre {
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.45;
+  background: rgba(0,0,0,0.25);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px;
+  padding: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.ui-timeline-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ui-timeline-item {
+  display: flex;
+  gap: 8px;
+}
+.ui-timeline-dot {
+  margin-top: 4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ou-text-muted);
+  flex: 0 0 auto;
+}
+.ui-timeline-done .ui-timeline-dot { background: var(--ou-success); }
+.ui-timeline-doing .ui-timeline-dot { background: var(--ou-primary); }
+.ui-timeline-error .ui-timeline-dot { background: var(--ou-error); }
+.ui-timeline-item-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+.ui-timeline-item-detail {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--ou-text-muted);
+}
+.ui-gallery-desc,
+.ui-compare-desc,
+.ui-single-desc {
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.ui-single-figure {
+  margin: 0;
+}
+.ui-single-image {
+  width: 100%;
+  max-height: 420px;
+  object-fit: contain;
+  border-radius: 8px;
+}
+.ui-single-caption {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--ou-text-muted);
+}
+.ui-gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+}
+.ui-gallery-masonry {
+  grid-auto-flow: dense;
+}
+.ui-gallery-image {
+  width: 100%;
+  min-height: 92px;
+  max-height: 220px;
+  object-fit: cover;
+  border-radius: 8px;
+}
+.ui-compare-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.ui-compare-item {
+  margin: 0;
+}
+.ui-compare-image {
+  width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+  border-radius: 8px;
+}
+.ui-compare-caption {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--ou-text-muted);
+}
+.reply-option-btn {
+  border: 1px solid color-mix(in srgb, var(--ou-primary) 45%, transparent);
+  background: color-mix(in srgb, var(--ou-primary) 14%, transparent);
+  color: var(--ou-text);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.reply-option-btn:hover {
+  border-color: color-mix(in srgb, var(--ou-primary) 70%, transparent);
+  background: color-mix(in srgb, var(--ou-primary) 24%, transparent);
 }
 .user-text { color: var(--ou-text); }
 

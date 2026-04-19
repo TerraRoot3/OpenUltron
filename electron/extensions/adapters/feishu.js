@@ -665,7 +665,8 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
         }
       }
       if (payload.files && payload.files.length > 0) {
-        const AUDIO_EXTS = new Set(['.opus', '.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac', '.aiff', '.caf', '.webm', '.mp4'])
+        // 不含 .mp4：视频应走 media_file_path（msg_type=media）；.mp4 走语音会误转码且与飞书类型不匹配
+        const AUDIO_EXTS = new Set(['.opus', '.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac', '.aiff', '.caf', '.webm'])
         // 仅在“明确要飞书语音消息”时才把音频附件按语音发送；否则保持默认（音频当文件发送）。
         // 这样既能满足「发语音消息」诉求，也避免「转成mp3发我」被误判成语音。
         const wantsVoiceMessage = /\bvoice\s*message\b/i.test(textRaw)
@@ -711,11 +712,20 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
               reason: (audioResult && audioResult.message) || '未知'
             })
           }
-          const result = await feishuNotify.sendMessage({
-            chat_id: chatId,
-            file_path: p,
-            file_name: fileName
-          })
+          const isMp4Video = ext === '.mp4'
+          const result = await feishuNotify.sendMessage(
+            isMp4Video
+              ? {
+                  chat_id: chatId,
+                  media_file_path: p,
+                  media_file_name: fileName
+                }
+              : {
+                  chat_id: chatId,
+                  file_path: p,
+                  file_name: fileName
+                }
+          )
           appLogger?.info?.('[Feishu] 文件发送结果', {
             chatId: chatId || '',
             path: p,

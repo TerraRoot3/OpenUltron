@@ -15,7 +15,7 @@ const PROMPTS_DIR = 'prompts'
  * 用当前内置默认覆盖（覆盖前会把旧版同名文件拷到 prompts/_backup_rev_<修订>_<时间>/）。
  * 未递增修订则只补全缺失的 .md，不覆盖用户已改文件。
  */
-const PROMPTS_DEFAULTS_REVISION = 7
+const PROMPTS_DEFAULTS_REVISION = 17
 
 const REVISION_FILE = '.defaults-revision'
 
@@ -71,7 +71,33 @@ function getDefaultPrompts() {
 4) 失败透明：命令或测试失败时，直接给出关键报错与下一步，不得把失败描述成成功。
 5) 变更最小化：仅修改完成当前目标所需文件，避免无关重构；涉及风险操作前先说明影响。
 6) 输出格式：优先给“已做什么、改了哪些文件、验证结果”；少写模板化长篇原理解释。
-7) **禁止空话循环**：同一条回复里不要反复堆砌多句相同含义的「让我查看/检查一下…」「好的！让我直接看文件…」却不发起工具调用。若要读应用沙箱或仓库文件，至多一句过渡语后**立即**调用 webapp_studio_invoke、file_operation、read_app_log、execute_command 等可用工具；没有工具调用就不要假装正在检查。`,
+7) **禁止空话循环**：同一条回复里不要反复堆砌多句相同含义的「让我查看/检查一下…」「好的！让我直接看文件…」却不发起工具调用。若要读应用沙箱或仓库文件，至多一句过渡语后**立即**调用 webapp_studio_invoke、file_operation、read_app_log、execute_command 等可用工具；没有工具调用就不要假装正在检查。
+8) 当你希望用户一键选择下一步或需要结构化展示状态，请使用机器可解析的 UI 协议块（必须带 version="1"）：
+<ou_ui version="1" type="reply_options" action="send_text">
+  <option>选项文案1</option>
+  <option>选项文案2</option>
+</ou_ui>
+支持类型：
+- reply_options：用户可点击发送，需包含 2-4 个 <option>，每项是可直接发送的短句；
+- status：展示结构化状态，推荐属性 level=info|success|warning|error、title=...，正文写详细说明；
+- thinking：展示可折叠思路块（仅在你确实需要显式展示推理过程时使用）；
+- decision_card：与 reply_options 类似，但用于方案对比，可附 title/desc；
+- progress：进度展示，推荐属性 percent=0-100、title=...；
+- table：表格展示，推荐属性 headers="列1|列2"，正文使用 <row>单元1|单元2</row>；
+- form：参数回显或确认，正文使用 <field name="x" label="X" value="..." />，可配 submit_text；
+- script_execute：脚本执行卡，属性 command=...，可选 cwd、timeout_ms、confirm=true（危险命令建议必须 confirm=true）。
+- artifact_card：文件产物卡，属性 path=...，可选 kind/name/title/actions（如 open|reveal|download|regenerate）；
+- tool_result_card：工具结果卡，属性 status=success|warning|error|info、title/tool_name/summary，正文可放多个 <action .../>。
+- confirm_card：确认卡，属性 title/level（warning|error|info|success），可配 confirm_text/cancel_text 与对应 action；
+- input_prompt：单字段输入卡，属性 title/label/placeholder/default_value/template（支持 {{input}}）；
+- json_view：结构化 JSON 展示卡，正文放 JSON 文本；
+- timeline：时间线卡，正文放多个 <item status="todo|doing|done|error" title="..." detail="..." />。
+- image_single：单图卡，正文放一个 <image src="..." caption="..." />（也兼容 <img .../>）；
+- image_gallery：图片画廊卡，正文放多个 <image src="..." caption="..." />（建议 2-9 张，也兼容 <img .../>）；
+- image_compare：图片对比卡，正文放两个 <image src="..." label="..." />（用于前后对比，也兼容 <img .../>）。
+action 约定：type 可用 send_text/run_script/open_external/reveal_path/download_url；run_script 建议同时提供 command，危险命令务必 confirm=true。
+协议约束：仅使用白名单字段；超长文本会被裁剪；未知 action 会降级为 noop。
+流式约束：仅在内容准备好后一次性输出完整且闭合的 <ou_ui>...</ou_ui>，不要先吐半个起始标签，否则会被界面忽略。`,
 
     'browser-automation': `[浏览器自动化]
 需要打开网页、截图、点击、填表、执行 JS、多标签、网络/控制台调试等时：必须使用 chrome-devtools MCP 提供的工具（工具名称以 mcp__chrome_devtools__ 开头，如 navigate_page、take_snapshot、click、fill 等）。无内置 webview 兜底，请优先使用 Chrome（chrome-devtools）。若 MCP 未就绪，请提示用户启用 chrome-devtools MCP 后重试。
@@ -202,6 +228,7 @@ These Markdown files are injected into the AI system context. You can edit them 
 - **feishu-sheets-bitable.md** – Feishu sheets/bitable execution behavior.
 - **realtime-info.md** – When to use web_fetch / web_search for live information.
 - **coding-execution.md** – Coding-first behavior: inspect → modify files → validate → report concrete results.
+  Includes \`<ou_ui version="1" type="reply_options" ...><option>...</option></ou_ui>\` for clickable next-step choices, plus image cards (\`image_single\` / \`image_gallery\` / \`image_compare\`).
 - **feishu-docs.md** – Feishu doc authoring/editing behavior.
 - **browser-automation.md** – chrome-devtools MCP only (no built-in webview).
 - **desktop-notification.md** – When to use show_desktop_notification.
