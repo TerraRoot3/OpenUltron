@@ -2340,10 +2340,15 @@ defineExpose({ clearMessages, loadMessages, messages, handleExternalSend, isStre
   justify-content: center;
   height: 100%;
   color: var(--ou-text-muted);
-  gap: 8px;
+  gap: 12px;
 }
 .empty-icon { color: var(--ou-text-secondary); }
-.avatar-logo-large { width: 40px; height: 40px; object-fit: contain; }
+.avatar-logo-large {
+  width: 88px;
+  height: 88px;
+  object-fit: contain;
+  border-radius: 18px;
+}
 .chat-empty p { margin: 0; font-size: 14px; }
 .chat-empty .hint { font-size: 12px; color: var(--ou-text-muted); }
 .chat-empty-edit-role {

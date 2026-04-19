@@ -220,9 +220,15 @@ onMounted(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 12px;
+  gap: 14px;
   color: var(--ou-text-muted);
   font-size: 14px;
 }
-.sl-empty-icon { width: 48px; height: 48px; opacity: 0.5; }
+.sl-empty-icon {
+  width: 88px;
+  height: 88px;
+  object-fit: contain;
+  border-radius: 18px;
+  opacity: 0.65;
+}
 </style>

@@ -8,8 +8,9 @@ Same pipeline as OpenGit (see that repo). Additionally syncs in-app assets:
 
 Steps:
   1. Read icons/icon-new.png (ideally 1024x1024; other sizes are scaled).
-  2. Resize body to 824x824, flood-fill outer white/gray with sampled background blue
-     (reduces white halo at the Apple mask edge; falls back to blue if not detected).
+  2. Zoom center graphic slightly, crop to inner tile, composite onto opaque white so
+     flood-fill can run from corners, then flood-fill outer white/gray with a fixed
+     bright blue (OpenGit #007acc family). Keeps your artwork colors (no blanket white).
   3. Center on 1024x1024 transparent canvas (100px margin).
   4. Apply Apple-style rounded-rect mask on the inner body.
   5. Generate icon-{size}x{size}.png for 16/32/48/64/128/256/512/1024.
@@ -37,26 +38,31 @@ OFFSET = (CANVAS - INNER) // 2
 RADIUS = round(INNER * 0.2237)
 SIZES = [16, 32, 48, 64, 128, 256, 512, 1024]
 
+# Very light sky blue tile; is_strong_blue below is relaxed so pastel blues still “block” flood.
+BRAND_BG_BLUE: tuple[int, int, int] = (182, 240, 255)
+# Slightly overscale source before center-crop to INNER so the mark reads larger.
+CONTENT_ZOOM = 1.22
 
-def _sample_background_blue(img: Image.Image) -> tuple[int, int, int]:
-    """Pick a solid blue from the center (avoids white logo strokes)."""
-    w, h = img.size
-    cx, cy = w // 2, h // 2
-    r0 = min(w, h) // 6
-    rs, gs, bs = [], [], []
-    px = img.load()
-    for y in range(cy - r0, cy + r0):
-        for x in range(cx - r0, cx + r0):
-            r, g, b, a = px[x, y]
-            if a < 200:
-                continue
-            if b > r + 40 and b > g + 30 and b > 80:
-                rs.append(r)
-                gs.append(g)
-                bs.append(b)
-    if not bs:
-        return (2, 130, 239)
-    return (int(sum(rs) / len(rs)), int(sum(gs) / len(gs)), int(sum(bs) / len(bs)))
+
+def _opaque_on_white(inner: Image.Image) -> Image.Image:
+    """Transparent edges break corner flood-fill (alpha < 128 is not fillable)."""
+    base = Image.new("RGBA", inner.size, (255, 255, 255, 255))
+    base.alpha_composite(inner)
+    return base
+
+
+def _inner_from_source_square(src: Image.Image, inner: int, zoom: float) -> Image.Image:
+    """Square source → upscale by zoom, center-crop to inner×inner so logo is larger."""
+    src = src.convert("RGBA")
+    w, h = src.size
+    side = max(w, h)
+    sq = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    sq.paste(src, ((side - w) // 2, (side - h) // 2))
+    scaled_side = max(int(round(side * zoom)), inner)
+    scaled = sq.resize((scaled_side, scaled_side), Image.LANCZOS)
+    left = (scaled.width - inner) // 2
+    top = (scaled.height - inner) // 2
+    return scaled.crop((left, top, left + inner, top + inner))
 
 
 def _flood_fill_outer_white_with_blue(img: Image.Image, blue: tuple[int, int, int]) -> Image.Image:
@@ -64,7 +70,8 @@ def _flood_fill_outer_white_with_blue(img: Image.Image, blue: tuple[int, int, in
     px = img.load()
 
     def is_strong_blue(r: int, g: int, b: int) -> bool:
-        return b >= r + 45 and b >= g + 35 and b > 90
+        # High-G “ice” blues still count as plate so flood does not eat the center.
+        return b >= r + 20 and b >= g + 15 and b > 72
 
     def is_fillable(r: int, g: int, b: int, a: int) -> bool:
         if a < 128:
@@ -106,8 +113,9 @@ def build_master() -> Image.Image:
     if src.size != (CANVAS, CANVAS):
         src = src.resize((CANVAS, CANVAS), Image.LANCZOS)
 
-    inner = src.resize((INNER, INNER), Image.LANCZOS)
-    blue = _sample_background_blue(inner)
+    inner = _inner_from_source_square(src, INNER, CONTENT_ZOOM)
+    inner = _opaque_on_white(inner)
+    blue = BRAND_BG_BLUE
     inner = _flood_fill_outer_white_with_blue(inner, blue)
 
     canvas = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
@@ -194,7 +202,10 @@ def main() -> None:
         raise SystemExit(f"missing source: {SRC}")
 
     print(f"== processing {SRC.relative_to(ROOT)} ==")
-    print(f"   canvas={CANVAS}, body={INNER}, offset={OFFSET}, radius={RADIUS}")
+    print(
+        f"   canvas={CANVAS}, body={INNER}, offset={OFFSET}, radius={RADIUS}, "
+        f"zoom={CONTENT_ZOOM}, brand_blue={BRAND_BG_BLUE}"
+    )
 
     master = build_master()
 

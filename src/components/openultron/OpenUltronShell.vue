@@ -237,14 +237,19 @@ onMounted(() => {
 }
 
 .brand-logo {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
   display: flex;
   align-items: center;
   justify-content: center;
 }
-.brand-logo-img { width: 24px; height: 24px; object-fit: contain; border-radius: 6px; }
+.brand-logo-img {
+  width: 38px;
+  height: 38px;
+  object-fit: contain;
+  border-radius: 8px;
+}
 
 .brand-name {
   font-size: 16px;
