@@ -7,6 +7,9 @@
 const fs = require('fs')
 const path = require('path')
 const crypto = require('crypto')
+const os = require('os')
+const semver = require('semver')
+const { execFileSync } = require('child_process')
 const { getAppRootPath } = require('../app-root')
 
 const TEMPLATE_DIR = path.join(__dirname, 'hello-webapp-template')
@@ -130,6 +133,24 @@ function readManifestJson(dir) {
   }
 }
 
+function readSourceMeta(appDir) {
+  const p = path.join(appDir, '.source.json')
+  if (!fs.existsSync(p)) return {}
+  try {
+    const v = JSON.parse(fs.readFileSync(p, 'utf-8'))
+    return v && typeof v === 'object' ? v : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeSourceMeta(appDir, meta) {
+  const next = meta && typeof meta === 'object' ? meta : {}
+  try {
+    fs.writeFileSync(path.join(appDir, '.source.json'), JSON.stringify(next, null, 2), 'utf-8')
+  } catch (_) {}
+}
+
 /**
  * @returns {Array<{ id: string, version: string, name: string, path: string, manifest: object }>}
  */
@@ -161,7 +182,8 @@ function listInstalledApps() {
         version: v.normalized.version,
         name: v.normalized.name,
         path: dir,
-        manifest: v.normalized
+        manifest: v.normalized,
+        sourceMeta: readSourceMeta(dir)
       })
     }
   }
@@ -704,6 +726,306 @@ function exportToZip(id, version) {
   })
 }
 
+function getCatalogRepoConfig() {
+  return {
+    repoUrl: 'https://github.com/TerraRoot3/openultron-apps.git',
+    branch: 'main',
+    catalogAppsRoot: 'apps'
+  }
+}
+
+function execGit(args, cwd) {
+  return String(execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] }) || '').trim()
+}
+
+function getWebAppsCatalogCacheRoot() {
+  const root = getAppRootPath('web-apps-catalog-cache')
+  fs.mkdirSync(root, { recursive: true })
+  return root
+}
+
+function getCatalogRepoDir(repoUrl) {
+  const key = crypto.createHash('sha1').update(String(repoUrl || '')).digest('hex').slice(0, 12)
+  return path.join(getWebAppsCatalogCacheRoot(), key)
+}
+
+function ensureRepoPulled() {
+  const cfg = getCatalogRepoConfig()
+  const repoDir = getCatalogRepoDir(cfg.repoUrl)
+  const hasGitDir = fs.existsSync(path.join(repoDir, '.git'))
+  try {
+    if (!hasGitDir) {
+      fs.mkdirSync(path.dirname(repoDir), { recursive: true })
+      execGit(['clone', '--depth', '1', '--branch', cfg.branch, cfg.repoUrl, repoDir], process.cwd())
+      try { execGit(['fetch', '--tags', 'origin'], repoDir) } catch (_) {}
+    } else {
+      execGit(['fetch', '--depth', '1', 'origin', cfg.branch], repoDir)
+      try { execGit(['fetch', '--tags', 'origin'], repoDir) } catch (_) {}
+      execGit(['checkout', '-B', cfg.branch, 'FETCH_HEAD'], repoDir)
+    }
+    const commit = execGit(['rev-parse', 'HEAD'], repoDir)
+    return { success: true, repoDir, ...cfg, commit }
+  } catch (e) {
+    return { success: false, repoDir, ...cfg, error: `git 拉取失败: ${e.message || String(e)}` }
+  }
+}
+
+function parseOfficialTagVersion(appId, tagName) {
+  const raw = String(tagName || '').trim()
+  const prefix = `${appId}/v`
+  if (!raw.startsWith(prefix)) return null
+  const v = raw.slice(prefix.length).trim()
+  return semver.valid(v) ? v : null
+}
+
+function listOfficialTagsForApp(repoDir, appId) {
+  let lines = ''
+  try {
+    lines = execGit(['tag', '--list', `${appId}/v*`], repoDir)
+  } catch (e) {
+    return { success: false, error: `读取 tag 失败: ${e.message || String(e)}`, tags: [] }
+  }
+  const tags = String(lines || '')
+    .split(/\r?\n/)
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .map((tag) => ({ tag, version: parseOfficialTagVersion(appId, tag) }))
+    .filter((x) => !!x.version)
+    .sort((a, b) => semver.rcompare(a.version, b.version))
+  return { success: true, tags }
+}
+
+function getInstalledAppVersionDir(appId, version) {
+  const root = ensureWebAppsRoot()
+  const dir = path.resolve(path.join(root, String(appId || ''), String(version || '')))
+  if (!isPathInside(root, dir)) return ''
+  if (!fs.existsSync(path.join(dir, 'manifest.json'))) return ''
+  return dir
+}
+
+function maybeBackfillCatalogSourceMeta(repoDir, appId, installedVersion, latestTag) {
+  const ver = String(installedVersion || '').trim()
+  if (!appId || !ver) return
+  const dir = getInstalledAppVersionDir(appId, ver)
+  if (!dir) return
+  const meta = readSourceMeta(dir)
+  if (meta && meta.source) return
+
+  // 仅在“已安装版本属于该 app 的官方 tag 版本”时回填，避免把同名本地应用误标为远端
+  const listed = listOfficialTagsForApp(repoDir, appId)
+  if (!listed.success || !Array.isArray(listed.tags) || listed.tags.length === 0) return
+  const hasExact = listed.tags.some((t) => String(t.version || '') === ver)
+  if (!hasExact) return
+
+  writeSourceMeta(dir, {
+    source: 'catalog',
+    appId,
+    tag: String(latestTag || ''),
+    repo: getCatalogRepoConfig().repoUrl,
+    backfilledAt: new Date().toISOString()
+  })
+}
+
+function getInstalledLatestVersionMap() {
+  const installed = listInstalledApps()
+  const byAppId = {}
+  for (const item of installed) {
+    const id = String(item.id || '').trim()
+    const ver = String(item.version || '').trim()
+    if (!id || !ver) continue
+    if (!byAppId[id]) {
+      byAppId[id] = ver
+      continue
+    }
+    const cur = byAppId[id]
+    if (semver.valid(ver) && semver.valid(cur)) {
+      if (semver.gt(ver, cur)) byAppId[id] = ver
+    } else if (ver > cur) {
+      byAppId[id] = ver
+    }
+  }
+  return byAppId
+}
+
+function installAppFromSourceDir(sourceDir, options = {}) {
+  const manifest = readManifestJson(sourceDir)
+  const v = validateMvpManifest(manifest, { checkHostVersion: true })
+  if (!v.ok) return { success: false, error: v.error || 'manifest 校验失败' }
+  const { id, version } = v.normalized
+  const root = ensureWebAppsRoot()
+  const dest = path.resolve(path.join(root, id, version))
+  if (!isPathInside(root, dest)) return { success: false, error: '安装目标路径非法（越界）' }
+  try {
+    if (fs.existsSync(dest)) fs.rmSync(dest, { recursive: true, force: true })
+    copyDirRecursive(sourceDir, dest)
+    writeSourceMeta(dest, options.sourceMeta || { source: 'local' })
+    require('./guest-session').invalidateManifestNetCache(id, version)
+  } catch (e) {
+    return { success: false, error: e.message || String(e) }
+  }
+  return { success: true, id, version, path: dest }
+}
+
+function installCatalogAppByTag(repoDir, root, appId, tag) {
+  const rel = `${root}/${appId}`
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'openultron-webapp-tag-'))
+  const tarPath = path.join(tmp, 'src.tar')
+  try {
+    const archiveBuf = execFileSync('git', ['archive', tag, rel], {
+      cwd: repoDir,
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+    fs.writeFileSync(tarPath, archiveBuf)
+    execFileSync('tar', ['-xf', tarPath, '-C', tmp], { stdio: ['ignore', 'pipe', 'pipe'] })
+    const sourceDir = path.resolve(tmp, rel)
+    return installAppFromSourceDir(sourceDir, {
+      sourceMeta: {
+        source: 'catalog',
+        appId,
+        tag,
+        repo: getCatalogRepoConfig().repoUrl
+      }
+    })
+  } catch (e) {
+    return { success: false, error: `安装失败: ${e.message || String(e)}` }
+  } finally {
+    try { fs.rmSync(tmp, { recursive: true, force: true }) } catch (_) {}
+  }
+}
+
+function listRemoteCatalogApps() {
+  const pulled = ensureRepoPulled()
+  if (!pulled.success) return { ...pulled, apps: [] }
+  const appsRoot = path.resolve(pulled.repoDir, pulled.catalogAppsRoot)
+  if (!isPathInside(pulled.repoDir, appsRoot) || !fs.existsSync(appsRoot)) {
+    return { success: false, error: `未找到 catalog 目录: ${pulled.catalogAppsRoot}`, apps: [] }
+  }
+  const installedMap = getInstalledLatestVersionMap()
+  const dirs = fs.readdirSync(appsRoot, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name)
+  const apps = dirs.map((appId) => {
+    const listed = listOfficialTagsForApp(pulled.repoDir, appId)
+    const latest = listed.success && listed.tags[0] ? listed.tags[0] : null
+    const installedVersion = installedMap[appId] || ''
+    const hasUpdate = !!(latest && (!semver.valid(installedVersion) || semver.gt(latest.version, installedVersion)))
+    return {
+      appId,
+      installedVersion,
+      latestVersion: latest?.version || '',
+      latestTag: latest?.tag || '',
+      hasOfficialRelease: !!latest,
+      hasUpdate
+    }
+  })
+  return { success: true, apps, commit: pulled.commit }
+}
+
+function installRemoteApps(payload = {}) {
+  const pulled = ensureRepoPulled()
+  if (!pulled.success) return { ...pulled, items: [] }
+  const listed = listRemoteCatalogApps()
+  if (!listed.success) return { success: false, error: listed.error || '读取远端应用失败', items: [] }
+  const wantedIds = Array.isArray(payload.appIds)
+    ? [...new Set(payload.appIds.map((x) => String(x || '').trim()).filter(Boolean))]
+    : []
+  const targets = payload.all === true ? listed.apps : listed.apps.filter((a) => wantedIds.includes(a.appId))
+  const items = []
+  for (const app of targets) {
+    if (!app.hasOfficialRelease || !app.latestTag) {
+      items.push({ appId: app.appId, success: false, error: '无正式版 tag' })
+      continue
+    }
+    const r = installCatalogAppByTag(pulled.repoDir, pulled.catalogAppsRoot, app.appId, app.latestTag)
+    items.push({ appId: app.appId, latestVersion: app.latestVersion, latestTag: app.latestTag, ...r })
+  }
+  return { success: true, items }
+}
+
+function checkRemoteUpdates(payload = {}) {
+  const listed = listRemoteCatalogApps()
+  if (!listed.success) return { success: false, error: listed.error || '检查更新失败', items: [] }
+  const pulled = ensureRepoPulled()
+  if (pulled.success) {
+    for (const app of listed.apps) {
+      maybeBackfillCatalogSourceMeta(pulled.repoDir, app.appId, app.installedVersion, app.latestTag)
+    }
+  }
+  const wantedIds = Array.isArray(payload.appIds)
+    ? [...new Set(payload.appIds.map((x) => String(x || '').trim()).filter(Boolean))]
+    : []
+  const items = wantedIds.length > 0 ? listed.apps.filter((a) => wantedIds.includes(a.appId)) : listed.apps
+  return { success: true, items }
+}
+
+function updateRemoteApps(payload = {}) {
+  const checked = checkRemoteUpdates(payload)
+  if (!checked.success) return { success: false, error: checked.error || '检查更新失败', items: [] }
+  const targets = payload.all === true
+    ? checked.items.filter((x) => x.hasUpdate)
+    : checked.items.filter((x) => x.hasUpdate)
+  return installRemoteApps({ appIds: targets.map((x) => x.appId), all: false })
+}
+
+function parseGitHubRepo(repoUrl) {
+  const src = String(repoUrl || '').trim()
+  if (!src) return { owner: '', repo: '' }
+  let m = src.match(/^https?:\/\/github\.com\/([^/]+)\/([^/.]+)(?:\.git)?$/i)
+  if (m) return { owner: m[1], repo: m[2] }
+  m = src.match(/^git@github\.com:([^/]+)\/([^/.]+)(?:\.git)?$/i)
+  if (m) return { owner: m[1], repo: m[2] }
+  return { owner: '', repo: '' }
+}
+
+function sanitizeBranchFragment(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')
+}
+
+function publishWebAppToCatalog(payload = {}) {
+  const id = String(payload.id || '').trim()
+  const version = String(payload.version || '').trim()
+  if (!id || !version) return { success: false, error: '缺少 id 或 version' }
+  const root = ensureWebAppsRoot()
+  const localDir = path.resolve(path.join(root, id, version))
+  if (!isPathInside(root, localDir) || !fs.existsSync(path.join(localDir, 'manifest.json'))) {
+    return { success: false, error: '本地应用不存在' }
+  }
+  const pulled = ensureRepoPulled()
+  if (!pulled.success) return { success: false, error: pulled.error || '拉取仓库失败' }
+  const repoDir = pulled.repoDir
+  const targetDir = path.resolve(path.join(repoDir, pulled.catalogAppsRoot, id))
+  if (!isPathInside(repoDir, targetDir)) return { success: false, error: '目标目录非法（越界）' }
+  const branch = `publish/${sanitizeBranchFragment(id)}/v${sanitizeBranchFragment(version)}-${Date.now().toString(36)}`
+  try {
+    execGit(['checkout', '-B', branch, `origin/${pulled.branch}`], repoDir)
+    if (fs.existsSync(targetDir)) fs.rmSync(targetDir, { recursive: true, force: true })
+    copyDirRecursive(localDir, targetDir)
+    execGit(['add', '-A', path.relative(repoDir, targetDir)], repoDir)
+    try {
+      const staged = execGit(['diff', '--cached', '--name-only'], repoDir)
+      if (!staged) return { success: false, error: '没有可发布改动' }
+    } catch (_) {}
+    execGit(['commit', '-m', `publish(${id}): ${version}`], repoDir)
+    execGit(['push', '-u', 'origin', branch], repoDir)
+  } catch (e) {
+    return { success: false, error: `发布提交失败: ${e.message || String(e)}` }
+  }
+  const ghRepo = parseGitHubRepo(pulled.repoUrl)
+  if (!ghRepo.owner || !ghRepo.repo) {
+    return { success: false, error: '仅支持 GitHub 仓库自动创建 PR' }
+  }
+  try {
+    const title = `Publish ${id} ${version}`
+    const body = `## Summary\n- publish ${id}@${version} to catalog\n`
+    const prUrl = execFileSync(
+      'gh',
+      ['pr', 'create', '--repo', `${ghRepo.owner}/${ghRepo.repo}`, '--base', pulled.branch, '--head', branch, '--title', title, '--body', body],
+      { cwd: repoDir, stdio: ['ignore', 'pipe', 'pipe'] }
+    ).toString().trim()
+    return { success: true, branch, prUrl }
+  } catch (e) {
+    return { success: false, error: `创建 PR 失败: ${e.message || String(e)}`, branch }
+  }
+}
+
 function registerWebAppsIpc(registerChannel) {
   registerChannel('web-apps-list', () => {
     try {
@@ -812,6 +1134,46 @@ function registerWebAppsIpc(registerChannel) {
   })
 
   registerChannel('web-apps-install-sample', () => installHelloSample())
+
+  registerChannel('web-apps-list-remote', () => {
+    try {
+      return listRemoteCatalogApps()
+    } catch (e) {
+      return { success: false, error: e.message || String(e), apps: [] }
+    }
+  })
+
+  registerChannel('web-apps-install-remote', (event, payload = {}) => {
+    try {
+      return installRemoteApps(payload || {})
+    } catch (e) {
+      return { success: false, error: e.message || String(e), items: [] }
+    }
+  })
+
+  registerChannel('web-apps-check-updates', (event, payload = {}) => {
+    try {
+      return checkRemoteUpdates(payload || {})
+    } catch (e) {
+      return { success: false, error: e.message || String(e), items: [] }
+    }
+  })
+
+  registerChannel('web-apps-update-remote', (event, payload = {}) => {
+    try {
+      return updateRemoteApps(payload || {})
+    } catch (e) {
+      return { success: false, error: e.message || String(e), items: [] }
+    }
+  })
+
+  registerChannel('web-apps-publish', (event, payload = {}) => {
+    try {
+      return publishWebAppToCatalog(payload || {})
+    } catch (e) {
+      return { success: false, error: e.message || String(e) }
+    }
+  })
 
   registerChannel('web-apps-create', (event, payload = {}) => {
     try {
@@ -932,6 +1294,11 @@ module.exports = {
   listInstalledApps,
   getPreviewUrlForApp,
   installHelloSample,
+  listRemoteCatalogApps,
+  installRemoteApps,
+  checkRemoteUpdates,
+  updateRemoteApps,
+  publishWebAppToCatalog,
   importFromZip,
   exportToZip,
   createBlankWebApp,

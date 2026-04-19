@@ -19,16 +19,20 @@
           >
             新建应用
           </button>
-          <button type="button" class="wam-btn" :disabled="loading" @click="installSample">
-            安装示例（Hello）
+          <button type="button" class="wam-btn" :disabled="loading || remoteLoading" @click="openInstallModal">
+            安装应用
           </button>
-          <button type="button" class="wam-btn" :disabled="loading" @click="importZip">
-            从 ZIP 导入
+          <button type="button" class="wam-btn" :disabled="loading || remoteLoading" @click="openUpdateModal">
+            检查更新
           </button>
         </div>
       </div>
     </header>
 
+    <p v-if="statusMsg" class="wam-status">
+      {{ statusMsg }}
+      <a v-if="statusLink" :href="statusLink" target="_blank" rel="noreferrer noopener">查看详情</a>
+    </p>
     <p v-if="errorMsg" class="wam-error">{{ errorMsg }}</p>
 
     <div v-if="loading && !apps.length" class="wam-loading">加载中…</div>
@@ -44,18 +48,93 @@
     <ul v-else class="wam-list">
       <li v-for="a in apps" :key="a.id + '@' + a.version" class="wam-row">
         <div class="wam-meta">
-          <span class="wam-name">{{ a.name }}</span>
+          <span class="wam-name">
+            {{ a.name }}
+            <em class="wam-source-badge" :class="isCatalogApp(a) ? 'catalog' : 'local'">{{ isCatalogApp(a) ? '远端' : '本地' }}</em>
+          </span>
           <span class="wam-id">{{ a.id }}</span>
-          <span class="wam-ver">{{ a.version }}</span>
+          <span class="wam-ver">
+            {{ a.version }}
+            <em v-if="updatesByAppId[a.id]?.hasUpdate" class="wam-update-badge">可更新到 {{ updatesByAppId[a.id]?.latestVersion }}</em>
+          </span>
         </div>
         <div class="wam-row-actions">
           <button type="button" class="wam-btn" @click="openOnly(a)">打开</button>
           <button type="button" class="wam-btn primary" @click="openStudio(a)">工作室</button>
+          <button
+            v-if="!isCatalogApp(a)"
+            type="button"
+            class="wam-btn"
+            :disabled="publishingAppIds.includes(a.id + '@' + a.version)"
+            @click="publishApp(a)"
+          >
+            {{ publishingAppIds.includes(a.id + '@' + a.version) ? '发布中…' : '发布' }}
+          </button>
           <button type="button" class="wam-btn ghost" @click="exportZip(a)">导出 ZIP</button>
           <button type="button" class="wam-btn danger" @click="deleteApp(a)">删除</button>
         </div>
       </li>
     </ul>
+
+    <div v-if="installModalOpen" class="wam-modal-backdrop" role="presentation" @click.self="closeInstallModal">
+      <div class="wam-modal wam-modal-wide" role="dialog" aria-labelledby="wam-install-title" @keydown.esc.stop="closeInstallModal">
+        <h3 id="wam-install-title" class="wam-modal-title">安装应用</h3>
+        <p class="wam-modal-desc">从远端 catalog 读取列表，可单个安装或全部安装。</p>
+        <div class="wam-modal-actions wam-modal-actions-start">
+          <button type="button" class="wam-btn" :disabled="remoteLoading || installingAll" @click="loadRemoteApps">
+            刷新列表
+          </button>
+          <button type="button" class="wam-btn primary" :disabled="remoteLoading || installingAll || !remoteApps.length" @click="installAllRemoteApps">
+            {{ installingAll ? '安装中…' : '全部安装' }}
+          </button>
+        </div>
+        <div class="wam-catalog-list">
+          <div v-for="item in remoteApps" :key="item.appId" class="wam-catalog-item">
+            <span class="wam-catalog-name">{{ item.appId }}</span>
+            <span class="wam-catalog-meta">最新: {{ item.latestVersion || '无正式版' }}</span>
+            <button
+              type="button"
+              class="wam-btn"
+              :disabled="remoteLoading || !item.hasOfficialRelease || installingAppIds.includes(item.appId)"
+              @click="installOneRemoteApp(item.appId)"
+            >
+              {{ installingAppIds.includes(item.appId) ? '安装中…' : '安装' }}
+            </button>
+          </div>
+          <p v-if="!remoteApps.length && !remoteLoading" class="wam-modal-desc">暂无可安装应用。</p>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="updateModalOpen" class="wam-modal-backdrop" role="presentation" @click.self="closeUpdateModal">
+      <div class="wam-modal wam-modal-wide" role="dialog" aria-labelledby="wam-update-title" @keydown.esc.stop="closeUpdateModal">
+        <h3 id="wam-update-title" class="wam-modal-title">检查更新</h3>
+        <p class="wam-modal-desc">展示已安装应用的远端正式版状态，可单个更新或全部更新。</p>
+        <div class="wam-modal-actions wam-modal-actions-start">
+          <button type="button" class="wam-btn" :disabled="remoteLoading || updatingAll" @click="refreshUpdates">
+            刷新状态
+          </button>
+          <button type="button" class="wam-btn primary" :disabled="remoteLoading || updatingAll || !updatableItems.length" @click="updateAllRemoteApps">
+            {{ updatingAll ? '更新中…' : '全部更新' }}
+          </button>
+        </div>
+        <div class="wam-catalog-list">
+          <div v-for="item in updateItems" :key="item.appId" class="wam-catalog-item">
+            <span class="wam-catalog-name">{{ item.appId }}</span>
+            <span class="wam-catalog-meta">已装: {{ item.installedVersion || '-' }} / 最新: {{ item.latestVersion || '-' }}</span>
+            <button
+              type="button"
+              class="wam-btn"
+              :disabled="remoteLoading || !item.hasUpdate || updatingAppIds.includes(item.appId)"
+              @click="updateOneRemoteApp(item.appId)"
+            >
+              {{ updatingAppIds.includes(item.appId) ? '更新中…' : (item.hasUpdate ? '更新' : '已是最新') }}
+            </button>
+          </div>
+          <p v-if="!updateItems.length && !remoteLoading" class="wam-modal-desc">暂无可检查项目。</p>
+        </div>
+      </div>
+    </div>
 
     <div v-if="createModalOpen" class="wam-modal-backdrop" role="presentation" @click.self="closeCreateModal">
       <div class="wam-modal" role="dialog" aria-labelledby="wam-create-title" @keydown.esc.stop="closeCreateModal">
@@ -84,7 +163,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { showConfirm } from '../../composables/useConfirm.js'
 
@@ -93,11 +172,29 @@ const router = useRouter()
 const api = window.electronAPI?.ai
 const loading = ref(false)
 const creating = ref(false)
+const remoteLoading = ref(false)
+const installingAll = ref(false)
+const updatingAll = ref(false)
+const installingAppIds = ref([])
+const updatingAppIds = ref([])
+const publishingAppIds = ref([])
 const apps = ref([])
+const remoteApps = ref([])
+const updateItems = ref([])
+const updatesByAppId = ref({})
 const errorMsg = ref('')
+const statusMsg = ref('')
+const statusLink = ref('')
 
 const createModalOpen = ref(false)
 const createNameInput = ref('')
+const installModalOpen = ref(false)
+const updateModalOpen = ref(false)
+const updatableItems = computed(() => updateItems.value.filter((x) => x?.hasUpdate))
+
+function isCatalogApp(a) {
+  return a?.sourceMeta?.source === 'catalog'
+}
 
 async function load() {
   if (!api?.listWebApps) {
@@ -114,6 +211,87 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+async function loadRemoteApps() {
+  if (!api?.listRemoteWebApps) return
+  remoteLoading.value = true
+  try {
+    const r = await api.listRemoteWebApps()
+    if (!r?.success) {
+      errorMsg.value = r?.error || '读取远端应用失败'
+      remoteApps.value = []
+      return
+    }
+    remoteApps.value = Array.isArray(r.apps) ? r.apps : []
+  } catch (e) {
+    errorMsg.value = e?.message || String(e)
+  } finally {
+    remoteLoading.value = false
+  }
+}
+
+async function refreshUpdates() {
+  if (!api?.checkRemoteWebAppUpdates) return
+  remoteLoading.value = true
+  try {
+    const r = await api.checkRemoteWebAppUpdates({})
+    if (!r?.success) {
+      errorMsg.value = r?.error || '检查更新失败'
+      updateItems.value = []
+      updatesByAppId.value = {}
+      return
+    }
+    const items = Array.isArray(r.items) ? r.items : []
+    updateItems.value = items.filter((x) => x?.installedVersion)
+    const map = {}
+    for (const item of items) {
+      if (item?.appId) map[item.appId] = item
+    }
+    updatesByAppId.value = map
+  } catch (e) {
+    errorMsg.value = e?.message || String(e)
+  } finally {
+    remoteLoading.value = false
+  }
+}
+
+async function refreshUpdatesInBackground() {
+  if (!api?.checkRemoteWebAppUpdates) return
+  try {
+    const r = await api.checkRemoteWebAppUpdates({})
+    if (!r?.success) return
+    const items = Array.isArray(r.items) ? r.items : []
+    const map = {}
+    for (const item of items) {
+      if (item?.appId) map[item.appId] = item
+    }
+    updatesByAppId.value = map
+  } catch (_) {
+    // ignore background errors to keep first paint smooth
+  }
+}
+
+function openInstallModal() {
+  installModalOpen.value = true
+  errorMsg.value = ''
+  loadRemoteApps()
+}
+
+function closeInstallModal() {
+  if (remoteLoading.value || installingAll.value) return
+  installModalOpen.value = false
+}
+
+function openUpdateModal() {
+  updateModalOpen.value = true
+  errorMsg.value = ''
+  refreshUpdates()
+}
+
+function closeUpdateModal() {
+  if (remoteLoading.value || updatingAll.value) return
+  updateModalOpen.value = false
 }
 
 function openCreateModal() {
@@ -153,32 +331,133 @@ async function submitCreate() {
   }
 }
 
-async function installSample() {
+async function installOneRemoteApp(appId) {
+  if (!api?.installRemoteWebApps || !appId) return
+  const set = new Set(installingAppIds.value)
+  set.add(appId)
+  installingAppIds.value = [...set]
   errorMsg.value = ''
   try {
-    const r = await api.installWebAppSample()
+    const r = await api.installRemoteWebApps({ appIds: [appId], all: false })
     if (!r?.success) {
-      errorMsg.value = r?.error || '安装失败'
+      errorMsg.value = r?.error || `安装 ${appId} 失败`
       return
     }
-    await load()
+    const failed = (r.items || []).find((x) => x?.success === false)
+    if (failed) {
+      errorMsg.value = failed.error || `安装 ${failed.appId || appId} 失败`
+    } else {
+      await load()
+      await refreshUpdates()
+      await loadRemoteApps()
+    }
   } catch (e) {
     errorMsg.value = e?.message || String(e)
+  } finally {
+    installingAppIds.value = installingAppIds.value.filter((x) => x !== appId)
   }
 }
 
-async function importZip() {
+async function installAllRemoteApps() {
+  if (!api?.installRemoteWebApps) return
+  installingAll.value = true
   errorMsg.value = ''
   try {
-    const r = await api.importWebAppZip({})
-    if (r?.message === 'canceled') return
+    const r = await api.installRemoteWebApps({ all: true })
     if (!r?.success) {
-      errorMsg.value = r?.error || r?.message || '导入失败'
+      errorMsg.value = r?.error || '全部安装失败'
       return
     }
+    const failed = (r.items || []).filter((x) => x?.success === false)
+    if (failed.length > 0) {
+      errorMsg.value = `部分安装失败：${failed.map((x) => x.appId).join(', ')}`
+    }
     await load()
+    await refreshUpdates()
+    await loadRemoteApps()
   } catch (e) {
     errorMsg.value = e?.message || String(e)
+  } finally {
+    installingAll.value = false
+  }
+}
+
+async function updateOneRemoteApp(appId) {
+  if (!api?.updateRemoteWebApps || !appId) return
+  const set = new Set(updatingAppIds.value)
+  set.add(appId)
+  updatingAppIds.value = [...set]
+  errorMsg.value = ''
+  try {
+    const r = await api.updateRemoteWebApps({ appIds: [appId], all: false })
+    if (!r?.success) {
+      errorMsg.value = r?.error || `更新 ${appId} 失败`
+      return
+    }
+    const failed = (r.items || []).find((x) => x?.success === false)
+    if (failed) {
+      errorMsg.value = failed.error || `更新 ${failed.appId || appId} 失败`
+    } else {
+      await load()
+      await refreshUpdates()
+    }
+  } catch (e) {
+    errorMsg.value = e?.message || String(e)
+  } finally {
+    updatingAppIds.value = updatingAppIds.value.filter((x) => x !== appId)
+  }
+}
+
+async function updateAllRemoteApps() {
+  if (!api?.updateRemoteWebApps) return
+  updatingAll.value = true
+  errorMsg.value = ''
+  try {
+    const r = await api.updateRemoteWebApps({ all: true })
+    if (!r?.success) {
+      errorMsg.value = r?.error || '全部更新失败'
+      return
+    }
+    const failed = (r.items || []).filter((x) => x?.success === false)
+    if (failed.length > 0) {
+      errorMsg.value = `部分更新失败：${failed.map((x) => x.appId).join(', ')}`
+    }
+    await load()
+    await refreshUpdates()
+  } catch (e) {
+    errorMsg.value = e?.message || String(e)
+  } finally {
+    updatingAll.value = false
+  }
+}
+
+async function publishApp(a) {
+  if (!api?.publishWebApp) {
+    errorMsg.value = '当前版本不支持发布 API'
+    return
+  }
+  const key = `${a.id}@${a.version}`
+  if (publishingAppIds.value.includes(key)) return
+  publishingAppIds.value = [...publishingAppIds.value, key]
+  errorMsg.value = ''
+  statusMsg.value = ''
+  statusLink.value = ''
+  try {
+    const r = await api.publishWebApp({ id: a.id, version: a.version })
+    if (!r?.success) {
+      errorMsg.value = r?.error || '发布失败'
+      return
+    }
+    if (r?.prUrl) {
+      statusMsg.value = '已提交审核'
+      statusLink.value = r.prUrl
+    } else {
+      statusMsg.value = '已提交审核'
+    }
+  } catch (e) {
+    errorMsg.value = e?.message || String(e)
+  } finally {
+    publishingAppIds.value = publishingAppIds.value.filter((x) => x !== key)
   }
 }
 
@@ -239,9 +518,12 @@ async function deleteApp(a) {
 
 onMounted(() => {
   load()
+  setTimeout(() => {
+    refreshUpdatesInBackground()
+  }, 1200)
 })
 
-defineExpose({ load, installSample, importZip })
+defineExpose({ load, refreshUpdates, openInstallModal, openUpdateModal })
 </script>
 
 <style scoped>
@@ -295,6 +577,15 @@ defineExpose({ load, installSample, importZip })
   font-size: 13px;
   margin-bottom: 12px;
   padding: 0 20px;
+}
+.wam-status {
+  color: var(--ou-accent);
+  font-size: 13px;
+  margin-bottom: 12px;
+  padding: 0 20px;
+}
+.wam-status a {
+  margin-left: 8px;
 }
 .wam-loading {
   color: var(--ou-text-muted);
@@ -350,11 +641,34 @@ defineExpose({ load, installSample, importZip })
   font-size: 14px;
   color: var(--ou-text);
 }
+.wam-source-badge {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 11px;
+  font-style: normal;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--ou-border);
+  color: var(--ou-text-muted);
+}
+.wam-source-badge.catalog {
+  color: var(--ou-accent);
+  border-color: color-mix(in srgb, var(--ou-accent) 45%, var(--ou-border));
+}
+.wam-source-badge.local {
+  color: #16a34a;
+  border-color: color-mix(in srgb, #16a34a 45%, var(--ou-border));
+}
 .wam-id,
 .wam-ver {
   font-size: 12px;
   color: var(--ou-text-muted);
   font-family: ui-monospace, monospace;
+}
+.wam-update-badge {
+  margin-left: 8px;
+  font-style: normal;
+  color: var(--ou-accent);
 }
 .wam-row-actions {
   display: flex;
@@ -420,6 +734,9 @@ defineExpose({ load, installSample, importZip })
   background: var(--ou-bg-elevated, var(--ou-bg-main));
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
 }
+.wam-modal.wam-modal-wide {
+  max-width: 760px;
+}
 .wam-modal-title {
   margin: 0 0 8px;
   font-size: 16px;
@@ -454,5 +771,32 @@ defineExpose({ load, installSample, importZip })
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+.wam-modal-actions-start {
+  justify-content: flex-start;
+  margin-bottom: 10px;
+}
+.wam-catalog-list {
+  border: 1px solid var(--ou-border);
+  border-radius: 8px;
+  max-height: 320px;
+  overflow: auto;
+  padding: 6px 8px;
+}
+.wam-catalog-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 2px;
+}
+.wam-catalog-name {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, monospace;
+  color: var(--ou-text);
+}
+.wam-catalog-meta {
+  font-size: 12px;
+  color: var(--ou-text-muted);
 }
 </style>
