@@ -5,17 +5,19 @@
 const DEFAULT_CONFIG = {
   enabled: true,
   /** 仅统计「对话消息」（user/assistant/tool，不含 system）的估算 tokens；不把注入的大段 system 算进去，避免首轮就误触发 */
-  threshold: 24000,
+  threshold: 160000,
   /** 保留最近 N 条对话原文；工具多轮会迅速占满条数，宜略大以减少「同一轮用户请求内」过早压缩 */
   keepRecent: 20,
+  /** 除固定条数外，额外保留最近 N 个 user turn 起始后的完整工作集，避免把当前任务链压进摘要 */
+  keepRecentUserTurns: 2,
   summaryMaxTokens: 420,
   /** 首轮压缩后仍超阈值时，第二轮保留的最近对话条数（更小 = 更激进） */
   aggressiveKeepRecent: 10,
   /**
    * OpenRouter：与 threshold 取 min，作为「对话部分」的触发上限（仍为粗估 char/3）。
-   * 默认与 threshold 对齐，避免过早压缩导致模型误以为任务已结束；若账号 prompt 上限较紧可在 openultron.json 单独调低。
+   * 默认单独保守，避免把 Codex / OpenAI 的大上下文阈值错误套到更小窗口的兼容路由上。
    */
-  openRouterSoftBudget: 24000,
+  openRouterSoftBudget: 48000,
   /**
    * 估算节省的 tokens 低于此值则放弃本次压缩（避免摘要比原文还长、白耗一次模型调用）。
    */
@@ -104,6 +106,28 @@ function clipSummaryDialogBody(text, maxChars) {
   const tail = Math.max(4000, lim - head)
   const omitted = Math.max(0, s.length - head - tail)
   return `${s.slice(0, head)}\n\n...(中间 ${omitted} 字已省略)\n\n${s.slice(-tail)}`
+}
+
+/**
+ * 优先保留最近任务工作集：
+ * - 基础上仍保留最近 keepRecent 条消息
+ * - 另外至少保留最近 keepRecentUserTurns 个 user turn 及其后续 assistant/tool 闭环
+ * 这样压缩更接近「任务边界」而非单纯消息条数。
+ */
+function findRecentWorkingSetStart(dialogMsgs, cfg = {}) {
+  const list = Array.isArray(dialogMsgs) ? dialogMsgs : []
+  if (list.length === 0) return 0
+  const keepRecent = Math.max(1, Number(cfg.keepRecent) || DEFAULT_CONFIG.keepRecent)
+  const keepRecentUserTurns = Math.max(1, Number(cfg.keepRecentUserTurns) || DEFAULT_CONFIG.keepRecentUserTurns || 2)
+  let start = Math.max(0, list.length - keepRecent)
+  let seenUserTurns = 0
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (list[i]?.role !== 'user') continue
+    seenUserTurns += 1
+    start = Math.min(start, i)
+    if (seenUserTurns >= keepRecentUserTurns) break
+  }
+  return Math.max(0, Math.min(start, list.length))
 }
 
 /** 供摘要模型阅读的对话行（含 tool 的极短摘录，避免大段 JSON 进 prompt） */
@@ -265,7 +289,7 @@ async function compressMessages(messages, config = {}, callLLM) {
     return messages  // 不需要压缩
   }
 
-  let splitIdx = alignCompressionSplitIndex(dialogMsgs, dialogMsgs.length - cfg.keepRecent)
+  let splitIdx = alignCompressionSplitIndex(dialogMsgs, findRecentWorkingSetStart(dialogMsgs, cfg))
   const toCompress = dialogMsgs.slice(0, splitIdx)
   const recentMsgs = dialogMsgs.slice(splitIdx)
 

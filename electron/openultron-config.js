@@ -25,6 +25,19 @@ const DEFAULT_AI = {
   temperature: 0,
   maxTokens: 0,
   maxToolIterations: 0,
+  contextCompression: {
+    enabled: true,
+    threshold: 160000,
+    keepRecent: 20,
+    keepRecentUserTurns: 2,
+    summaryMaxTokens: 420,
+    aggressiveKeepRecent: 10,
+    openRouterSoftBudget: 48000,
+    minCompressSavingsTokens: 800,
+    compressCooldownIterations: 2,
+    flushMemoryBeforeCompress: false,
+    maxCompressionSummaryStack: 1
+  },
   providers: [
     // 国内主流
     { name: '七牛 AI', baseUrl: 'https://api.qnaigc.com/v1', apiKey: '' },

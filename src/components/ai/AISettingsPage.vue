@@ -303,6 +303,8 @@ const rawData = reactive({
   temperature: 0,
   maxTokens: 0,
   maxToolIterations: 0,
+  contextCompression: null,
+  toolDefinitions: null,
   providers: JSON.parse(JSON.stringify(DEFAULT_PROVIDERS)),
 })
 
@@ -466,6 +468,12 @@ function applyRawToState(raw) {
   rawData.temperature = raw.temperature ?? 0
   rawData.maxTokens = raw.maxTokens ?? 0
   rawData.maxToolIterations = raw.maxToolIterations ?? 0
+  rawData.contextCompression = raw.contextCompression && typeof raw.contextCompression === 'object'
+    ? JSON.parse(JSON.stringify(raw.contextCompression))
+    : null
+  rawData.toolDefinitions = raw.toolDefinitions && typeof raw.toolDefinitions === 'object'
+    ? JSON.parse(JSON.stringify(raw.toolDefinitions))
+    : null
   rawData.providers = mergeProvidersWithSaved(DEFAULT_PROVIDERS, raw.providers)
   const cur = rawData.providers.find(p => p.baseUrl === rawData.defaultProvider)
   config.apiBaseUrl = rawData.defaultProvider
@@ -872,6 +880,12 @@ function buildRawPayload() {
     temperature: config.temperature,
     maxTokens: config.maxTokens,
     maxToolIterations: config.maxToolIterations,
+    ...(rawData.contextCompression && typeof rawData.contextCompression === 'object'
+      ? { contextCompression: JSON.parse(JSON.stringify(rawData.contextCompression)) }
+      : {}),
+    ...(rawData.toolDefinitions && typeof rawData.toolDefinitions === 'object'
+      ? { toolDefinitions: JSON.parse(JSON.stringify(rawData.toolDefinitions)) }
+      : {}),
     providers,
   }
 }

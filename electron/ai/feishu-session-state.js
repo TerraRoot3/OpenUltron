@@ -1,5 +1,6 @@
 /**
- * 飞书会话与主会话的映射：每个 chat_id 当前对应的 sessionId（支持 /new 切新会话）
+ * 飞书会话与主会话的映射：每个 chat_id 当前对应的 sessionId。
+ * 仅允许用户显式发送 /new 时切新会话，不允许基于上下文长度或任务语义自动轮转。
  * 持久化到 <appRoot>/feishu-current-sessions.json
  */
 const path = require('path')

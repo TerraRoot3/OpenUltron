@@ -389,6 +389,7 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
     }
 
     const feishuProjectKey = conversationFile.hashProjectPath(FEISHU_PROJECT)
+    // 外部通道同样只允许用户显式发送 /new 切会话；不得因上下文长度或任务切换自动轮转 session。
     const isNew = /^\s*\/new\s*(\s|$)/.test(text) || text.trim() === '/new'
     let sessionId
     if (isNew) {

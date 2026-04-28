@@ -1,5 +1,6 @@
 /**
- * Telegram 会话映射：每个 chat_id 当前对应的 sessionId（支持 /new 切新会话）
+ * Telegram 会话映射：每个 chat_id 当前对应的 sessionId。
+ * 仅允许用户显式发送 /new 时切新会话，不允许基于上下文长度或任务语义自动轮转。
  * 持久化到 <appRoot>/telegram-current-sessions.json
  */
 const path = require('path')

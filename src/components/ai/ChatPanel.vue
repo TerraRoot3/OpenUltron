@@ -490,7 +490,23 @@ const compressionSummaryText = computed(() => {
   return parts.length ? parts.join('\n\n') : ''
 })
 
-const LOCAL_TOKEN_THRESHOLD = 24000
+const LOCAL_TOKEN_THRESHOLD = 160000
+const configuredCompressionThreshold = ref(LOCAL_TOKEN_THRESHOLD)
+
+const resolveCompressionThresholdFromRawConfig = (raw, selectedModel = '') => {
+  const cfg = raw && typeof raw === 'object' ? raw.contextCompression : null
+  const threshold = Number(cfg?.threshold)
+  const baseThreshold = Number.isFinite(threshold) && threshold > 0 ? threshold : LOCAL_TOKEN_THRESHOLD
+  const modelId = String(selectedModel || '').trim()
+  const bindings = raw && raw.modelBindings && typeof raw.modelBindings === 'object' ? raw.modelBindings : {}
+  const defaultProvider = String(raw?.defaultProvider || '').trim()
+  const baseUrl = String((modelId && bindings[modelId]) || defaultProvider || '').trim().toLowerCase()
+  const soft = Number(cfg?.openRouterSoftBudget)
+  if (baseUrl.includes('openrouter.ai') && Number.isFinite(soft) && soft > 0) {
+    return Math.min(baseThreshold, soft)
+  }
+  return baseThreshold
+}
 
 const estimateMessageTokens = (message) => {
   if (!message) return 0
@@ -560,9 +576,9 @@ const analyzeLocalTokenUsage = (list) => {
     assistant: buckets.assistant,
     assistantPct: ratio(buckets.assistant),
     compressible,
-    threshold: LOCAL_TOKEN_THRESHOLD,
-    thresholdPct: buckets.total > 0 ? Number(((compressible / LOCAL_TOKEN_THRESHOLD) * 100).toFixed(1)) : 0,
-    overThreshold: compressible > LOCAL_TOKEN_THRESHOLD,
+    threshold: configuredCompressionThreshold.value,
+    thresholdPct: configuredCompressionThreshold.value > 0 ? Number(((compressible / configuredCompressionThreshold.value) * 100).toFixed(1)) : 0,
+    overThreshold: compressible > configuredCompressionThreshold.value,
     compressionSummaryCount: buckets.compressionSummaryCount,
     compressiblePctOfTotal: ratio(compressible),
     compression: {
@@ -657,6 +673,7 @@ const loadModels = async () => {
     const configRes = await window.electronAPI.ai.getConfig()
     if (configRes.success && configRes.config) {
       const cfg = configRes.config
+      configuredCompressionThreshold.value = resolveCompressionThresholdFromRawConfig(configRes.raw || null, props.model || cfg.defaultModel || '')
       const defaultModel = String(cfg.defaultModel || '').trim()
       const pool = Array.isArray(cfg.modelPool) ? cfg.modelPool.map((x) => String(x || '').trim()).filter(Boolean) : []
       defaultModelId.value = defaultModel
@@ -678,6 +695,15 @@ watch(() => props.model, (val) => {
     currentModel.value = String(val).trim()
   }
 }, { immediate: true })
+
+watch(currentModel, async (val) => {
+  try {
+    const configRes = await window.electronAPI.ai.getConfig()
+    if (configRes?.success) {
+      configuredCompressionThreshold.value = resolveCompressionThresholdFromRawConfig(configRes.raw || null, val || configRes.config?.defaultModel || '')
+    }
+  } catch { /* ignore */ }
+})
 
 watch(() => props.projectPath, () => {
   loadSkills()
@@ -1211,14 +1237,37 @@ const removePendingAttachment = (id) => {
   pendingAttachments.value = pendingAttachments.value.filter(a => a.id !== id)
 }
 
+const uniquifyAttachmentName = (rawName, existingNames) => {
+  const input = String(rawName || '').trim() || 'file'
+  const dot = input.lastIndexOf('.')
+  const hasExt = dot > 0 && dot < input.length - 1
+  const base = hasExt ? input.slice(0, dot) : input
+  const ext = hasExt ? input.slice(dot) : ''
+  if (!existingNames.has(input)) {
+    existingNames.add(input)
+    return input
+  }
+  let index = 1
+  while (existingNames.has(`${base}${index}${ext}`)) index += 1
+  const next = `${base}${index}${ext}`
+  existingNames.add(next)
+  return next
+}
+
 const addPendingFiles = (files) => {
   const list = Array.from(files || [])
+  const existingNames = new Set(
+    pendingAttachments.value
+      .map((a) => String(a?.name || '').trim())
+      .filter(Boolean)
+  )
   for (const f of list) {
     const id = `att-${Date.now()}-${++pendingAttachmentSeed}`
+    const nextName = uniquifyAttachmentName(f.name || `file-${pendingAttachmentSeed}`, existingNames)
     pendingAttachments.value.push({
       id,
       file: f,
-      name: f.name || `file-${pendingAttachmentSeed}`,
+      name: nextName,
       size: Number(f.size || 0),
       mime: f.type || 'application/octet-stream',
       status: 'pending',
@@ -1249,23 +1298,24 @@ const readFileAsBase64 = (file) => new Promise((resolve, reject) => {
   reader.readAsDataURL(file)
 })
 
-const extractImageFilesFromClipboard = (e) => {
+const extractFilesFromClipboard = (e) => {
   const items = e?.clipboardData?.items || []
   const files = []
   for (const item of items) {
     if (!item || item.kind !== 'file') continue
     const f = item.getAsFile ? item.getAsFile() : null
     if (!f) continue
-    if ((f.type || '').startsWith('image/')) files.push(f)
+    files.push(f)
   }
   return files
 }
 
 const onInputPaste = (e) => {
   if (isStreaming.value) return
-  const imageFiles = extractImageFilesFromClipboard(e)
-  if (imageFiles.length > 0) {
-    addPendingFiles(imageFiles)
+  const files = extractFilesFromClipboard(e)
+  if (files.length > 0) {
+    e.preventDefault()
+    addPendingFiles(files)
   }
 }
 
@@ -1748,7 +1798,8 @@ const handleSend = async (opts = {}) => {
     return
   }
 
-  // /new：先压缩归档当前会话，再切到新会话；下一轮自动携带摘要
+  // /new：唯一允许显式切新会话的入口。主会话不允许基于 token/任务语义自动切 session。
+  // 行为：先压缩归档当前会话，再切到新会话；下一轮自动携带摘要
   const isNewCmd = /^\/new\s*$/i.test(text) || text === '/new'
   if (isNewCmd) {
     inputText.value = ''
@@ -1773,6 +1824,7 @@ const handleSend = async (opts = {}) => {
   let finalText = text
   let slashSystemPrompt = null
   let visionImageParts = []
+  let userArtifacts = []
 
   if (activeSlashSkills.value.length > 0) {
     const slashPromptState = slashSystemPromptCheck.value
@@ -1823,6 +1875,19 @@ const handleSend = async (opts = {}) => {
         imageMode: supportsVision ? 'vision' : 'ocr'
       })
       if (res?.success) {
+        userArtifacts = (res.accepted || []).map((a) => ({
+          artifactId: a.attachmentId || '',
+          path: a.localPath || '',
+          openPath: a.localPath || '',
+          kind: a.kind || 'file',
+          name: a.name || '',
+          size: Number(a.size || 0),
+          sourceLabel: a.kind === 'image'
+            ? (supportsVision ? '原图' : 'OCR 图片')
+            : a.kind === 'audio'
+              ? '音频附件'
+              : '附件'
+        })).filter((a) => a.path)
         const rejectedNames = new Set((res.rejected || []).map(r => r.name))
         for (const a of filesForUpload) {
           a.status = rejectedNames.has(a.name) ? 'rejected' : 'ok'
@@ -1933,6 +1998,7 @@ const handleSend = async (opts = {}) => {
     systemPrompt,
     projectPath: (props.projectPath && String(props.projectPath).trim()) || undefined,
     userContentParts,
+    userArtifacts,
     displayContent: finalText !== displayText ? displayText : undefined,
     panelId,
     sessionId: ensuredSessionId || undefined,
