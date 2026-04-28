@@ -206,7 +206,8 @@ function normalizeInbound(payload) {
   }
 }
 
-function createDingtalkAdapter(eventBus, getChannelConfig) {
+function createDingtalkAdapter(eventBus, getChannelConfig, deps = {}) {
+  const { getAIConfigLegacy, modelSupportsVision } = deps
   let running = false
   let lastError = null
 
@@ -298,11 +299,23 @@ function createDingtalkAdapter(eventBus, getChannelConfig) {
     }
     let normalizedAttachments = []
     let attachmentContextText = ''
+    let supportsVisionInput = false
     if (rawAttachments.length > 0) {
+      if (typeof getAIConfigLegacy === 'function' && typeof modelSupportsVision === 'function') {
+        try {
+          const legacy = getAIConfigLegacy() || {}
+          const configuredBaseUrl = String(legacy?.config?.apiBaseUrl || '').trim()
+          const bindings = legacy?.raw?.modelBindings && typeof legacy.raw.modelBindings === 'object' ? legacy.raw.modelBindings : {}
+          const defaultModel = String((legacy?.raw?.defaultModel || legacy?.config?.defaultModel || '')).trim()
+          const providerBaseUrl = String((defaultModel && bindings[defaultModel]) || configuredBaseUrl || '').trim()
+          supportsVisionInput = !!modelSupportsVision({ model: defaultModel || undefined, providerBaseUrl: providerBaseUrl || undefined })
+        } catch (_) { /* ignore */ }
+      }
       const ingestRes = await ingestRoundAttachments({
         sessionId,
         source: 'dingtalk',
-        attachments: rawAttachments
+        attachments: rawAttachments,
+        imageMode: supportsVisionInput ? 'vision' : 'ocr'
       })
       normalizedAttachments = (ingestRes.accepted || []).map(item => ({
         type: item.kind === 'image' ? 'image' : (item.kind === 'audio' ? 'audio' : 'file'),
@@ -317,7 +330,9 @@ function createDingtalkAdapter(eventBus, getChannelConfig) {
     message.metadata = {
       displayText: buildDisplayText(text, normalizedAttachments),
       senderName: normalized.senderName || '',
-      attachments: normalizedAttachments
+      modelText: inboundText,
+      attachments: normalizedAttachments,
+      supportsVisionInput
     }
     const binding = createSessionBinding(sessionId, DINGTALK_PROJECT, 'dingtalk', remoteId)
     binding.session_webhook = normalized.sessionWebhook || ''

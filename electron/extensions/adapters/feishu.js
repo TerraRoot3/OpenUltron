@@ -293,7 +293,8 @@ function isAllowed(allowFrom, remoteId) {
  * @param {(key: string) => any} [getChannelConfig] - 按 configKey 取配置，用于 allowFrom 校验
  * @returns {{ id: string; configKey: string; start: Function; stop: Function; isRunning: Function; send: Function }}
  */
-function createFeishuAdapter(eventBus, getChannelConfig) {
+function createFeishuAdapter(eventBus, getChannelConfig, deps = {}) {
+  const { getAIConfigLegacy, modelSupportsVision } = deps
   async function handleIncomingMessage(inbound) {
     const chatId = inbound && inbound.chatId
     const tenantKey = String((inbound && inbound.tenantKey) || '').trim()
@@ -453,7 +454,18 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
     }
     let attachmentContextText = ''
     let normalizedAttachments = []
+    let supportsVisionInput = false
     if (inboundAttachments.length > 0) {
+      if (typeof getAIConfigLegacy === 'function' && typeof modelSupportsVision === 'function') {
+        try {
+          const legacy = getAIConfigLegacy() || {}
+          const configuredBaseUrl = String(legacy?.config?.apiBaseUrl || '').trim()
+          const bindings = legacy?.raw?.modelBindings && typeof legacy.raw.modelBindings === 'object' ? legacy.raw.modelBindings : {}
+          const defaultModel = String((legacy?.raw?.defaultModel || legacy?.config?.defaultModel || '')).trim()
+          const providerBaseUrl = String((defaultModel && bindings[defaultModel]) || configuredBaseUrl || '').trim()
+          supportsVisionInput = !!modelSupportsVision({ model: defaultModel || undefined, providerBaseUrl: providerBaseUrl || undefined })
+        } catch (_) { /* ignore */ }
+      }
       appLogger?.info?.('[Feishu] 开始处理入站附件', {
         messageId: messageId || '',
         count: inboundAttachments.length,
@@ -508,7 +520,8 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
         const ingestRes = await ingestRoundAttachments({
           sessionId,
           source: 'feishu',
-          attachments: rawAttachments
+          attachments: rawAttachments,
+          imageMode: supportsVisionInput ? 'vision' : 'ocr'
         })
         appLogger?.info?.('[Feishu] 入站附件摄取结果', {
           messageId: messageId || '',
@@ -544,7 +557,9 @@ function createFeishuAdapter(eventBus, getChannelConfig) {
     const displayText = buildInboundDisplayText(text, normalizedAttachments)
     message.metadata = {
       displayText,
+      modelText: inboundText,
       attachments: normalizedAttachments,
+      supportsVisionInput,
       tenantKey,
       feishuDocHost: docHost,
       senderOpenId,

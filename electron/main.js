@@ -371,6 +371,7 @@ registerAiChatSessionIpc({ registerChannel, aiGateway })
   sessionRegistry,
   getWorkspaceRoot,
   getAIConfigLegacy,
+  modelSupportsVision,
   stripToolExecutionFromMessages,
   parseInboundModelCommand,
   applyGlobalDefaultModel,

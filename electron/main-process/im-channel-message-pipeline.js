@@ -28,6 +28,7 @@ function registerImChannelMessagePipeline(deps) {
     sessionRegistry,
     getWorkspaceRoot,
     getAIConfigLegacy,
+    modelSupportsVision,
     stripToolExecutionFromMessages,
     parseInboundModelCommand,
     applyGlobalDefaultModel,
@@ -80,6 +81,33 @@ function statusTextForUser(status) {
   if (status === 'error') return '异常'
   if (status === 'completed') return '已完成'
   return status || '未知'
+}
+
+function buildVisionUserContentParts(text, attachments = [], fsRef = fs, pathRef = path) {
+  const imageParts = []
+  for (const a of Array.isArray(attachments) ? attachments : []) {
+    if (!a || a.type !== 'image') continue
+    const p = String(a.path || '').trim()
+    if (!p || !pathRef.isAbsolute(p) || !fsRef.existsSync(p)) continue
+    try {
+      const buf = fsRef.readFileSync(p)
+      if (!buf || buf.length === 0) continue
+      const ext = String(pathRef.extname(p) || '').toLowerCase()
+      const mime = ext === '.jpg' || ext === '.jpeg'
+        ? 'image/jpeg'
+        : ext === '.webp'
+          ? 'image/webp'
+          : ext === '.gif'
+            ? 'image/gif'
+            : 'image/png'
+      imageParts.push({
+        type: 'image_url',
+        image_url: { url: `data:${mime};base64,${buf.toString('base64')}` }
+      })
+    } catch (_) { /* ignore */ }
+  }
+  if (imageParts.length === 0) return null
+  return [{ type: 'text', text: String(text || '').trim() || '[图片附件]' }, ...imageParts]
 }
 
 function phaseTextForUser(phase) {
@@ -365,7 +393,23 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
 
   const messages = (conv && conv.messages) ? [...conv.messages] : []
   messages.push({ role: 'system', content: getCoordinatorSystemPrompt(binding.channel) })
-  messages.push({ role: 'user', content: userDisplayText || String(message?.text || '').trim() || '[附件]' })
+  const modelText = String(message?.metadata?.modelText || message?.text || '').trim() || '[附件]'
+  const displayOrFallbackText = userDisplayText || String(message?.text || '').trim() || '[附件]'
+  const currentModelConfig = (() => {
+    const legacy = getAIConfigLegacy()
+    const bindings = legacy?.raw?.modelBindings && typeof legacy.raw.modelBindings === 'object' ? legacy.raw.modelBindings : {}
+    const model = String((legacy?.raw?.defaultModel || legacy?.config?.defaultModel || '')).trim()
+    const providerBaseUrl = String((model && bindings[model]) || legacy?.config?.apiBaseUrl || '').trim()
+    return { model, providerBaseUrl }
+  })()
+  const supportsVisionInput = !!(message?.metadata?.supportsVisionInput && typeof modelSupportsVision === 'function' && modelSupportsVision({
+    model: currentModelConfig.model || undefined,
+    providerBaseUrl: currentModelConfig.providerBaseUrl || undefined
+  }))
+  const visionUserContentParts = supportsVisionInput
+    ? buildVisionUserContentParts(modelText, attachments, fs, path)
+    : null
+  messages.push({ role: 'user', content: visionUserContentParts || modelText || displayOrFallbackText })
   const originalConvLength = messages.length - 1
   const nowIso = new Date().toISOString()
   conversationFile.updateConversationMeta(projectKey, mainSessionId, { updatedAt: nowIso })
@@ -379,11 +423,11 @@ async function handleChatMessageReceived(payload, runSessionId, mainSessionId, k
   }
   const legacy = getAIConfigLegacy()
   const { resolveProviderApiKey } = require('../ai/codex-auth-loader')
-  const currentBaseUrl = legacy && legacy.config && legacy.config.apiBaseUrl
+  const activeBaseUrl = legacy && legacy.config && legacy.config.apiBaseUrl
   const currentProvider = Array.isArray(legacy?.raw?.providers)
-    ? legacy.raw.providers.find((p) => p && p.baseUrl === currentBaseUrl)
+    ? legacy.raw.providers.find((p) => p && p.baseUrl === activeBaseUrl)
     : null
-  const apiKey = resolveProviderApiKey(currentProvider, (legacy && legacy.providerKeys) || {}, currentBaseUrl).apiKey ||
+  const apiKey = resolveProviderApiKey(currentProvider, (legacy && legacy.providerKeys) || {}, activeBaseUrl).apiKey ||
     ((legacy && legacy.config && legacy.config.apiKey) || '')
   if (!apiKey) {
     if (binding.channel === 'feishu' && userMessageId && typingReactionId) {

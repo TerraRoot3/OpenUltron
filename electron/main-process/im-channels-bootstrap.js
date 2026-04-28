@@ -27,6 +27,7 @@ function setupImChannels(deps) {
     sessionRegistry,
     getWorkspaceRoot,
     getAIConfigLegacy,
+    modelSupportsVision,
     stripToolExecutionFromMessages,
     parseInboundModelCommand,
     applyGlobalDefaultModel,
@@ -81,9 +82,9 @@ function setupImChannels(deps) {
     return null
   }
 
-  chatChannelRegistry.register(createFeishuAdapter(eventBus, getChannelConfig))
-  chatChannelRegistry.register(createTelegramAdapter(eventBus, getChannelConfig))
-  chatChannelRegistry.register(createDingtalkAdapter(eventBus, getChannelConfig))
+  chatChannelRegistry.register(createFeishuAdapter(eventBus, getChannelConfig, { getAIConfigLegacy, modelSupportsVision }))
+  chatChannelRegistry.register(createTelegramAdapter(eventBus, getChannelConfig, { getAIConfigLegacy, modelSupportsVision }))
+  chatChannelRegistry.register(createDingtalkAdapter(eventBus, getChannelConfig, { getAIConfigLegacy, modelSupportsVision }))
 
   registerImChannelMessagePipeline({
     eventBus,
@@ -105,6 +106,7 @@ function setupImChannels(deps) {
     sessionRegistry,
     getWorkspaceRoot,
     getAIConfigLegacy,
+    modelSupportsVision,
     stripToolExecutionFromMessages,
     parseInboundModelCommand,
     applyGlobalDefaultModel,

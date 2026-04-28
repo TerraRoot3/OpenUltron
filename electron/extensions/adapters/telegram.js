@@ -83,7 +83,8 @@ function buildAttachmentPathContext(attachments = []) {
  * @param {(key: string) => any} [getChannelConfig] - 按 configKey 取配置，用于 allowFrom 校验
  * @returns {{ id: string; configKey: string; start: Function; stop: Function; isRunning: Function; send: Function }}
  */
-function createTelegramAdapter(eventBus, getChannelConfig) {
+function createTelegramAdapter(eventBus, getChannelConfig, deps = {}) {
+  const { getAIConfigLegacy, modelSupportsVision } = deps
   let polling = false
   let pollAbort = null
   let lastError = null
@@ -284,11 +285,23 @@ function createTelegramAdapter(eventBus, getChannelConfig) {
     const rawAttachments = await collectRawAttachments(msg)
     let normalizedAttachments = []
     let attachmentContextText = ''
+    let supportsVisionInput = false
     if (rawAttachments.length > 0) {
+      if (typeof getAIConfigLegacy === 'function' && typeof modelSupportsVision === 'function') {
+        try {
+          const legacy = getAIConfigLegacy() || {}
+          const configuredBaseUrl = String(legacy?.config?.apiBaseUrl || '').trim()
+          const bindings = legacy?.raw?.modelBindings && typeof legacy.raw.modelBindings === 'object' ? legacy.raw.modelBindings : {}
+          const defaultModel = String((legacy?.raw?.defaultModel || legacy?.config?.defaultModel || '')).trim()
+          const providerBaseUrl = String((defaultModel && bindings[defaultModel]) || configuredBaseUrl || '').trim()
+          supportsVisionInput = !!modelSupportsVision({ model: defaultModel || undefined, providerBaseUrl: providerBaseUrl || undefined })
+        } catch (_) { /* ignore */ }
+      }
       const ingestRes = await ingestRoundAttachments({
         sessionId,
         source: 'telegram',
-        attachments: rawAttachments
+        attachments: rawAttachments,
+        imageMode: supportsVisionInput ? 'vision' : 'ocr'
       })
       normalizedAttachments = (ingestRes.accepted || []).map(item => ({
         type: item.kind === 'image' ? 'image' : (item.kind === 'audio' ? 'audio' : 'file'),
@@ -302,7 +315,9 @@ function createTelegramAdapter(eventBus, getChannelConfig) {
     const message = createInboundMessage('telegram', chatId, inboundText, messageId, normalizedAttachments)
     message.metadata = {
       displayText: buildTelegramDisplayText(text, normalizedAttachments),
-      attachments: normalizedAttachments
+      modelText: inboundText,
+      attachments: normalizedAttachments,
+      supportsVisionInput
     }
     const binding = createSessionBinding(sessionId, TELEGRAM_PROJECT, 'telegram', chatId)
     await eventBus.emitAsync('chat.message.received', { message, binding })
