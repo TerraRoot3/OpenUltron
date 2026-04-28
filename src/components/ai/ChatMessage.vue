@@ -2864,9 +2864,9 @@ const renderedContent = computed(() => renderMarkdown(mainContent.value))
 }
 .message-artifact-name {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
   font-size: 13px;
   font-weight: 600;
 }
@@ -2881,9 +2881,9 @@ const renderedContent = computed(() => renderMarkdown(mainContent.value))
 }
 .message-artifact-path {
   max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
 }
 .message-artifact-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .message-artifact-open,
