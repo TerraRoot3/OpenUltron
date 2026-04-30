@@ -400,20 +400,34 @@
               </div>
             </div>
             <div v-else-if="block.type === 'artifact_card'" class="ui-artifact-card">
-              <div class="ui-artifact-head">
-                <span class="ui-artifact-title">{{ block.title || block.name || '产物文件' }}</span>
-                <span v-if="block.kind" class="ui-artifact-kind">{{ block.kind }}</span>
+              <div v-if="isCompactUiArtifactBlock(block)" class="message-artifact-link-row ui-artifact-link-row">
+                <span class="message-artifact-link-icon">
+                  <component :is="artifactIcon(uiArtifactRecord(block))" :size="14" />
+                </span>
+                <a
+                  href="#"
+                  class="message-artifact-link"
+                  :title="block.openPath || block.path"
+                  @click.prevent="revealUiArtifactBlock(block)"
+                >{{ uiArtifactDisplayName(block) }}</a>
+                <span class="message-artifact-link-meta">{{ artifactTypeLabel(uiArtifactRecord(block)) }}</span>
               </div>
-              <div class="ui-artifact-path" :title="block.path">{{ block.path }}</div>
-              <div v-if="block.content" class="ui-artifact-desc" v-html="renderMarkdown(block.content)"></div>
-              <div class="ui-artifact-actions">
-                <button
-                  v-for="(action, idx) in block.actions"
-                  :key="`artifact-action-${idx}`"
-                  type="button"
-                  class="reply-option-btn"
-                  @click="emitUiAction({ ...action, sourceType: block.type, path: block.path, openPath: block.openPath || block.path, name: block.name || '' })"
-                >{{ action.label || '执行' }}</button>
+              <div v-else>
+                <div class="ui-artifact-head">
+                  <span class="ui-artifact-title">{{ block.title || block.name || '产物文件' }}</span>
+                  <span v-if="block.kind" class="ui-artifact-kind">{{ block.kind }}</span>
+                </div>
+                <div class="ui-artifact-path" :title="block.path">{{ block.path }}</div>
+                <div v-if="block.content" class="ui-artifact-desc" v-html="renderMarkdown(block.content)"></div>
+                <div class="ui-artifact-actions">
+                  <button
+                    v-for="(action, idx) in block.actions"
+                    :key="`artifact-action-${idx}`"
+                    type="button"
+                    class="reply-option-btn"
+                    @click="emitUiAction({ ...action, sourceType: block.type, path: block.path, openPath: block.openPath || block.path, name: block.name || '' })"
+                  >{{ action.label || '执行' }}</button>
+                </div>
               </div>
             </div>
             <div v-else-if="block.type === 'tool_result_card'" class="ui-tool-result-card" :class="`ui-tool-result-${block.status}`">
@@ -1887,6 +1901,36 @@ const isHtmlArtifact = (art) => {
 
 const isPdfArtifact = (art) => artifactExtension(art) === '.pdf'
 
+const isCompactArtifactLink = (art) => {
+  const kind = String(art?.kind || '').toLowerCase()
+  return kind !== 'audio' && kind !== 'video' && !isHtmlArtifact(art) && !isPdfArtifact(art)
+}
+
+const uiArtifactRecord = (block = {}) => ({
+  kind: inferArtifactKind(block.path || block.openPath || '', block.kind || 'file'),
+  name: block.name || block.title || basenameOfPath(block.openPath || block.path || ''),
+  path: block.path || '',
+  openPath: block.openPath || block.path || ''
+})
+
+const uiArtifactDisplayName = (block = {}) => {
+  return block.name || block.title || basenameOfPath(block.openPath || block.path || '') || '文件'
+}
+
+const isCompactUiArtifactBlock = (block = {}) => {
+  const art = uiArtifactRecord(block)
+  const ext = artifactExtension(art)
+  return isCompactArtifactLink(art) && isTextLikeExtension(ext)
+}
+
+const revealUiArtifactBlock = (block = {}) => {
+  const target = String(block.openPath || block.path || '').trim()
+  if (!target) return
+  try {
+    window.electronAPI?.openInFinder?.({ path: target })
+  } catch { /* ignore */ }
+}
+
 const isModalPreviewableArtifact = (art) => {
   if (!art) return false
   return isHtmlArtifact(art) || isPdfArtifact(art) || isPreviewableArtifact(art)
@@ -2835,6 +2879,42 @@ const renderedContent = computed(() => renderMarkdown(mainContent.value))
 
 .message-artifacts { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin-top: 10px; }
 .user-message-artifacts { align-items: flex-start; align-self: stretch; }
+.message-artifact-link-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  line-height: 1.5;
+  max-width: min(100%, 560px);
+}
+.user-message-artifact-link-row,
+.ui-artifact-link-row {
+  max-width: 100%;
+}
+.message-artifact-link-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255,255,255,0.62);
+  flex: 0 0 auto;
+}
+.message-artifact-link {
+  color: var(--ou-primary);
+  text-decoration: underline;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.message-artifact-link:hover {
+  opacity: 0.85;
+}
+.message-artifact-link-meta {
+  color: rgba(255,255,255,0.56);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 .message-artifact-card {
   display: flex;
   flex-direction: column;

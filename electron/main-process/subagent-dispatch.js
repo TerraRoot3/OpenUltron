@@ -203,13 +203,16 @@ function createSubagentDispatch(deps) {
     return { success: false, error: msg, runtime: `external:${spec.id}`, systemPromptSource, attempts }
   }
 
-  function resolveRuntimeChain(runtime, availableExternalIds) {
+  function resolveRuntimeChain(runtime, availableExternalIds, configuredPreference = []) {
     const extIds = dedupeList(availableExternalIds || [])
     const normalized = String(runtime || '').trim().toLowerCase()
     const pickAutoChain = (base = []) => {
+      const configured = dedupeList(configuredPreference || [])
+        .map((id) => normalizeRuntimeToken(String(id || '').replace(/^external:/i, '')))
+        .filter((id) => id && extIds.includes(id))
       const ordered = preferredExternalRuntime.filter((id) => extIds.includes(id))
-      const rest = base.filter((id) => !ordered.includes(id))
-      return dedupeList([...ordered, ...rest])
+      const rest = base.filter((id) => !ordered.includes(id) && !configured.includes(id))
+      return dedupeList([...ordered, ...configured, ...rest])
     }
     if (!normalized) return ['internal']
     if (normalized === 'auto') {
@@ -393,11 +396,31 @@ function createSubagentDispatch(deps) {
       ? String(projectPath).trim()
       : '__main_chat__'
     const subOrc = getSubagentOrchestration()
-    const profileId = String(profile || agent || 'executor').trim() || 'executor'
-    const profileResolved = resolveAgentProfile(profileId, pp0) || resolveAgentProfile('executor', pp0)
-    if (!isProfileAllowed(profileId, subOrc.allowedProfiles)) {
+    const requestedProfileId = String(profile || agent || 'executor').trim() || 'executor'
+    const profileResolved = resolveAgentProfile(requestedProfileId, pp0)
+    if (!profileResolved) {
       const systemPromptSource = normalizeSystemPromptSource(rawSystemPromptSource)
-      const err = `子 Agent profile 不在允许列表: ${profileId}`
+      const err = `子 Agent profile 不存在: ${requestedProfileId}`
+      return {
+        success: false,
+        error: err,
+        subSessionId,
+        parentRunId: parentRun || undefined,
+        systemPromptSource,
+        envelope: buildExecutionEnvelope({
+          success: false,
+          error: err,
+          subSessionId,
+          parentRunId: parentRun || undefined,
+          systemPromptSource
+        }, 'internal')
+      }
+    }
+    const profileId = String(profileResolved.id || requestedProfileId || 'executor').trim() || 'executor'
+    const profileAllowed = isProfileAllowed(requestedProfileId, subOrc.allowedProfiles) || isProfileAllowed(profileId, subOrc.allowedProfiles)
+    if (!profileAllowed) {
+      const systemPromptSource = normalizeSystemPromptSource(rawSystemPromptSource)
+      const err = `子 Agent profile 不在允许列表: ${requestedProfileId}${profileId !== requestedProfileId ? `（解析为 ${profileId}）` : ''}`
       return {
         success: false,
         error: err,
@@ -523,7 +546,7 @@ function createSubagentDispatch(deps) {
         line_count: commandLogLines.length
       })
     }
-    pushCommandLog(`[meta] sub-agent started runtime=${runtime || 'auto'} effective_pending`)
+    pushCommandLog(`[meta] sub-agent started runtime=${runtime || 'auto'} profile=${profileId} effective_pending`)
     if (parentRun) pushCommandLog(`[meta] parent_run_id=${parentRun}`)
     emitPartial()
     const appendToolResultLine = (name, rawResult) => {
@@ -559,7 +582,7 @@ function createSubagentDispatch(deps) {
     const availableExternal = scan.filter(a => a.available)
     const availableExternalIds = availableExternal.map(a => a.id)
     const availableExternalById = new Map(availableExternal.map(a => [a.id, a]))
-    const runtimeChain = resolveRuntimeChain(normalizedForChain, availableExternalIds)
+    const runtimeChain = resolveRuntimeChain(normalizedForChain, availableExternalIds, subOrc.externalRuntimePreference)
     const attemptErrors = []
     const SUBAGENT_RUN_TIMEOUT_MS = 1800000
     const runCore = async () => {
@@ -588,11 +611,12 @@ function createSubagentDispatch(deps) {
           deliveryPolicy: routeFromRuntime.deliveryPolicy || 'defer',
           riskLevel: routeFromRuntime.riskLevel || 'safe',
           runtimeChain,
+          profileId,
           availableExternalIds,
           taskPreview: String(task || '').slice(0, 120)
         })
-        appLogger?.info?.(`[SubAgentDispatch] runtime=${effectiveRuntime || 'auto'} chain=${runtimeChain.join('>')} available=${availableExternalIds.join(',') || 'none'}`)
-        console.log('[SubAgentDispatch] runtime=', effectiveRuntime || 'auto', 'chain=', runtimeChain.join('>'), 'available=', availableExternalIds.join(',') || 'none')
+        appLogger?.info?.(`[SubAgentDispatch] runtime=${effectiveRuntime || 'auto'} profile=${profileId} chain=${runtimeChain.join('>')} available=${availableExternalIds.join(',') || 'none'}`)
+        console.log('[SubAgentDispatch] runtime=', effectiveRuntime || 'auto', 'profile=', profileId, 'chain=', runtimeChain.join('>'), 'available=', availableExternalIds.join(',') || 'none')
         if ((effectiveRuntime || 'auto') === 'auto' && availableExternalIds.length === 0 && shouldReportAutoFallback) {
           console.warn('[SubAgentDispatch] auto 模式下无可用外部子Agent，将使用 internal')
           pushCommandLog('[meta] auto 模式无可用外部子 Agent，已回退 internal')

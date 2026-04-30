@@ -124,7 +124,7 @@ function createAiChatToolsAccess(deps) {
       '规则：只有真实调用工具并获得结果后，才能说“已完成”；否则继续执行或返回明确错误。'
     ]
     if (spawnOn) {
-      lines.push('可在复杂/并行任务时调用 sessions_spawn；默认 runtime="auto"，按可用外部子 Agent 动态选择（默认以最近成功运行时的顺序为优先），未命中时自动 fallback 到 internal；可选 external:codex / external:claude / external:gateway / external:opencode，或 runtime: "external:xxx"；本机未安装则会自动跳过。')
+      lines.push('可在复杂/并行任务时调用 sessions_spawn；简单问答或一次工具调用可完成的任务不要派生。profile 选择：executor=实际执行，read_only_fast=只读探索/审查，coordinator=二级编排。默认 runtime="auto"，按最近成功运行时与配置偏好选择外部子 Agent，未命中时 fallback 到 internal；可选 external:codex / external:claude / external:gateway / external:opencode。')
     } else {
       lines.push('当前不允许 sessions_spawn，必须在本会话内完成，不得声称已派发子 Agent。')
     }

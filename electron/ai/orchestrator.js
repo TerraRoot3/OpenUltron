@@ -602,14 +602,17 @@ class Orchestrator {
     try {
       const memParts = []
       const activeSession = this.activeSessions.get(sessionId)
-      const minimalToolNames = isModelIdentityInquiry
+      const allToolNames = isModelIdentityInquiry
         ? []
         : (Array.isArray(tools)
           ? tools
             .map((t) => String(t?.function?.name || '').trim())
             .filter(Boolean)
-            .slice(0, 120)
           : [])
+      const minimalToolNames = isModelIdentityInquiry
+        ? []
+        : allToolNames.slice(0, 120)
+      const hasSessionsSpawnTool = allToolNames.includes('sessions_spawn')
       const minimalParts = minimalPromptMode
         ? (() => {
             const p = []
@@ -674,6 +677,16 @@ class Orchestrator {
         // 0.1 当前模型（从 prompts/current-model.md 或默认）
         const currentModelText = loadPrompt('current-model', { model: useModel })
         if (!shouldBypassIdentitySanitization && currentModelText) memParts.push(currentModelText)
+
+        // 0.11 回复长度与信息密度（主会话与 IM 渠道都注入）
+        const responseStyleText = loadPrompt('response-style')
+        if (responseStyleText) memParts.push(responseStyleText)
+
+        // 0.115 子 Agent 编排策略（仅在本轮工具列表含 sessions_spawn 时注入）
+        if (hasSessionsSpawnTool) {
+          const subagentOrchestrationText = loadPrompt('subagent-orchestration')
+          if (subagentOrchestrationText) memParts.push(subagentOrchestrationText)
+        }
 
         // 0.12 任务完成原则（从 prompts/task-persistence.md 或默认；主会话与工作室均注入）
         const taskPersistenceText = loadPrompt('task-persistence')
